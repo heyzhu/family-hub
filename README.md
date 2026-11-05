@@ -4,8 +4,6 @@
 
 > **许可证**：本项目采用 GNU Affero General Public License v3.0（`AGPL-3.0-only`），全文见仓库根目录的 `LICENSE`。
 
-本文档只记录仓库文件能够核对的事实，以及使用者可以自行复现的命令。本文档不写入性能数据、效果评价、未来计划或第三方服务承诺。文末按 MLA 格式列出引用来源。
-
 ---
 
 ## 一、项目简介
@@ -62,8 +60,8 @@
 
 ### 3.4 家庭记账
 
-- `POST /api/bills/chat` 接收一句自然语言，例如「今天买菜 30 元」。`src/billparse.js` 用本地规则提取金额、日期、分类与备注，金额按「分」以整数入库；解析不出金额时服务端返回说明，不会猜一个数字 (Family Hub Project, src/billparse.js, ll. 1-24; src/bills.js, ll. 838-856)。
-- 本项目只记录支出；被判定为收入方向的一句话不会入账，服务端会返回说明 (Family Hub Project, src/bills.js, ll. 859-867)。
+- `POST /api/bills/chat` 接收一句自然语言，例如「今天买菜 30 元」。`src/billparse.js` 用本地规则提取金额、日期、分类与备注，金额按「分」以整数入库；解析不出金额时服务端返回说明，不会猜一个数字 。
+- 本项目只记录支出；被判定为收入方向的一句话不会入账，服务端会返回说明 。
 - 本项目提供个人／家庭 × 日／月的统计、自定义日期范围、分类预算、记账日历、账单明细增删改查与 CSV 导出 (Family Hub Project, src/api.js, ll. 3507-3632, 3687-3728)。
 - 截图识别是可选功能。管理员在「我的 → AI 参数设置」里填写接口地址、API Key 与模型 ID；服务端按 OpenAI 兼容的 `chat/completions` 协议调用，识别结果只回给前端，用户确认后才调用账单写入接口。密钥不会下发给浏览器 (Family Hub Project, src/ocr.js, ll. 1-52, 71-96; src/api.js, ll. 3634-3665)。
 - 服务端为 AI 调用提供月度额度护栏，默认值是每月 1000 次；管理员可以在设置里调整 (Family Hub Project, src/ocr.js, ll. 59-62)。
