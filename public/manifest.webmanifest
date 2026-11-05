@@ -1,0 +1,19 @@
+{
+  "name": "我们一家",
+  "short_name": "我们一家",
+  "description": "多用户家庭共享记录软件：万年历待办、图文动态、重点事项记录本、家庭记账",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#faf7f2",
+  "theme_color": "#faf7f2",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%23faf7f2'/%3E%3Ctext x='50' y='82' font-size='64' text-anchor='middle'%3E%F0%9F%8F%A0%3C/text%3E%3C/svg%3E",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

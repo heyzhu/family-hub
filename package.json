@@ -1,0 +1,20 @@
+{
+  "name": "family-hub",
+  "version": "4.25.0",
+  "private": true,
+  "description": "我们一家 —— 多用户家庭共享记录软件：万年历待办 / 图文动态 / 重点事项记录本 / 家庭记账",
+  "license": "AGPL-3.0-only",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "init-db": "node scripts/init-db.js",
+    "backup": "node scripts/backup.js"
+  },
+  "dependencies": {},
+  "optionalDependencies": {
+    "better-sqlite3": "^11.5.0"
+  }
+}

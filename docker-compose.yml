@@ -1,0 +1,104 @@
+# 我们一家 —— Docker Compose 部署
+#
+# 需要 Docker Compose v2（命令是 `docker compose`，中间有空格）。
+#   docker compose version        # 确认可用
+#
+# 三步启动：
+#   1) mkdir -p data && sudo chown -R 1000:1000 data     # 首次必须先建目录并给对属主
+#   2) cp .env.docker.example .env                       # 可选，按需改端口等
+#   3) docker compose up -d --build                      # 构建并启动
+#
+# 打开 http://服务器IP:3455 → 注册第一个账号（自动成为管理员）。
+#   ★ v4.3.1 起默认端口是 **3455**（旧版本是 3000）。想让宿主机用别的端口，
+#     在 .env 里设 PORT=xxxx 即可（容器内始终监听 3455），旧端口照旧能覆盖。
+#
+# 数据落在宿主机 ./data 目录（family.db + uploads/），备份/迁移就是拷这个目录，不用进容器。
+
+services:
+  app:
+    image: family-hub:4.25.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_VERSION: "4.25.0"
+    container_name: family-hub
+    restart: unless-stopped
+    # 容器内没有 systemd，init 让 PID 1 能回收僵尸进程；配合 server.js 的 SIGTERM 处理可优雅退出
+    init: true
+    stop_grace_period: 10s
+
+    ports:
+      # 默认对所有网卡开放（局域网直接用 http://IP:3455 访问）。
+      # 前面挂了 Nginx/HTTPS 时，改成 "127.0.0.1:3455:3455" 只允许本机访问，更安全。
+      - "${BIND_ADDR:-0.0.0.0}:${PORT:-3455}:3455"
+
+    environment:
+      # —— 应用配置：可用同目录 .env 覆盖（见 .env.docker.example）——
+      # 站点名称（v1.8.0 起可由管理员自定义）**不在环境变量里配**：
+      # 改法是在网页上「我的 → 家庭设置 → 基础 → 站点名称」，值存在数据库的 settings 表里。
+      # 写 FAMILY_NAME（v1.6.0 起已废弃）不会生效，只是被忽略。
+      SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-24}"
+      MAX_SESSIONS_PER_USER: "${MAX_SESSIONS_PER_USER:-10}"
+      # 图片上传上限（MB）。手机原图动辄 5-8MB，v1.5.0 起默认放宽到 10，
+      # 别再退回 5 —— 那正是「图片一直传不上去」的老原因
+      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-10}"
+      # 记录本附件上限（MB）。文档/压缩包比图片大，单独一个上限
+      MAX_FILE_MB: "${MAX_FILE_MB:-20}"
+      # 单段视频上限（MB，v1.9.0）。手机随手拍的一段常在 10-30MB，默认给到 50。
+      # ★ 视频以 base64 塞在 JSON 请求体里上传，实际请求体约为该值的 1.4 倍；
+      #   要调大请把反代的 client_max_body_size 一起放开，否则会撞到 413。
+      MAX_VIDEO_MB: "${MAX_VIDEO_MB:-50}"
+      ALLOW_REGISTER: "${ALLOW_REGISTER:-1}"
+      # 1 = 信任反向代理传来的 X-Forwarded-Proto（仅在确实为 https 时才给 Cookie 加 Secure，
+      #     没有代理、直接 HTTP 访问时不会加，因此登录不受影响）
+      TRUST_PROXY: "${TRUST_PROXY:-1}"
+      # 容器时区。注意：镜像里已装 tzdata，否则这里设了也会被忽略、回落到 UTC
+      TZ: "${TZ:-Asia/Shanghai}"
+      # 待办提醒按「墙上时间」计算用的时区偏移（分钟，480 = 东八区）。
+      # 它不依赖容器时区，容器是 UTC 也能算对；不在界面上改的话用这个值
+      TZ_OFFSET_MINUTES: "${TZ_OFFSET_MINUTES:-480}"
+
+      # 千问（阿里云百炼 DashScope）API Key（v3.0.0 起记账模块的截图识别 + AI 解析，**可选**）。
+      # ★ 推荐做法：登录管理员账号 →「记账 → 设置」里填，值存在数据库的 settings 表里，
+      #   好处是改完立即生效、不用重启容器，而且密钥不会出现在 compose 文件与宿主机环境里。
+      # 这个变量只是**兜底**：数据库里没配时才读环境变量（便于一次性批量部署）。
+      # 想用环境变量就把它填进同目录 .env；留空则完全不影响其它功能。
+      # v4.24.0：AI 识别 = 通用 OpenAI 兼容平台三件套（推荐在网页里配置，这里是兜底）
+      AI_API_KEY: "${AI_API_KEY:-}"
+      AI_BASE_URL: "${AI_BASE_URL:-}"
+      AI_VL_MODEL: "${AI_VL_MODEL:-}"
+      # 老配置兼容：qwen 时代的密钥仍被读取
+      DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
+
+      # —— 容器内固定值，不要改：必须与下面的卷挂载一致 ——
+      PORT: "3455"
+      HOST: "0.0.0.0"
+      DB_PATH: "/data/family.db"
+      UPLOAD_DIR: "/data/uploads"
+
+    volumes:
+      # 绑定挂载而非命名卷：数据就在项目目录下，备份/迁移/查看都最直观
+      - ./data:/data
+
+    healthcheck:
+      # 打公开接口，不会因为未登录而误判为 unhealthy
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3455/api/config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # 日志轮转，防止 json-file 日志把磁盘写满
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 只是异常时的兜底上限（并非预留内存）：实测常驻约 50~80MB，
+    # 单张图片上传时峰值约 +20MB，512M 足够宽裕，不会出现难排查的 OOM 被杀
+    deploy:
+      resources:
+        limits:
+          memory: 512M

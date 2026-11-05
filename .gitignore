@@ -1,0 +1,24 @@
+# 运行数据不应提交到版本库
+node_modules/
+*.log
+.DS_Store
+.env
+
+# 用户数据与本机运行残留（一律不提交）
+# 服务端启动时会按 src/schema.sql 自动建库建表，仓库不需要附带 family.db
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
+data/uploads/
+data/backups/
+
+# 构建产物与第三方可执行文件
+*.fpk
+*.zip
+*.xz
+fnpack.exe
+
+# 备份与临时文件
+*.bak
+*.tmp

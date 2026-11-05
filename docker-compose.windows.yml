@@ -1,0 +1,26 @@
+# 我们一家 —— Windows / macOS 本机试跑用（覆盖文件）
+#
+# 为什么需要它：SQLite 的文件锁在 Docker Desktop 的「目录绑定挂载」上
+# （Windows 的 9p/drvfs、macOS 的 gRPC-FUSE）不受支持，启动会报
+# 「disk I/O error」。改用命名卷（数据存进 Docker 自己的 Linux 虚拟盘）
+# 即可正常工作。部署到 Linux 服务器时不需要这个文件。
+#
+# 用法（在本目录下执行）：
+#   docker compose -f docker-compose.yml -f docker-compose.windows.yml up -d --build
+#
+# 备份 / 迁移（命名卷里的数据这样导出）：
+#   docker run --rm -v family-hub_data:/data -v "%cd%":/backup alpine \
+#     tar czf /backup/family-hub-data.tgz /data
+# 恢复：
+#   docker run --rm -v family-hub_data:/data -v "%cd%":/backup alpine \
+#     sh -c "cd / && tar xzf /backup/family-hub-data.tgz"
+#
+# 注意：卷名 family-hub_data 由「项目目录名_卷名」组成，目录改名后卷名会变。
+
+services:
+  app:
+    volumes:
+      - family-hub_data:/data        # 覆盖主文件的 ./data 绑定挂载
+
+volumes:
+  family-hub_data:

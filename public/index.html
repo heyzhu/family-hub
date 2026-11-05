@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="paper">
+<head>
+<meta charset="utf-8">
+<!-- interactive-widget=resizes-content（Chrome Android 108+）：键盘弹出时布局视口随内容收缩，
+     输入区跟着视口底走而不是被键盘盖住/顶飞 —— 配合 app.js 里的「发送后焦点回到输入框」，
+     连续录入时界面不再上下跳。不支持的浏览器忽略此参数，无副作用。 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" id="theme-color" content="#faf7f2">
+<meta name="description" content="多用户家庭共享记录软件：万年历待办、图文动态、重点事项记录本">
+<title>我们一家</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='88'%3E%F0%9F%8F%A0%3C/text%3E%3C/svg%3E">
+<!-- v4.10.0：PWA 基础设施（可安装到桌面/主屏）。manifest 用 SVG 图标（maskable 兼容）。 -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='88'%3E%F0%9F%8F%A0%3C/text%3E%3C/svg%3E">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<!-- v4.11.0：主题在样式表之前定下来，避免「先画默认色再跳成用户主题」的闪一下。
+     只读本地缓存（服务端主题在 /api/me 回来后校正），同步、零请求。
+     ★ 必须是**外链**：server.js 的 CSP 是 script-src 'self'，内联脚本会被浏览器直接拒绝执行。 -->
+<script src="theme-boot.js"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ═══ 启动骨架屏：先验会话再决定去哪，避免登录页闪一下 ═══ -->
+<div id="boot-screen" class="boot">
+  <div class="boot-logo">🏠</div>
+  <div class="boot-name" id="boot-name">我们一家</div>
+  <div class="boot-bar"><i></i></div>
+</div>
+
+<!-- ═══ 登录 / 注册 ═══ -->
+<div id="auth-screen" class="auth hidden">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <div class="auth-logo">🏠</div>
+      <h1 id="auth-title">我们一家</h1>
+      <p class="auth-sub">一个网址，一家人的日程、相册与重要记录</p>
+    </div>
+
+    <div class="segmented" id="auth-tabs">
+      <button type="button" data-auth-tab="login" class="on">登录</button>
+      <button type="button" data-auth-tab="register">注册新账号</button>
+    </div>
+
+    <!-- 登录 -->
+    <form id="form-login" class="auth-form" autocomplete="on">
+      <label class="field">
+        <span>用户名</span>
+        <input type="text" name="username" autocomplete="username" required placeholder="你的登录名">
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input type="password" name="password" autocomplete="current-password" required placeholder="密码">
+      </label>
+      <button type="submit" class="btn-primary btn-block">登录</button>
+      <p class="auth-hint">登录后 <b>1 天内</b>再次打开本页面无需重新登录。</p>
+      <p class="auth-hint">忘记密码？请让家庭管理员在「我的」页面为你重置。</p>
+    </form>
+
+    <!-- 注册 -->
+    <form id="form-register" class="auth-form hidden" autocomplete="on">
+      <label class="field">
+        <span>用户名</span>
+        <input type="text" name="username" autocomplete="username" required placeholder="2-20 位中英文、数字或下划线">
+      </label>
+      <label class="field">
+        <span>昵称</span>
+        <input type="text" name="display_name" autocomplete="nickname" required placeholder="家人看到的名字，如「妈妈」">
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input type="password" name="password" autocomplete="new-password" required placeholder="至少 6 位">
+      </label>
+      <label class="field">
+        <span>确认密码</span>
+        <input type="password" name="password2" autocomplete="new-password" required placeholder="再输一次">
+      </label>
+      <button type="submit" class="btn-primary btn-block">创建账号</button>
+      <p class="auth-hint" id="register-hint">第一位注册的家庭成员将自动成为管理员。</p>
+    </form>
+
+    <p class="auth-error hidden" id="auth-error"></p>
+  </div>
+</div>
+
+<!-- ═══ 主界面 ═══ -->
+<div id="app-screen" class="app hidden">
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="topbar-logo">🏠</span>
+      <span class="topbar-title" id="topbar-title">我们一家</span>
+    </div>
+    <div class="topbar-right">
+      <span class="sync-pill" id="sync-pill" title="同步状态"><i></i><span id="sync-text">已同步</span></span>
+      <button type="button" class="icon-btn" id="btn-refresh" title="刷新">⟳</button>
+    </div>
+  </header>
+
+  <main class="main" id="main">
+    <section id="view-calendar" class="view"></section>
+    <section id="view-moments" class="view hidden"></section>
+    <section id="view-records" class="view hidden"></section>
+    <section id="view-bills" class="view hidden"></section>
+    <section id="view-me" class="view hidden"></section>
+  </main>
+
+  <nav class="tabbar" id="tabbar">
+    <!-- v4.11.0：桌面端侧栏顶部的品牌区（手机端由 CSS 隐藏） -->
+    <div class="rail-brand">
+      <span class="rb-logo">🏠</span>
+      <span class="rb-name" id="rail-name">我们一家</span>
+    </div>
+    <button type="button" data-tab="calendar" class="on"><span class="ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18"/><path d="M8.5 15.5l2 2 4-4"/></svg></span><span>待办</span></button>
+    <button type="button" data-tab="moments"><span class="ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M4 17l4.6-4.3a2 2 0 0 1 2.7 0L16 17M14.5 14.5l1.8-1.6a2 2 0 0 1 2.7 0L21 14.7"/></svg></span><span>动态</span></button>
+    <button type="button" data-tab="records"><span class="ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H18a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6.5A1.5 1.5 0 0 1 5 19.5z"/><path d="M9 3v18M12.5 8h3M12.5 12h3"/></svg></span><span>记录本</span></button>
+    <button type="button" data-tab="bills"><span class="ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5A2.5 2.5 0 0 1 5.5 6H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5A2.5 2.5 0 0 1 3 16.5z"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1.2"/></svg></span><span>记账</span></button>
+    <button type="button" data-tab="me"><span class="ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.6-3.6 3.7-5.6 7.5-5.6s6.9 2 7.5 5.6"/></svg></span><span>我的</span></button>
+  </nav>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root" class="toast-root"></div>
+
+<script src="lunar.js"></script>
+<script src="repeat.js"></script>
+<!-- v4.21.0（W-7 第一刀切片）：消息模板编辑区独立成文件，必须在 app.js 之前加载 -->
+<script src="msg-tpl.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
