@@ -1437,6 +1437,22 @@ select.inp-compact { padding-right: 26px; }
 .auth-sub { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--muted); }
 .auth-form { margin-top: var(--sp-8); display: flex; flex-direction: column; gap: var(--sp-6); }
 .auth-hint { font-size: var(--fs-xs); color: var(--muted); text-align: center; line-height: 1.7; }
+/* v4.26.0：登录页「忘记密码？」入口。
+   做成语境里的文字按钮（不是链接）—— 它不导航，只是打开弹窗，
+   用 <a> 会把地址栏改成 `/` 或触发页面跳转，还会让读屏软件念成「链接」。 */
+.auth-forgot { margin-top: var(--sp-1); }
+.auth-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--brand);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.auth-link:hover { opacity: .82; }
+.auth-link:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 3px; }
 .auth-error {
   margin-top: var(--sp-6);
   padding: 9px 12px;
@@ -2067,7 +2083,11 @@ select.inp-compact { padding-right: 26px; }
 .pv-wrap.playing .pv-play { opacity: 0; transform: scale(.8); }
 .pv-wrap .pv-play { z-index: 2; }
 .post-videos { margin-top: var(--sp-3); display: grid; gap: var(--sp-2); }
-.post-video { display: block; width: 100%; max-height: 420px; border-radius: var(--r-media); background: var(--media); }
+/* v4.26.0（P0）：没有元数据之前，<video> 的盒子高度是不确定的（有的浏览器给 150px，
+   有的给 0）—— 表现为「先黑一块，随后整张卡片跳一下」。`aspect-ratio: auto 16 / 9`
+   的意思是：**拿到真实比例就用真实的，没拿到就按 16:9 占位**（写死 16/9 会把竖屏视频挤变形）。
+   object-fit: contain 保证任何比例都不裁切、不拉伸。 */
+.post-video { display: block; width: 100%; max-height: 420px; aspect-ratio: auto 16 / 9; object-fit: contain; border-radius: var(--r-media); background: var(--media); }
 .pv-wrap video { background: var(--media); }
 /* 移动端封面叠层：<video poster> 在部分 WebView 里要等元数据才画，弱网就是一块黑 */
 .pv-poster {
@@ -2083,6 +2103,21 @@ select.inp-compact { padding-right: 26px; }
   display: none;
 }
 .pv-wrap.playing .pv-poster { display: none; }
+
+/* ── v4.26.0（P1）：ArtPlayer 挂载点 ──────────────────────────
+   .pv-art 默认 display:none（不占布局，原生 <video> 自己撑开盒子）；
+   播放器建好之后由 JS 给 .pv-wrap 加 .art-on，这时挂载点接管尺寸、
+   原生控件 / 封面叠层 / ▶ 角标统一让位 —— 三者必须一起隐藏，
+   否则三套 UI 会叠在同一块画面上。
+   ★ 16:9 只是「容器占位」，ArtPlayer 内部按视频真实比例 contain，
+     竖屏视频会左右留黑，不会被拉变形。 */
+.pv-art { display: none; }
+.pv-wrap.art-on .pv-art { display: block; width: 100%; aspect-ratio: 16 / 9; }
+.pv-wrap.art-on > video.post-video,
+.pv-wrap.art-on > .pv-poster,
+.pv-wrap.art-on > .pv-play { display: none !important; }
+.pv-wrap .art-video-player { border-radius: var(--r-media); overflow: hidden; }
+.pv-wrap .art-video-player .art-video { background: #000; }
 
 /* 动态卡片 */
 .post { padding: 14px 16px; margin-bottom: 0; }

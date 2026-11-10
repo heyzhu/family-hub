@@ -37,7 +37,7 @@ PLATFORM=""
 # 注意：管道末端是 head，会提前关闭管道使 sed 收到 SIGPIPE；在 set -o pipefail 下会被判为失败，
 #       所以这里用 || true 兜住（取到的仍是第一行，结果不受影响）
 VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' package.json | head -n 1 || true)"
-VERSION="${VERSION:-4.25.0}"
+VERSION="${VERSION:-4.27.0}"
 
 while [ $# -gt 0 ]; do
   case "$1" in

@@ -495,3 +495,23 @@ CREATE TABLE IF NOT EXISTS push_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_push_logs_kind ON push_logs (kind, id DESC);
+
+-- ── 忘记密码（v4.26.0）───────────────────────────────────────
+-- 一条 = 一次「邮箱验证码」申请。规则由 src/resetpw.js 统一裁决：
+--   · 只认 users.notify_email（用户自己绑定的收件邮箱），不额外引入邮箱账号概念；
+--   · 6 位数字，15 分钟有效、单次使用、错 5 次作废、10 分钟内最多发 3 次；
+--   · code_hash = sha256(salt + ':' + code)，**不存明文**（库被看到也不能直接拿去重置）；
+--   · 每次申请先清掉该用户的旧记录 —— 一人同时只允许一个有效验证码，
+--     否则「连点三次拿三个码」会让用户不知道该填哪个。
+CREATE TABLE IF NOT EXISTS password_resets (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL,
+  code_hash  TEXT    NOT NULL,
+  salt       TEXT    NOT NULL DEFAULT '',
+  tries      INTEGER NOT NULL DEFAULT 0,
+  used       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT    NOT NULL DEFAULT '',
+  expires_at TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets (user_id, id DESC);

@@ -9,11 +9,18 @@
 <meta name="theme-color" id="theme-color" content="#faf7f2">
 <meta name="description" content="多用户家庭共享记录软件：万年历待办、图文动态、重点事项记录本">
 <title>我们一家</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='88'%3E%F0%9F%8F%A0%3C/text%3E%3C/svg%3E">
-<!-- v4.10.0：PWA 基础设施（可安装到桌面/主屏）。manifest 用 SVG 图标（maskable 兼容）。 -->
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<!-- v4.27.0：PWA 图标改成真正的 PNG。
+     原来 favicon / apple-touch-icon / manifest 图标全是 data:image/svg+xml 里塞了个 🏠 emoji：
+       · iOS 的 apple-touch-icon **不认 SVG**，装到主屏是空白方块（最典型的投诉）
+       · Android 自适应图标要 maskable PNG，SVG 的 data: URI 不参与遮罩
+       · emoji 由系统字体渲染，三端长得都不一样，不构成品牌识别
+     现在 4 张 PNG 由 scripts/make-icons.js 生成（纯 Node，零依赖），要改设计就改那里重跑。 -->
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='88'%3E%F0%9F%8F%A0%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="我们一家">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <!-- v4.11.0：主题在样式表之前定下来，避免「先画默认色再跳成用户主题」的闪一下。
      只读本地缓存（服务端主题在 /api/me 回来后校正），同步、零请求。
      ★ 必须是**外链**：server.js 的 CSP 是 script-src 'self'，内联脚本会被浏览器直接拒绝执行。 -->
@@ -55,7 +62,11 @@
       </label>
       <button type="submit" class="btn-primary btn-block">登录</button>
       <p class="auth-hint">登录后 <b>1 天内</b>再次打开本页面无需重新登录。</p>
-      <p class="auth-hint">忘记密码？请让家庭管理员在「我的」页面为你重置。</p>
+      <!-- v4.26.0：忘记密码入口。用 button 而不是 <a href="#">，避免误触锚点跳转/把地址栏改成 /#。 -->
+      <p class="auth-hint auth-forgot">
+        <button type="button" class="auth-link" data-act="forgot-open">忘记密码？</button>
+        用账号绑定的邮箱收验证码重置，或让家庭管理员在「我的」页面为你重置。
+      </p>
     </form>
 
     <!-- 注册 -->

@@ -123,6 +123,14 @@ const SECURITY_HEADERS = {
   'Content-Security-Policy': [
     "default-src 'self'",
     "img-src 'self' data: blob:",
+    /* ★ v4.26.0：必须显式放行 media-src 的 blob:。
+       客户端「从视频里抽第一帧当封面」用的是 URL.createObjectURL(file) 出来的 blob: 地址，
+       而 media-src 会回落到 default-src 'self'（'self' **不包含** blob:）——
+       于是 <video src="blob:…"> 在 CSP 层就被拒，loadedmetadata 永远不触发，
+       抽帧超时后静默返回空串：表现就是「上传完没有缩略图」，而且控制台里只有一条
+       容易被忽略的 CSP 违规，业务代码看起来毫无问题（这个坑踩了三个版本）。
+       img-src 早就带了 data: blob:，唯独媒体漏了 —— 两者不是一回事。 */
+    "media-src 'self' blob:",
     "style-src 'self' 'unsafe-inline'",
     "script-src 'self'",
     "connect-src 'self'",
@@ -193,13 +201,89 @@ function renderIndexHtml(filePath) {
   return html;
 }
 
-function sendFile(res, filePath, { download } = {}) {
+/**
+ * v4.26.0（P0）：带 HTTP Range 的文件输出 —— 200 / 206 / 416 / HEAD。
+ *
+ * ★ 为什么这不是「优化」而是「修复」：
+ *   1. iOS Safari 与它衍生出来的 WebView（微信内置、企业微信内置）对 `<video>`
+ *      **强制走字节范围请求**。服务端只会回 200 + 整段时，典型表现是：
+ *      点开一直转圈、拖进度条直接回到 0、弱网下必须先把整个文件下完才出第一帧。
+ *   2. 手机拍的 MP4 大量把 `moov`（索引）放在文件尾部。没有 Range 就没法「先取尾部
+ *      再取头部」，浏览器只能从头顺序读 —— 30 秒的片子要下完才肯播。
+ *   3. 缩略图兜底路径 `#t=0.1` 依赖 seek，seek 又依赖 Range —— 少了 Range，
+ *      这条兜底在手机上本来就是坏的。
+ *
+ * 语义按 RFC 9110：`bytes=a-b` / `bytes=a-` / `bytes=-n`（尾部 n 字节）；
+ * 越界返回 416 + `Content-Range: bytes * /total`；带 `If-Range` 且不匹配时按整段 200 处理。
+ */
+function sendFileRange(req, res, filePath, headers) {
+  const stat = fs.statSync(filePath);
+  const total = stat.size;
+  const etag = `"${total.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+  const base = { ...headers, 'Accept-Ranges': 'bytes', ETag: etag };
+  const isHead = req && req.method === 'HEAD';
+  const raw = req && req.headers ? req.headers.range : '';
+  /* If-Range：客户端带着「上次那份文件」的条件来了，但文件已经变了 → 按整段重发，
+     否则会拼出一段错位的内容（视频表现为花屏 / 播到一半卡死）。 */
+  const ifRange = req && req.headers ? String(req.headers['if-range'] || '') : '';
+  const rangeOk = !!raw && (!ifRange || ifRange === etag || ifRange === stat.mtime.toUTCString());
+
+  let start = 0;
+  let end = total - 1;
+  if (rangeOk) {
+    const m = /^bytes=(\d*)-(\d*)$/.exec(String(raw).trim());
+    const a = m ? m[1] : '';
+    const b = m ? m[2] : '';
+    if (!m) {
+      // 语法不认识（含多段 range）→ 忽略 Range，按整段处理，这是规范允许的
+      res.writeHead(200, { ...base, 'Content-Length': total });
+      if (isHead) { res.end(); return; }
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+    if (a === '') {
+      const n = Number(b);
+      if (!n) {
+        res.writeHead(416, { ...base, 'Content-Range': `bytes */${total}` }).end();
+        return;
+      }
+      start = Math.max(0, total - n);
+      end = total - 1;
+    } else {
+      start = Number(a);
+      end = b === '' ? total - 1 : Math.min(Number(b), total - 1);
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= total) {
+      res.writeHead(416, { ...base, 'Content-Range': `bytes */${total}` }).end();
+      return;
+    }
+    const len = end - start + 1;
+    res.writeHead(206, {
+      ...base,
+      'Content-Range': `bytes ${start}-${end}/${total}`,
+      'Content-Length': len,
+    });
+    if (isHead) { res.end(); return; }
+    fs.createReadStream(filePath, { start, end }).pipe(res);
+    return;
+  }
+
+  res.writeHead(200, { ...base, 'Content-Length': total });
+  if (isHead) { res.end(); return; }
+  fs.createReadStream(filePath).pipe(res);
+}
+
+function sendFile(req, res, filePath, { download } = {}) {
   const ext = path.extname(filePath).toLowerCase();
+  /* v4.27.0：.webmanifest 也要 no-cache。它是「安装清单」——浏览器在**安装那一刻**
+     才去读它，缓存 600s 会让「刚改的图标 / 刚换的名字」装到主屏还是旧的样子；
+     而它本身只有 700 字节，配合 ETag 每次 304 几乎没有成本。
+     .html 同理由（改完刷新即生效）。 */
+  const revalidate = ext === '.html' || ext === '.webmanifest';
   const headers = {
     ...SECURITY_HEADERS,
     'Content-Type': MIME[ext] || 'application/octet-stream',
-    // 静态资源短缓存；HTML 不缓存，保证改完刷新即生效
-    'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=600',
+    'Cache-Control': revalidate ? 'no-cache' : 'public, max-age=600',
   };
   if (download) headers['Content-Disposition'] = `attachment; filename="${download}"`;
 
@@ -211,9 +295,7 @@ function sendFile(res, filePath, { download } = {}) {
     return;
   }
 
-  headers['Content-Length'] = fs.statSync(filePath).size;
-  res.writeHead(200, headers);
-  fs.createReadStream(filePath).pipe(res);
+  sendFileRange(req, res, filePath, headers);
 }
 
 function serveStatic(req, res, pathname) {
@@ -238,7 +320,7 @@ function serveStatic(req, res, pathname) {
     res.writeHead(404, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' }).end('404 Not Found');
     return;
   }
-  sendFile(res, full);
+  sendFile(req, res, full);
 }
 
 /* ── 请求体 ─────────────────────────────────────────────── */
@@ -282,7 +364,9 @@ function readBody(req) {
 
 /* ── 公开接口（无需登录） ───────────────────────────────── */
 
-const PUBLIC_API = new Set(['/api/config', '/api/register', '/api/login']);
+/* ★ v4.26.0：忘记密码的两个接口必须在公开名单里 —— 它们的前提就是「登录不进去」。
+   漏了这里会出现最荒诞的故障：用户点「忘记密码」，接口回「需要登录」。 */
+const PUBLIC_API = new Set(['/api/config', '/api/register', '/api/login', '/api/forgot-password', '/api/reset-password']);
 
 function sendJson(res, status, payload, extraHeaders = {}) {
   const text = JSON.stringify(payload);
@@ -516,7 +600,13 @@ async function handleRequest(req, res) {
     });
   } catch (err) {
     const status = err && err.status ? err.status : 500;
-    if (status >= 500) console.error('[api]', method, pathname, err);
+    /* 已知的「业务性 5xx」（带 code，例如 503 MAIL_NOT_READY）只记一行，
+       不打整段栈 —— 否则一次「没配发件邮箱」就能在日志里刷出几十行，
+       真正需要排查的崩溃反而被埋掉。 */
+    if (status >= 500) {
+      if (err && err.code) console.error('[api]', method, pathname, status, err.code, err.message);
+      else console.error('[api]', method, pathname, err);
+    }
     const payload = { error: (err && err.message) || '服务器内部错误' };
     if (err && err.code) payload.code = err.code;
     sendJson(res, status, payload);
@@ -565,12 +655,13 @@ async function handleRequest(req, res) {
 
   if (result.file) {
     const ext = path.extname(result.file).toLowerCase();
-    const stat = fs.statSync(result.file);
+    /* v4.26.0（P0）：媒体也走 Range —— 视频/音频从 /api/media/ 出去，
+       这条分支原来固定 200 + 整段，正是「手机上播不动、拖不动」的直接原因。
+       sendFileRange 会自己加 Accept-Ranges / Content-Length / ETag 并处理 206/416。 */
     const fileHeaders = {
       ...SECURITY_HEADERS,
       ...headers,
       'Content-Type': MIME[ext] || 'application/octet-stream',
-      'Content-Length': stat.size,
       'Cache-Control': 'private, max-age=86400',
     };
     // 附件走下载（带上原始文件名）；图片走内联预览。
@@ -580,8 +671,7 @@ async function handleRequest(req, res) {
         `attachment; filename="${encodeURIComponent(result.download)}"; filename*=UTF-8''${encodeURIComponent(result.download)}`;
       fileHeaders['Cache-Control'] = 'private, no-store';
     }
-    res.writeHead(200, fileHeaders);
-    fs.createReadStream(result.file).pipe(res);
+    sendFileRange(req, res, result.file, fileHeaders);
     return;
   }
 

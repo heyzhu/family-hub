@@ -40,6 +40,9 @@ const push = require('./push');
 /* v4.21.0 需求 1：消息模板（家庭级配置，随 /api/settings 下发与保存）。
    msgTpl 只依赖 db / config，不反向 require api → 不成环。 */
 const msgTpl = require('./msgTpl');
+/* v4.26.0：忘记密码（邮箱验证码）。依赖方向 resetpw → config/db/auth/reminders/mailer，
+   同样不反向 require api，所以这里引它不会成环。 */
+const resetpw = require('./resetpw');
 const Repeat = require('../public/repeat.js');
 
 /** 可见性谓词。占位符顺序：先 user_id，再其它条件（必须放在 WHERE 的最后一组） */
@@ -3193,6 +3196,26 @@ async function handle({ method, pathname, query, body, me, token, recordsKey, ip
        被锁时 auth 抛 429，server.js 会原样透传状态码与文案。 */
     const user = withPushInfo(await auth.login(body || {}, ip));
     return { status: 200, json: { user }, session: { action: 'create', userId: user.id } };
+  }
+
+  /* ── v4.26.0：「忘记密码」（邮箱验证码）───────────────────────
+     ★ 必须放在「以下全部需要登录」之前：这个功能的前提就是「登录不进去」。
+     ★ 两个接口都**不签发会话** —— 重置成功后让用户自己用新密码登录，
+       顺带把「重置即登录」这种便利性后门关掉（家里电脑可能是共用的）。 */
+  if (head === 'forgot-password' && is('POST')) {
+    /* 响应刻意统一成 { ok: true }：不告诉调用方用户名是否存在、是否绑了邮箱。
+       唯一的例外是「服务器没配发件邮箱」（503），那与账号无关。 */
+    await resetpw.request({ username: (body || {}).username, ip });
+    return { status: 200, json: { ok: true } };
+  }
+
+  if (head === 'reset-password' && is('POST')) {
+    const out = await resetpw.confirm({
+      username: (body || {}).username,
+      code: (body || {}).code,
+      password: (body || {}).password,
+    });
+    return { status: 200, json: out };
   }
 
   /* ——— 以下全部需要登录 ——— */

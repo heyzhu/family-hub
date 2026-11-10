@@ -971,6 +971,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       }
       growAutos(el);                // 切页签回来时高度可能还没算过（幂等，很便宜）
       paintDots();
+      mountArtPlayers();            // v4.26.0：切回动态页签时补挂播放器（已挂的是空操作）
       return;                       // ← 数据没变：不动 DOM，播放中的视频与输入框全都不受影响
     }
 
@@ -1008,6 +1009,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     state.prevTab = state.tab;
     growAutos(el);        // v4.13.0：多行输入框按内容定高（值在 restoreInputs 之后才是最终的）
     paintDots();          // 底部红点（v1.9.0）
+    mountArtPlayers();    // v4.26.0：给新渲染出来的视频挂 ArtPlayer（无视频时直接返回）
   }
 
   /* ═══ 日历 ═══════════════════════════════════════════════ */
@@ -4302,7 +4304,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           <input type="text" data-mk="wc-aes" maxlength="43" value="${esc(w.aesKey || '')}" placeholder="43 位，点「随机获取」生成"></label>
 
         <!-- v4.24.0 需求 3：可信 IP 代理 —— 服务器 IP 不固定 / 在 NAT 后时，
-             改走一台固定出口 IP 的中转服务器；部署步骤见 docs/wecom-proxy.md。 -->
+             改走一台固定出口 IP 的中转服务器（nginx 反代，或零依赖 Node 转发脚本）。
+             部署说明随「开源前整理」从仓库里移除了，界面这里也不再指向任何文档路径。 -->
         <label class="check-line" style="margin-top:10px;">
           <input type="checkbox" data-mk="wc-proxy-on"${w.proxyEnabled ? ' checked' : ''}>
           <span><b>启用可信 IP 代理</b>（把对企微 API 的请求经固定出口 IP 的中转服务器转发）</span></label>
@@ -5822,7 +5825,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       const s = poster ? String(src) : videoThumb(src);
       const preload = poster ? 'none' : 'metadata';
       // 叠层用 <img>，不吃点击（pointer-events: none 写在 CSS 里），删除按钮照旧可点
-      const coverImg = poster ? `<img class="vchip-poster" src="${esc(poster)}" alt="">` : '';
+      /* ★ v4.26.0：叠层 src 也必须走 assetUrl —— 网关带前缀时 poster 属性是对的、
+         这张 <img> 却打到网关根路径 404，移动端就只剩一个碎图标。 */
+      const coverImg = poster ? `<img class="vchip-poster" src="${esc(assetUrl(poster))}" alt="">` : '';
       return `<div class="vchip"><video src="${esc(s)}"${attr} preload="${preload}" muted playsinline></video>${coverImg}` +
         `<span class="vchip-play" aria-hidden="true">▶</span>` +
         `<button type="button" data-act="${delAct}" data-i="${i}" data-box="${boxId}">×</button></div>`;
@@ -5836,25 +5841,33 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
      用户看到的就是一块黑。`<img>` 的解码路径最短、最可靠，点它就直接开播。
      桌面端不显示这层，原生控件该有的行为一点不变。 */
   const videoPlayerHtml = (items, covers) => (items && items.length
-    ? `<div class="post-videos">${items.map((src) => {
+    ? `<div class="post-videos">${items.map((src, i) => {
       const poster = posterOf(src, covers);
       const attr = poster ? ` poster="${esc(assetUrl(poster))}"` : '';
       const s = poster ? String(src) : videoThumb(src);
       // v4.12.0：有封面就不预载视频数据（一屏好几段视频时，这一条能省掉全部元数据请求）
       const preload = poster ? 'none' : 'metadata';
       const coverImg = poster
-        ? `<img class="pv-poster" src="${esc(poster)}" alt="视频预览" loading="lazy" data-act="pv-start">`
+        ? `<img class="pv-poster" src="${esc(assetUrl(poster))}" alt="视频预览" loading="lazy" data-act="pv-start">`
         : '';
+      /* v4.26.0（P1）：这一格是 ArtPlayer 的挂载点。
+         · 空 div，HTML 里不带任何播放器内容 —— 脚本没加载 / 加载失败时它就是 0 成本；
+         · data-keep：让递归最小重绘**不要碰**这个子树（里面是播放器自己建的 DOM）；
+         · data-key 带上序号与地址：视频被换掉时 key 变了 → 补丁算法会换成新节点，
+           旧实例在 pruneArtPlayers() 里被 destroy，不会出现「换了视频还在放旧的」。 */
+      const art = `<div class="pv-art" data-keep data-key="art-${i}-${esc(src)}"`
+        + ` data-art-src="${esc(src)}" data-art-poster="${esc(poster)}"></div>`;
       return `<div class="pv-wrap"><video src="${esc(s)}"${attr} controls preload="${preload}" playsinline class="post-video"></video>` +
-        `${coverImg}<span class="pv-play" aria-hidden="true">▶</span></div>`;
+        `${coverImg}<span class="pv-play" aria-hidden="true">▶</span>${art}</div>`;
     }).join('')}</div>`
     : '');
 
   /* 封面图 404（旧视频没有侧车封面）时，把这张叠层摘掉 ——
-     否则移动端会显示成一个碎图标，比没有封面更难看。捕获阶段接，img 的 error 不冒泡。 */
+     否则移动端会显示成一个碎图标，比没有封面更难看。捕获阶段接，img 的 error 不冒泡。
+     v4.26.0：发布器里的 .vchip-poster 同样要摘（以前只认 .pv-poster，编辑框里留碎图标）。 */
   document.addEventListener('error', (e) => {
     const t = e.target;
-    if (t && t.classList && t.classList.contains('pv-poster')) {
+    if (t && t.classList && (t.classList.contains('pv-poster') || t.classList.contains('vchip-poster'))) {
       if (t.parentNode) t.parentNode.removeChild(t);
     }
   }, true);
@@ -5872,6 +5885,128 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   };
   document.addEventListener('pause', pvStop, true);
   document.addEventListener('ended', pvStop, true);
+
+  /* ═══ v4.26.0（P1）：ArtPlayer —— 第三方播放器 ══════════════════════
+   *
+   * 【为什么引】原生 <video controls> 在三个端上是三套完全不同的控件：iOS 是系统浮层、
+   *   安卓 Chrome 是灰色横条、微信内置又是另一套；没有倍速、没有统一的全屏、移动端
+   *   手势（双击暂停 / 左右滑进度 / 长按倍速）全都得自己写。用 ~130KB 的 ArtPlayer
+   *   换掉这一整摊兼容账，是我们对比 Plyr / xgplayer / Video.js 后的选择（中文文档、
+   *   手势最全、MIT、零依赖、单文件）。
+   *
+   * 【怎么接】三条硬约束，缺一条都会变成为播放器拖累：
+   *   ① 渐进增强 —— HTML 里永远先输出能播的原生 <video controls>；
+   *      脚本没加载 / 加载失败 / 环境解不了，页面照常播放，只是没有花样式控件。
+   *   ② 按需加载 —— 只在页面里真的出现视频时才去拉 vendor 脚本（不看不播零成本）。
+   *   ③ 进入布局才挂 —— `clientWidth === 0` 说明它在一个隐藏页签里（或者根本没有布局
+   *      引擎，比如 jsdom 测试环境）。这时建实例既看不见、又会占解码器，直接跳过；
+   *      下次切到该页签触发 render 时会补挂。
+   *
+   * 【生命周期】`.pv-art[data-keep]` 是挂载点，实例存在 artLive 里：
+   *   · 卡片被删 / 换页 → DOM 不在文档里 → pruneArtPlayers() 里 destroy；
+   *   · 视频被换（data-key 变化）→ 补丁算法给一个新节点，旧节点同样走上面的销毁路径。
+   *   不销毁的后果是每滚一次列表就多一个在后台跑定时器的实例，久了手机直接卡死。
+   * ══════════════════════════════════════════════════════════════ */
+  const ART_SRC = '/vendor/artplayer/artplayer.js';
+  const artLive = new Map();        // .pv-art 元素 → { art, src }
+  let artLoading = null;
+
+  /** 按需加载一次（失败就是失败，不重试 —— 原生 <video> 仍然可用） */
+  function ensureArtPlayer() {
+    if (window.Artplayer) return Promise.resolve(window.Artplayer);
+    if (artLoading) return artLoading;
+    artLoading = new Promise((resolve) => {
+      const s = document.createElement('script');
+      s.src = assetUrl(ART_SRC);
+      s.async = true;
+      s.onload = () => resolve(window.Artplayer || null);
+      s.onerror = () => { artLoading = null; resolve(null); };
+      document.head.appendChild(s);
+    });
+    return artLoading;
+  }
+
+  function destroyArt(box) {
+    const rec = artLive.get(box);
+    if (!rec) return;
+    artLive.delete(box);
+    try { rec.art.destroy(); } catch { /* 实例可能已经自行销毁 */ }
+    const wrap = box.parentNode;
+    if (wrap && wrap.classList) wrap.classList.remove('art-on');
+  }
+
+  function pruneArtPlayers() {
+    if (!artLive.size) return;
+    for (const box of Array.from(artLive.keys())) {
+      if (!document.body.contains(box)) destroyArt(box);
+    }
+  }
+
+  /* ★ 极老 WebKit 没有 URL.revokeObjectURL（ArtPlayer 内部会调它销毁临时 blob）。
+     补一个空实现，比让整个播放器初始化抛异常划算得多。 */
+  if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL !== 'function') {
+    URL.revokeObjectURL = () => {};
+  }
+
+  function mountArtPlayers() {
+    /* 挂载点的高度靠 CSS aspect-ratio 撑（容器 0 高 → 播放器只有一条线）。
+       老 WebKit（iOS 14 及更早）不支持它，这种环境就保持原生播放器 —— 能播比好看重要。 */
+    if (!window.CSS || typeof CSS.supports !== 'function' || !CSS.supports('aspect-ratio', '16 / 9')) return;
+    pruneArtPlayers();
+    const boxes = Array.from(document.querySelectorAll('.pv-art[data-art-src]'));
+    if (!boxes.length) return;
+    const todo = boxes.filter((box) => {
+      if (artLive.has(box)) return false;
+      const wrap = box.parentNode;
+      // 没进入布局（隐藏页签 / 无布局环境）就先不挂，等下次渲染
+      return !!(wrap && wrap.clientWidth > 0);
+    });
+    if (!todo.length) return;
+
+    ensureArtPlayer().then((AP) => {
+      if (typeof AP !== 'function') return;   // 加载失败：原生播放器继续工作
+      for (const box of todo) {
+        if (artLive.has(box) || !document.body.contains(box)) continue;
+        const wrap = box.parentNode;
+        if (!wrap || !wrap.clientWidth) continue;
+        const src = box.getAttribute('data-art-src') || '';
+        if (!src) continue;
+        const poster = box.getAttribute('data-art-poster') || '';
+        try {
+          /* 先让挂载点可见（.art-on 给它 16:9 的高度）再建实例：
+             ArtPlayer 的高度是 100% 容器，容器 0 高的话画面只有一条线。 */
+          wrap.classList.add('art-on');
+          const art = new AP({
+            container: box,
+            url: assetUrl(src),
+            poster: poster ? assetUrl(poster) : '',
+            theme: '#3b7ddd',
+            lang: 'zh-cn',
+            autoplay: false,
+            muted: false,
+            volume: 0.7,
+            hotkey: true,
+            lock: true,
+            fastForward: true,
+            autoOrientation: true,
+            setting: true,
+            playbackRate: true,
+            aspectRatio: true,
+            fullscreen: true,
+            fullscreenWeb: true,
+            miniProgressBar: true,
+            pip: true,
+            airplay: true,
+            // 手机端必须保留 playsinline，否则 iOS 会强行接管成全屏
+            moreVideoAttr: { playsinline: true, 'webkit-playsinline': true },
+          });
+          artLive.set(box, { art, src });
+        } catch {
+          wrap.classList.remove('art-on');   // 建实例失败 → 退回原生控件，别留个空盒子
+        }
+      }
+    });
+  }
 
   async function saveImageToDevice(src) {
     try {
@@ -6972,6 +7107,130 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     if (btn) onAuthTab(btn.dataset.authTab);
   });
 
+  /* ═══ v4.26.0：找回登录密码（邮箱验证码）═══════════════════════════
+   *
+   * 与现有登录流程的关系（三条）：
+   *   ① 完全并列：入口在登录表单里，点开是一个独立弹窗，**不改动登录本身的提交逻辑**；
+   *   ② 不需要会话：两个接口都在「需要登录」的边界之外，登录不进去的人才能用它；
+   *   ③ 重置成功后**不自动登录** —— 关掉弹窗、把用户名填回登录框，
+   *      让用户用新密码登一次。家里电脑可能共用，少一个自动进门的机会。
+   *
+   * 交互上刻意「一步到位」：一个弹窗里放全 用户名 / 验证码 / 新密码，
+   * 而不是分两个弹窗 —— 家人操作时来回关弹窗最容易把验证码弄丢。
+   * ═══════════════════════════════════════════════════════════ */
+  let fpTimer = null;
+
+  function fpMsg(text) {
+    const el = document.querySelector('#modal-layer [data-mk="fpMsg"]');
+    if (el) el.textContent = text || '';
+  }
+
+  function fpStopTimer() {
+    if (fpTimer) { clearInterval(fpTimer); fpTimer = null; }
+  }
+
+  /** 发送成功后的重发倒计时：既防连点，也让「等邮件」这件事有反馈 */
+  function fpStartCountdown(btn, secs) {
+    fpStopTimer();
+    let left = secs;
+    btn.disabled = true;
+    btn.textContent = `重新发送（${left}s）`;
+    fpTimer = setInterval(() => {
+      if (!document.body.contains(btn)) { fpStopTimer(); return; }   // 弹窗已关
+      left -= 1;
+      if (left <= 0) {
+        fpStopTimer();
+        btn.disabled = false;
+        btn.textContent = '重新发送';
+        return;
+      }
+      btn.textContent = `重新发送（${left}s）`;
+    }, 1000);
+  }
+
+  function openForgotForm() {
+    fpStopTimer();
+    openModal({
+      title: '找回登录密码',
+      body: `
+        <div class="note-box">
+          填你的<b>用户名</b>，系统会给这个账号<b>绑定的邮箱</b>发一条 6 位验证码。
+          验证码 15 分钟内有效、只能用一次；10 分钟内最多发 3 次。
+        </div>
+        <label class="field"><span>用户名</span>
+          <input type="text" data-mk="fpUser" autocomplete="username" placeholder="你的登录名"></label>
+        <label class="field"><span>验证码（邮件里的 6 位数字）</span>
+          <input type="text" data-mk="fpCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000"></label>
+        <label class="field"><span>新密码</span>
+          <input type="password" data-mk="fpPass" autocomplete="new-password" placeholder="至少 6 位"></label>
+        <label class="field"><span>确认新密码</span>
+          <input type="password" data-mk="fpPass2" autocomplete="new-password" placeholder="再输一次"></label>
+        <p class="field-hint" data-mk="fpMsg"></p>
+        <div class="note-box">
+          没有绑定邮箱、或邮件一直收不到？让家里的管理员在「我的 → 家庭成员」里重置你的密码。
+        </div>`,
+      foot: `<button type="button" class="btn-ghost" data-act="fp-send">发送验证码</button>
+        <button type="button" class="btn-primary" data-act="fp-reset">重置密码</button>`,
+      onMount: (layer) => {
+        const u = layer.querySelector('[data-mk="fpUser"]');
+        // 登录框里已经敲了用户名就带过来，少打一遍（这也是最常见的场景：密码错了才发现忘了）
+        const typed = $('#form-login') && $('#form-login').querySelector('[name="username"]');
+        if (u && typed && typed.value) u.value = String(typed.value).trim();
+        if (u) u.focus();
+      },
+    });
+  }
+
+  async function sendForgotCode() {
+    const user = String(modalValue('fpUser') || '').trim();
+    if (!user) { fpMsg('请先填用户名'); return; }
+    const btn = document.querySelector('#modal-layer [data-act="fp-send"]');
+    if (btn) btn.disabled = true;
+    fpMsg('正在发送…');
+    try {
+      await api('/api/forgot-password', { method: 'POST', body: { username: user } });
+      /* 服务端刻意不告诉我们「这个账号存不存在 / 有没有绑邮箱」，
+         所以这里的文案也必须是「如果…就已经发出」——两边口径要对得上。 */
+      fpMsg('如果这个用户名绑定了邮箱，验证码已经发出。几分钟内没收到，请确认用户名是否正确。');
+      if (btn) fpStartCountdown(btn, 30);
+    } catch (err) {
+      fpMsg(err.message);
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function submitForgotReset() {
+    const user = String(modalValue('fpUser') || '').trim();
+    const code = String(modalValue('fpCode') || '').trim();
+    const p1 = String(modalValue('fpPass') || '');
+    const p2 = String(modalValue('fpPass2') || '');
+    if (!user) { fpMsg('请先填用户名'); return; }
+    if (!/^\d{6}$/.test(code)) { fpMsg('请输入邮件里的 6 位数字验证码'); return; }
+    if (p1.length < 6) { fpMsg('新密码至少 6 位'); return; }
+    if (p1 !== p2) { fpMsg('两次输入的新密码不一致'); return; }
+    const btn = document.querySelector('#modal-layer [data-act="fp-reset"]');
+    if (btn) btn.disabled = true;
+    fpMsg('正在重置…');
+    try {
+      await api('/api/reset-password', { method: 'POST', body: { username: user, code, password: p1 } });
+      fpStopTimer();
+      closeModal();
+      toast('密码已重置，请用新密码登录', 'ok');
+      /* 把用户名填回登录框、密码框聚焦：用户下一步就是登录，别再让他点一遍。
+         注意**不**预填密码（哪怕我们刚知道它）—— 预填等于把新密码留在 DOM 里。 */
+      const form = $('#form-login');
+      if (form) {
+        const uEl = form.querySelector('[name="username"]');
+        const pEl = form.querySelector('[name="password"]');
+        if (uEl) uEl.value = user;
+        if (pEl) { pEl.value = ''; pEl.focus(); }
+      }
+    } catch (err) {
+      fpMsg(err.message);
+      if (btn) btn.disabled = false;
+    }
+  }
+
   $('#form-login').addEventListener('submit', async (e) => {
     e.preventDefault();
     authError('');
@@ -7092,6 +7351,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const id = el.dataset.id ? Number(el.dataset.id) : null;
 
     switch (act) {
+      /* v4.26.0：忘记密码 —— 登录页入口 + 弹窗里的「发送验证码 / 重置密码」。
+         放在委托入口最前面：这三个动作在登录页也能触发，不该受「必须先登录」的逻辑影响。 */
+      case 'forgot-open': openForgotForm(); break;
+      case 'fp-send': await sendForgotCode(); break;
+      case 'fp-reset': await submitForgotReset(); break;
       /* 日历导航 */
       case 'cal-prev': {
         state.cursor.m = state.cursor.m - 1;
@@ -9638,8 +9902,15 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
          · 留空 → 有变更就立刻提醒（限流 20 封/分 + 3 分钟同一条去重照旧）；
          · 填了 → 期间攒着，免打扰一结束就合并成一封发出去。
        少一个下拉，就少一种「设了 20:30 结果一整天没消息」的困惑。 */
-    const quietS = String(s.notifyQuietStart || g.notifyQuietStart || '');
-    const quietE = String(s.notifyQuietEnd || g.notifyQuietEnd || '');
+    /* ★ 空值也是值（v4.26.0 修）：原来写 `s.notifyQuietStart || g.notifyQuietStart`，
+       而 `g`（state.prefsGlobal）是一次 /api/prefs 的快照 —— 如果那次请求比刚才的
+       「保存」更早发出、却更晚返回，它会把旧值刷回来。于是「清空免打扰 → 保存成功 →
+       重开弹窗又看到 22:00–08:00」，家里人以为没清掉，再点一次保存反而把旧值写回库。
+       改成按「键有没有定义」判断：settings 里定义了就以它为准，`''` 也算定义。 */
+    const pickQuiet = (k) => (s[k] !== undefined && s[k] !== null)
+      ? String(s[k]) : String(g[k] || '');
+    const quietS = pickQuiet('notifyQuietStart');
+    const quietE = pickQuiet('notifyQuietEnd');
     openModal({
       title: '内容通知 · 全家默认',
       body: `
