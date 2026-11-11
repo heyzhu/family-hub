@@ -24,7 +24,9 @@ npm-debug.log*
 .env.docker
 
 # 文档留在镜像外的仓库里即可，无需进容器
+# docs 里是截图与配置教程（含 10 张 PNG，约 5MB），容器不提供静态文档服务
 Dockerfile
 docker-compose.yml
 README.md
 部署说明.md
+docs
