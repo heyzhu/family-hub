@@ -282,18 +282,36 @@ const shapeTodo = (r, me, ctx) => {
     // v4.19.0 需求 2-1：列表要把「几点提醒、这个点从哪来」讲清楚（仅重复事项填充）
     remindTime: '',
     remindTimeIsDefault: false,
-    /* v4.21.0 需求 2：重复事项的「今天这次」是否已完成。
+    /* v4.21.0 需求 2：重复事项的「今天这一行」是否已完成。
        一个全局 done 列表达不了「今天做完、明天还要做」，所以完成状态按落点日记在
-       todo_done_marks 里；这里只回今天的那个布尔值，第二天天然变回 false。 */
+       todo_done_marks 里；这里只回今天这一行对应落点的布尔值，第二天天然变回 false。
+       v4.28.0：提前提醒时今天这一行代表的是「今天 + 提前天数」那个落点，
+       详见下方 rowOccDate 的计算。 */
     doneToday: false,
+    /* v4.28.0：今天这一行代表的落点日期（'' = 今天不是它的提醒日/落点，不该出现在待办列表）。
+       前端勾选时把这一列回传，服务端才能标到正确的落点上（提前提醒时落点在将来）。 */
+    rowOccDate: '',
   };
   /* 实际生效的提前天数：这条待办自己设了 0–5 就用它，否则跟随家庭设置。
      ★ 与 reminders 扫描器共用 advanceOf()，保证「列表显示的下次提醒」= 「真正发信的时间」。 */
   const effAdv = reminders.advanceOf(r, ctx ? ctx.advanceDays : 0);
   out.advanceDays = effAdv;
   if (ctx && ruleName && out.date) {
-    const src = { date: out.date, repeat: r.repeat || '', repeat_rule: r.repeat_rule || '' };    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(out.startTime || ''))
+    const src = { date: out.date, repeat: r.repeat || '', repeat_rule: r.repeat_rule || '' };
+    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(out.startTime || ''))
       ? out.startTime : ctx.defaultTime;
+    /* v4.28.0：今天这一行到底代表**哪一个落点**。
+       ① 今天正好是「某个落点的提醒日」（落点 = 今天 + 提前天数）→ 代表那个落点；
+       ② 否则今天本身就是落点（提前 0 天时与 ① 等价；提前 > 0 且提醒日没勾掉时
+          仍然让它当天出现在列表里，作为「今天就是这件事」的兜底）。
+       两处都用 repeat.js 判落点，绝不自己拼日期比较。 */
+    const remindDayOcc = shiftDateKey(ctx.todayKey, effAdv);
+    if (Repeat.isOccurrence(src, remindDayOcc)) out.rowOccDate = remindDayOcc;
+    else if (Repeat.isOccurrence(src, ctx.todayKey)) out.rowOccDate = ctx.todayKey;
+    /* 「今天这一行」是否已完成 —— 标记按落点日存，所以用 rowOccDate 取，
+       不能用「今天」取（提前提醒时落点在将来）。 */
+    const marks = ctx.doneMarks && ctx.doneMarks.get(Number(r.id));
+    out.doneToday = !!(out.rowOccDate && marks && marks.has(out.rowOccDate));
     /* v4.19.0 需求 2-3（bug 修复）：**提醒时刻已经过去**的落点不能再算「下一次」。
        旧逻辑只按日期取落点（nextOccurrence 从今天起算），于是每天重复的事项在当天
        提醒时间过了之后仍然显示「今天 08:00」—— 用户永远看不出下一次到底是什么时候。
@@ -318,9 +336,6 @@ const shapeTodo = (r, me, ctx) => {
       out.advanceDays = effAdv;
       out.remindTime = time;
       out.remindTimeIsDefault = time === ctx.defaultTime && String(out.startTime || '') !== time;
-      /* v4.21.0 需求 2：今天的落点是否已完成（只有今天正好是落点时才可能为 true） */
-      out.doneToday = !!(ctx.doneToday && ctx.doneToday.has(Number(r.id))
-        && Repeat.isOccurrence(src, ctx.todayKey));
     }
   }
   return out;
@@ -488,21 +503,32 @@ function remindCtx() {
     advanceDays: rs.remindAdvanceDays,
     tzOffsetMinutes: rs.tzOffsetMinutes,
     todayKey,
-    /* v4.21.0 需求 2：今天已完成的重复事项 id 集合。
-       一次查询解决整页，避免「每条待办查一次」的 N+1。 */
-    doneToday: doneTodaySet(todayKey),
+    /* v4.21.0 需求 2 / v4.28.0 修正：重复事项的完成标记按「落点日」记账。
+       提前提醒时，今天这一行代表的落点可能在 N 天之后（今天 + 提前天数），
+       所以一次把 [今天, 今天+5] 的标记都取回来，由 shapeTodo 按每条自己的落点取用。
+       仍然是一次查询，不会变成 N+1。 */
+    doneMarks: doneMarksSet(todayKey),
   };
 }
 
-/** 今天的「重复事项已完成」标记（id 集合） */
-function doneTodaySet(dayKey) {
-  const set = new Set();
+/**
+ * 一段日期窗口内的「重复事项已完成」标记：Map<todoId, Set<occDate>>。
+ * 窗口 = [dayKey, dayKey + 5]：提前提醒最多 5 天，所以今天这一行可能代表
+ * 5 天后的落点；不取进来的话，提前提醒当天勾完会被前端误判成「没勾」。
+ */
+function doneMarksSet(dayKey) {
+  const map = new Map();
   try {
-    for (const row of db.all('SELECT todo_id FROM todo_done_marks WHERE occ_date = ?', [String(dayKey)])) {
-      set.add(Number(row.todo_id));
+    for (const row of db.all(
+      'SELECT todo_id, occ_date FROM todo_done_marks WHERE occ_date >= ? AND occ_date <= ?',
+      [String(dayKey), reminders.shiftDateKey(String(dayKey), 5)],
+    )) {
+      const id = Number(row.todo_id);
+      if (!map.has(id)) map.set(id, new Set());
+      map.get(id).add(String(row.occ_date));
     }
-  } catch { /* 老库还没建这张表时当作「今天什么都没完成」，不能让列表整体 500 */ }
-  return set;
+  } catch { /* 老库还没建这张表时当作「什么都没完成」，不能让列表整体 500 */ }
+  return map;
 }
 
 /**
@@ -573,7 +599,15 @@ const todos = {
       out.since = since;
       out.incremental = true;
       out.ids = db.all(`SELECT id FROM todos WHERE ${VISIBLE}`, [me.id]).map((r) => Number(r.id));
-      out.doneToday = Array.from(ctx.doneToday || []).map(Number);
+      /* v4.28.0：完成标记按落点日存，增量同步不能再只回「今天的 id 集合」——
+         提前提醒时，今天这一行代表的是几天后的落点。改成把窗口内的
+         (todoId, occDate) 全回给前端，由它按每行的 rowOccDate 自行比对。
+         doneToday 仍然保留（= 落点就是今天的 id），供旧客户端兜底。 */
+      out.doneMarks = [];
+      for (const [id, set] of (ctx.doneMarks || new Map())) {
+        for (const occ of set) out.doneMarks.push([id, occ]);
+      }
+      out.doneToday = out.doneMarks.filter(([, occ]) => occ === ctx.todayKey).map(([id]) => id);
       // 增量模式下 truncated 指的是「这一批变了多少」，跟全量的语义不同，别让界面误报
       out.truncated = false;
       /* 变更行数顶到上限（正常绝无可能，除非库被脚本批量改过）→ 让前端整份重拉，
@@ -632,10 +666,18 @@ const todos = {
        它的 doneToday 是当场查出来的集合，先取就会把刚勾的这一下算成「没勾」，
        前端收到响应后又把乐观更新的完成态回滚掉（表现成「点了没反应」）。 */
     const rs = reminders.loadRemindSettings();
-    const day = optDate((b || {}).date, '日期')
+    let day = optDate((b || {}).date, '日期')
       || reminders.wallDateKey(new Date(), rs.tzOffsetMinutes);
-    if (!Repeat.isOccurrence({ date: row.todo_date, repeat_rule: rule }, day)) {
-      throw fail('这一天不是这条重复事项的日期');
+    const occOf = (k) => Repeat.isOccurrence({ date: row.todo_date, repeat_rule: rule }, k);
+    if (!occOf(day)) {
+      /* v4.28.0：提前提醒的那一天，前端手里只有「今天」，而今天并不是落点。
+         这里把「今天」翻译成它对应的落点（今天 + 提前天数）—— 只在前端传的就是
+         墙上今天时兜底，避免旧页面（缓存里的 app.js）点一下直接 400。 */
+      const todayKey = reminders.wallDateKey(new Date(), rs.tzOffsetMinutes);
+      const adv = reminders.advanceOf(row, rs.remindAdvanceDays);
+      const mapped = reminders.shiftDateKey(todayKey, adv);
+      if (day === todayKey && occOf(mapped)) day = mapped;
+      else throw fail('这一天不是这条重复事项的日期');
     }
     const done = (b || {}).done == null ? true : !!(b || {}).done;
     if (done) {
@@ -2423,15 +2465,38 @@ function wecomTodayLabel(todayKey) {
 
 /**
  * 「今日待办」的回复文案。
- * 边界：只查**本人** + **今天到期**；已完成的不列（只报个数）；最多列 10 条。
+ * 边界：只查**本人** + **今天是其提醒日/落点**；已完成的不列（只报个数）；最多列 10 条。
+ *
+ * ★ v4.28.0 修复：旧实现只查 `todo_date = 今天`，重复事项的 todo_date 是基准日，
+ *   所以「每天 / 每周 / 每年」的事项在企业微信里查「今日待办」永远是空的。
+ *   现在与日历 / 提醒 / 日报共用 repeat.js 判断落点，并且与待办列表一致地把
+ *   「今天 + 本条提前天数」当作今天这一行代表的落点；今天已经勾过「今天完成」的
+ *   重复事项**不再列出**（它当天已经处理完，不是「未完成」）。
  */
 function wecomTodayTodos(me) {
   const todayKey = bills.todayKey();
+  const marks = doneMarksSet(todayKey);
+  const gAdv = reminders.loadRemindSettings().remindAdvanceDays;
   const rows = db.all(
-    `SELECT * FROM todos WHERE user_id = ? AND todo_date = ?
+    `SELECT * FROM todos WHERE user_id = ?
+       AND (todo_date = ? OR repeat != '' OR repeat_rule != '')
       ORDER BY (start_time IS NULL OR start_time = '') ASC, start_time ASC, id ASC`,
     [me.id, todayKey],
-  );
+  ).filter((r) => {
+    const rule = db.getRepeatRule(r);
+    if (rule) {
+      /* 与待办列表 / 日报预告同一口径（v4.28.0）：今天这一行代表的是
+         「今天 + 本条提前天数」那个落点（提前 0 天时就是今天本身），
+         用 rowOccDate 取完成标记，勾过的当天不再列出。 */
+      const remindDayOcc = reminders.shiftDateKey(todayKey, reminders.advanceOf(r, gAdv));
+      const occKey = Repeat.isOccurrence(r, remindDayOcc) ? remindDayOcc
+        : (Repeat.isOccurrence(r, todayKey) ? todayKey : '');
+      if (!occKey) return false;
+      const done = marks.get(Number(r.id));
+      return !(done && done.has(occKey));        // 今天这一行已经勾过 → 当天不再列出
+    }
+    return r.todo_date === todayKey;
+  });
   const open = rows.filter((r) => !r.done);
   const doneCount = rows.length - open.length;
   if (!rows.length) {
@@ -2445,7 +2510,7 @@ function wecomTodayTodos(me) {
     return `📋 今天（${wecomTodayLabel(todayKey)}）的 ${rows.length} 件事都做完了，干净利落。`;
   }
   const lines = open.slice(0, 10).map((r, i) => {
-    const mark = r.repeat ? ' 🔁' : '';
+    const mark = db.getRepeatRule(r) ? ' 🔁' : '';
     const time = String(r.start_time || '');
     const head = time ? `${time} ` : '全天 ';
     const urge = Number(r.urge_minutes) > 0 ? `（每 ${r.urge_minutes} 分钟催）` : '';
@@ -2660,7 +2725,8 @@ function wecomCreateTodo(me, text) {
       repeat,
       urgeMinutes: parsed.urgeMinutes,
       /* v4.22.0 需求 2：一句话建的待办打上来源标记 —— 只进待办列表，
-         不占「周期提醒」卡；勾选完成后进「已完成」。 */
+         不占「周期提醒」卡。★ v4.28.0 起与所有重复事项同口径：
+         勾选只表示「今天不再提醒」（从列表消失、不进「已完成」）。 */
       quick: true,
     });
   } catch (err) {
@@ -3405,6 +3471,53 @@ async function handle({ method, pathname, query, body, me, token, recordsKey, ip
 
   if (head === 'members') {
     if (is('GET') && !second) return { status: 200, json: { members: auth.listMembers() } };
+    /* v4.28.0 需求：管理员点成员头像 → 看这个人的**全部可配置参数**。
+       排查「为什么他收不到提醒」时，过去只能一项一项问、或直接翻数据库；
+       这里把账号资料、三种推送通道、个人偏好、企微绑定与全局默认值一次给全。
+       ★ 只回参数与计数，不回任何密码哈希 / 会话令牌 / 授权码。 */
+    if (is('GET') && second) {
+      if (!me.is_admin) throw fail('只有管理员可以查看成员参数', 403);
+      const id = idOf(second);
+      const row = db.get('SELECT * FROM users WHERE id = ?', [id]);
+      if (!row) throw fail('成员不存在', 404);
+      const prefs = userprefs.load(id);
+      const g = notifyGlobalSnapshot();
+      const prefsMap = new Map([[id, prefs]]);
+      const chOf = (kind) => push.channelFor(id, kind, prefsMap);
+      return {
+        status: 200,
+        json: {
+          member: {
+            ...auth.publicUser(row),
+            record_lock_enabled: !!row.record_lock_enabled,
+            record_lock_custom: !!String(row.record_lock_hash || ''),
+          },
+          prefs,
+          /* 「实际生效值」：个人没设就跟随管理员默认值 —— 与各推送模块的判定同源 */
+          effective: {
+            remindEnabled: g.remindEnabled && prefs.remind_enabled !== '0',
+            remindDefaultTime: String(prefs.remind_default_time || '') || g.remindDefaultTime,
+            remindQuietStart: prefs.remind_quiet_start != null ? String(prefs.remind_quiet_start) : g.notifyQuietStart,
+            remindQuietEnd: prefs.remind_quiet_end != null ? String(prefs.remind_quiet_end) : g.notifyQuietEnd,
+            notifyOnChange: g.notifyOnChange && prefs.notify_on_change !== '0',
+            notifyKinds: prefs.notify_kinds != null && prefs.notify_kinds !== ''
+              ? String(prefs.notify_kinds).split(',').filter(Boolean)
+              : g.notifyKinds,
+            channels: { todo: chOf('remind'), notify: chOf('notify'), bill: chOf('bill') },
+          },
+          global: g,
+          /* 通道就绪状态：配了没配、这个人的企微有没有绑定，一眼可见 */
+          channelsReady: pushChannelsOf(),
+          bind: push.bindOf(id),
+          counts: {
+            todos: Number((db.get('SELECT COUNT(*) AS n FROM todos WHERE user_id = ?', [id]) || {}).n) || 0,
+            records: Number((db.get('SELECT COUNT(*) AS n FROM records WHERE user_id = ?', [id]) || {}).n) || 0,
+            posts: Number((db.get('SELECT COUNT(*) AS n FROM posts WHERE user_id = ?', [id]) || {}).n) || 0,
+            bills: Number((db.get('SELECT COUNT(*) AS n FROM bills WHERE user_id = ?', [id]) || {}).n) || 0,
+          },
+        },
+      };
+    }
     /* v4.10.0：管理员删除成员。前端弹二次确认（window.confirm），这里做服务端兜底：
        不能删自己 / 不能删最后一个管理员。数据随外键级联清除。 */
     if (is('DELETE') && second) {

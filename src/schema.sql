@@ -87,7 +87,9 @@ CREATE TABLE IF NOT EXISTS todos (
   --   -1 = 跟随家庭设置（默认，老数据行为不变）；0–5 = 这条待办自己指定，并**覆盖**全局值。
   remind_advance_days INTEGER NOT NULL DEFAULT -1,
   -- v4.22.0 需求 2：是否由「一句话添加」（网页 / 微信）创建。1 = 是。
-  --   这类待办每天重复、只进「待办列表」，不占「周期提醒」卡；勾选完成进「已完成」。
+  --   这类待办每天重复、只进「待办列表」，不占「周期提醒」卡；
+  --   ★ v4.28.0 起与所有重复事项同口径：勾选只表示「今天不再提醒」，
+  --     从待办列表移除、**不进「已完成」**（明天照常回来）。
   quick        INTEGER NOT NULL DEFAULT 0,
   -- v4.6.0：催促完成。0 = 不催；1–60 = 到点后每隔这么多分钟用企业微信催一次
   urge_minutes INTEGER NOT NULL DEFAULT 0,

@@ -486,6 +486,9 @@ a:hover { color: var(--primary-dark); }
 
 /* 品牌区：只在桌面端出现（见 §7 的 ≥1024px 断点） */
 .rail-brand { display: none; }
+/* v4.28.1：版权 / 仓库 / 反馈只在桌面侧栏显示；手机端（≤1023px）隐藏，
+   同样三行改由「我的」页最底部的 .app-foot 呈现，避免底部标签栏被撑高。 */
+.rail-foot { display: none; }
 
 /* ═══════════════════════════════════════════════════════════════════════
    §3 组件层
@@ -897,6 +900,8 @@ select.inp-compact { padding-right: 26px; }
   display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
   margin-top: var(--sp-2);
 }
+/* v4.28.1：映射框上面那行「账号 = 昵称」对照 */
+.wecom-map-legend { margin: 0 0 2px; font-size: var(--fs-2xs); line-height: 1.6; color: var(--muted); }
 .wecom-map-state .wms-hint { color: var(--muted); font-size: var(--fs-xs); }
 .wecom-map-state .pref-off { color: var(--warn-ink); }
 .row .r-label small { display: block; margin-top: 1px; color: var(--muted); font-size: var(--fs-xs); line-height: 1.55; }
@@ -915,6 +920,24 @@ select.inp-compact { padding-right: 26px; }
 .member-row .avatar { flex: none; }
 .member-row .r-label { flex: 1 1 120px; }
 .member-row .btn-sm { flex: 0 0 auto; }
+/* v4.28.0：成员头像可点（管理员查看该成员的全部参数）。
+   用 button 包住 .avatar 时要去掉按钮默认的外观，只留下圆形头像本体。 */
+.avatar-link {
+  flex: none; padding: 0; border: 0; background: none; cursor: pointer;
+  border-radius: 50%; line-height: 0;
+}
+.avatar-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 成员参数弹窗里的「键 → 值」两列行：左列标签固定，右列值右对齐并可折行 */
+.kv-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: var(--sp-3); padding: 7px 0; border-top: 1px solid var(--line);
+  font-size: var(--fs-s);
+}
+.kv-row:first-child { border-top: none; }
+.kv-row .k { flex: none; color: var(--muted); }
+.kv-row .v { color: var(--text); text-align: right; word-break: break-all; }
+.kv-row .v.off { color: var(--muted); }
+.kv-row .v.on { color: var(--accent); font-weight: 600; }
 .danger-text { color: var(--danger-ink); }
 /* 行列表后面紧跟独立字段时补一点间距，避免「一片行 + 一个裸输入框」贴在一起 */
 .card-pad .row-list + .field,
@@ -2886,12 +2909,119 @@ select.inp-compact { padding-right: 26px; }
 /* ── 5.7 我的 ────────────────────────────────────────────────────────
    顶部一张身份卡 + 若干分组卡，每组一个统一高度的标题条。 */
 .me-card { padding: 0; }
-.me-head { display: flex; align-items: center; gap: var(--sp-5); padding: 16px; }
-.me-head .avatar { width: 56px; height: 56px; font-size: 22px; }
+/* v4.28.1 需求 2：身份卡放大一档（头像 64、昵称 20px），
+   右边只留一个「改昵称」—— 其余入口都在下面的「个人资料」里，不在这张卡上重复。 */
+.me-head { display: flex; align-items: center; gap: var(--sp-6); padding: 20px 18px; }
+.me-head .avatar { width: 64px; height: 64px; font-size: 25px; }
 .me-head .who { flex: 1; min-width: 0; }
-.me-head .who b { font-size: var(--fs-xl); }
+.me-head .who b { font-size: var(--fs-2xl); letter-spacing: .01em; }
 .me-head .who div { font-size: var(--fs-xs); color: var(--muted); margin-top: 1px; }
+/* 账号 + 身份徽章：一行扫完「我是谁、是不是管理员、记录本锁没锁」 */
+.me-head .who .me-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.me-head .who .me-handle { color: var(--text-2); }
+
+/* ── 5.7.1 个人资料（v4.28.1 需求 2）────────────────────────────────
+   「简洁、大气」落在三件事上：留白够、层级清、整行可点。
+   不加投影和渐变 —— 与全站一致，层次交给 1px 线和留白。 */
+.prof { display: flex; flex-direction: column; gap: var(--sp-3); }
+.prof-cap {
+  margin-top: var(--sp-2);
+  padding: 0 2px;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: .08em;
+  color: var(--muted);
+}
+.prof-list {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-m);
+  background: var(--surface);
+}
+.prof-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease);
+}
+.prof-item + .prof-item { border-top: 1px solid var(--line-soft); }
+.prof-item:hover { background: var(--surface-2); }
+.prof-item:active { background: var(--surface-3); }
+.prof-item:focus-visible { outline: none; box-shadow: inset var(--ring); }
+.pi-ico {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  background: var(--surface-3);
+  font-size: 15px;
+  line-height: 1;
+}
+.pi-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+/* 标签 + 状态徽章同一行（徽章贴在标签右边，比单独占一行更省高度） */
+.pi-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pi-main b { font-size: var(--fs-m); font-weight: 600; }
+.pi-main small { font-size: var(--fs-2xs); line-height: 1.5; color: var(--muted); }
+.pi-badge {
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.pi-badge.on { background: var(--primary-soft); color: var(--primary-ink); }
+.pi-val {
+  flex: none;
+  max-width: 45%;
+  font-size: var(--fs-s);
+  color: var(--muted);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pi-go { flex: none; font-size: 18px; line-height: 1; color: var(--muted); }
+.prof-exit {
+  margin-top: var(--sp-2);
+  width: 100%;
+  color: var(--danger-ink);
+}
+.prof-exit:hover { background: var(--danger-soft); border-color: var(--danger-soft); }
 .app-foot { text-align: center; padding: var(--sp-4) 12px var(--sp-5); color: var(--muted); font-size: var(--fs-2xs); line-height: 1.7; }
+
+/* v4.28.1：版权 / 仓库 / 反馈三行 —— 桌面侧栏左下角与手机「我的」页底部共用同一份结构。
+   链接用次要色 + 透明下划线：hover 时才亮起、才出现下划线，静态时是三行安静的小字，
+   不会跟导航抢视线（方案 A）。 */
+.bf-line { font-size: var(--fs-2xs); line-height: 1.7; color: var(--muted); }
+.bf-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 5px; }
+.bf-links a {
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color .12s, border-color .12s;
+}
+.bf-links a:hover { color: var(--text); border-bottom-color: var(--line-strong); }
+.bf-dot { opacity: .55; }
 
 /* 个人通知偏好 */
 .prefs-block { display: flex; flex-direction: column; gap: var(--sp-3); }
@@ -3389,6 +3519,18 @@ body.kb-active .main { padding-bottom: calc(var(--kb, 0px) + 40px); }
 @media (max-width: 767px) {
   .ocr-items { max-height: 52dvh; }
   .oi-amt { width: 76px; }
+  /* v4.28.1 需求 3：手机上搜索框与「全部 / 未完成 / 已完成」排在同一行。
+     原来 .list-tools 是 flex-wrap，两者宽度加起来略超一行就换行 ——
+     搜索框被挤到下面独占一整条，看着像「多出来的一块」。
+     改成两列栅格：分段按钮按内容取宽，剩下的宽度全归搜索框。 */
+  .todo-list-card .list-tools {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--sp-2);
+  }
+  .todo-list-card .list-tools .segmented { width: auto; }
+  .todo-list-card .list-tools .segmented button { padding: 0 8px; font-size: var(--fs-xs); }
+  .todo-list-card .list-tools .search-bar { min-width: 0; }
 }
 
 /* 移动端视频封面叠层：只在窄屏/触屏打开（桌面原生控件本来就正常，叠一层会挡控件） */
@@ -3506,6 +3648,16 @@ body.kb-active .main { padding-bottom: calc(var(--kb, 0px) + 40px); }
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* v4.28.1：版权 / 仓库 / 反馈沉到侧栏最底部。
+     margin-top: auto 在 flex 列里吃掉菜单之后的全部剩余高度 —— 窗口多高都贴底，
+     不依赖任何固定高度或定位。左内边距 10px 与上方 .rail-brand 的文字对齐。 */
+  .rail-foot {
+    display: block;
+    margin-top: auto;
+    padding: 14px 10px 0;
+    border-top: 1px solid var(--line);
+  }
+  .rail-foot .bf-links { justify-content: flex-start; }
   .tabbar button {
     flex: none;
     flex-direction: row;

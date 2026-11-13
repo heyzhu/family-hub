@@ -16,12 +16,12 @@
 
 services:
   app:
-    image: family-hub:4.27.0
+    image: family-hub:4.28.1
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        APP_VERSION: "4.27.0"
+        APP_VERSION: "4.28.1"
     container_name: family-hub
     restart: unless-stopped
     # 容器内没有 systemd，init 让 PID 1 能回收僵尸进程；配合 server.js 的 SIGTERM 处理可优雅退出

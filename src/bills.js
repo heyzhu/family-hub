@@ -38,6 +38,9 @@ const dingtalk = require('./dingtalk');
 /* v4.21.0 需求 1：报表文案改成家庭级可配置模板（记账推送板块）。
    msgTpl 只依赖 db / config → 不会与 bills 成环。 */
 const msgTpl = require('./msgTpl');
+/* v4.28.0：日报的待办预告要展开重复事项的落点 —— 与日历、提醒调度共用 repeat.js，
+   不在这里再写一份「什么时候该出现」的规则（repeat.js 零依赖，不会成环）。 */
+const Repeat = require('../public/repeat.js');
 
 /* ── 设置 ─────────────────────────────────────────────────── */
 
@@ -1250,7 +1253,18 @@ function reportHtml(heading, badge, stats, footnote) {
 
 /**
  * 今日待办预告（只读查询，**完全不碰待办提醒的既有逻辑**）。
- * 口径：该用户能看到的、日期就是今天且未完成的待办 —— 家庭共享的 + 自己的私事。
+ * 口径：该用户能看到的、**这一天要处理**且尚未完成的待办 —— 家庭共享的 + 自己的私事。
+ *
+ * ★ v4.28.0 修复：旧实现只查 `todo_date = 那天`，而重复事项的 `todo_date` 是
+ *   **基准日**（可能是几年前建的那一天），永远不等于「今天 / 明天」，
+ *   于是任何重复事项都不会出现在日报的待办预告里 —— 用户看到的就是
+ *   「日报只列一次性事项，每天/每周/每年的提醒像消失了一样」。
+ *
+ * 现在的判定与「待办列表」完全同源：
+ *   · 这一天是某个落点的**提醒日**（落点 = 这一天 + 这条自己的提前天数）→ 列这一天；
+ *   · 或这一天本身就是落点（提前 0 天时与上面等价；提前 > 0 且提醒日没处理时兜底）。
+ * 落点、提前天数、完成标记分别复用 repeat.js / reminders.advanceOf / todo_done_marks，
+ * 不在这里另写一套日期规则。
  * @param {number} userId
  * @param {string} todayKey YYYY-MM-DD（墙上今天）
  * @returns {Array<{title:string, time:string}>}
@@ -1258,11 +1272,41 @@ function reportHtml(heading, badge, stats, footnote) {
 function todoPreviewFor(userId, todayKey) {
   const day = String(todayKey || '').slice(0, 10);
   if (!DATE_RE.test(day)) return [];
-  return db.all(
-    "SELECT title, start_time FROM todos WHERE todo_date = ? AND done = 0" +
-    " AND (visibility = 'family' OR user_id = ?) ORDER BY start_time, id LIMIT 20",
+  /* 先把候选行缩小到「当天的一次性事项 + 所有重复事项」，再在内存里判落点：
+     重复规则是 JS 实现（含农历换算），SQL 里写不出来，硬写成 SQL 会变成第二份规则。 */
+  const rows = db.all(
+    "SELECT * FROM todos WHERE (todo_date = ? OR repeat != '' OR repeat_rule != '')" +
+    " AND (visibility = 'family' OR user_id = ?) ORDER BY start_time, id",
     [day, Number(userId)],
-  ).map((r) => ({ title: String(r.title || '').slice(0, 80), time: String(r.start_time || '') }));
+  );
+  /* 已经勾过「完成」的落点不再预告：勾选表示「这一天不做了 / 不再提醒」，
+     与待办列表、企业微信「今日待办」保持同一口径。窗口取 [这一天, +5]：
+     提前提醒最多 5 天，落点最多在这之后的第 5 天。 */
+  const done = new Map();
+  try {
+    for (const r of db.all(
+      'SELECT todo_id, occ_date FROM todo_done_marks WHERE occ_date >= ? AND occ_date <= ?',
+      [day, reminders.shiftDateKey(day, 5)],
+    )) {
+      const id = Number(r.todo_id);
+      if (!done.has(id)) done.set(id, new Set());
+      done.get(id).add(String(r.occ_date));
+    }
+  } catch { /* 老库还没这张表：当作没有标记 */ }
+  const gAdv = reminders.loadRemindSettings().remindAdvanceDays;
+  return rows
+    .filter((r) => {
+      const rule = db.getRepeatRule(r);
+      if (!rule) return r.todo_date === day && !r.done;   // 一次性事项：当天且未完成
+      const marks = done.get(Number(r.id)) || new Set();
+      const adv = reminders.advanceOf(r, gAdv);
+      const remindDayOcc = reminders.shiftDateKey(day, adv);
+      if (Repeat.isOccurrence(r, remindDayOcc)) return !marks.has(remindDayOcc);
+      if (Repeat.isOccurrence(r, day)) return !marks.has(day);
+      return false;
+    })
+    .slice(0, 20)
+    .map((r) => ({ title: String(r.title || '').slice(0, 80), time: String(r.start_time || '') }));
 }
 
 /**

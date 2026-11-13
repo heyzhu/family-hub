@@ -609,6 +609,17 @@ async function runRecordScan(now = new Date()) {
 async function sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, advIn) {
   let participants = [];
   try { participants = JSON.parse(t.participants || '[]'); } catch { /* 忽略 */ }
+  /* ★ v4.28.0 修复：参与人为空时默认提醒**创建者本人**。
+     一句话添加（网页顶部的快速输入 / 企业微信「待办 …」）建出来的待办 participants 是 []，
+     旧逻辑在这里直接走到 `targets.length === 0 → waiting`，于是这条待办
+     永远「等待收件人」、一次提醒都发不出去 —— 表现就是「重复待办不会提醒我」。
+     语义上这也对：没指定参与人的事，本来就是建它的人自己的事。
+     ★ 只补「空」的情况：明确选了参与人（哪怕选的是别人）就完全按参与人来，
+       不会把创建者偷偷加进去。 */
+  if (!participants.length && Number(t.user_id) > 0) {
+    const owner = db.get('SELECT display_name, username FROM users WHERE id = ?', [Number(t.user_id)]);
+    if (owner) participants = [String(owner.display_name || owner.username || '').trim()].filter(Boolean);
+  }
   const prefsMap = userprefs.loadAll();
   const targets = [];
   for (const name of participants) {
@@ -709,37 +720,31 @@ async function sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, advIn) 
 }
 
 /**
- * 管理员手动触发：把 48 小时内、已被标记「已提醒」但当时并没有收件人可发的待办
- * 重置为未提醒，让调度器重新评估一次。用于修复旧版本遗留的「永久作废」条目。
- * 重复事项只在该次落点仍在窗口内时才放开，避免把往年的记录一起清掉。
+ * 管理员手动触发「立即重新扫描」前的**放开**动作。
  *
- * @param {number} withinHours 补发窗口（小时）
- * @param {number} nowMs 「现在」的毫秒时间戳。默认取真实时间；
- *   显式传入是为了让「窗口判定」可以被测试固定住——
- *   否则测试里写死的历史日期会随时间流逝自己失效（过 48 小时后就再也测不过）。
+ * ★ v4.28.0 行为修正：只放开「按新规则算出来的提醒时刻还在未来」的条目。
+ *
+ * 旧实现的三个问题（都会造成「过期事件被重复推送」）：
+ *   ① 一次性待办：只要提醒时刻在 48 小时内，无论是否已经真的发过，一律清标记 →
+ *      点一次「重新扫描」就把一小时前刚发过的提醒再发一遍；
+ *   ② 重复事项：完全不看时刻，只要「今天 / 昨天（按全局提前天数补偿）是落点」
+ *      就清掉 remind_key —— 今天 08:00 已发过的每天事项，09:00 点一下又发一次；
+ *      往年的落点同样会被放开；
+ *   ③ 重复事项用的是**全局**提前天数，而 runScan 用的是「这条待办自己设的」，
+ *      两边口径不一致时放开与发送会错位。
+ *
+ * 现在统一委托给 rearmFutureReminders()（它用的就是 advanceOf() 的逐条口径）：
+ *   · 提醒时刻已过（含今天已过点、往期落点）→ **不放开**，绝不会二次推送；
+ *   · 提醒时刻还在未来却被误标 → 放开，到点正常发一次（这才是「重扫」该救的场景）。
+ * 真正「没发出去」的条目本来就不会写 remind_key（sendOne 只有发成功 / 入队才写），
+ * 所以不需要靠清标记来补发 —— 下一轮扫描自己会重试。
+ *
+ * @param {number} withinHours 保留参数（历史上是补发窗口），现已不参与判定
+ * @param {number} nowMs 可注入的「现在」，便于测试固定时间
  */
 function resetReminders(withinHours = 48, nowMs = Date.now()) {
-  const cfg = loadRemindSettings();
-  const now = Number(nowMs);
-  const todayKey = wallDateKey(new Date(now), cfg.tzOffsetMinutes);
-  const rows = db.all('SELECT id, todo_date, start_time, repeat, repeat_rule, remind_key, reminded_at FROM todos WHERE remind = 1');
-  let n = 0;
-  for (const t of rows) {
-    if (t.repeat || t.repeat_rule) {
-      if (!t.remind_key) continue;                         // 没发过就不用放开
-      // 与 runScan 同一套判定：今天 / 昨天该发的那次落点要把提前天数补回来
-      const cand = [todayKey, shiftDateKey(todayKey, -1)]
-        .map((k) => shiftDateKey(k, cfg.remindAdvanceDays));
-      if (!cand.some((k) => Repeat.isOccurrence(t, k))) continue;
-    } else {
-      if (!t.reminded_at && !t.remind_key) continue;
-      const m = localRemindMoment(t, cfg.remindDefaultTime, cfg.tzOffsetMinutes, cfg.remindAdvanceDays);
-      if (!m || now - m.getTime() > withinHours * 3600e3) continue;
-    }
-    db.run("UPDATE todos SET reminded_at = NULL, remind_key = '' WHERE id = ?", [t.id]);
-    n++;
-  }
-  return n;
+  void withinHours;                      // 保留签名：调用方 / 老测试仍在传
+  return rearmFutureReminders(nowMs);
 }
 
 /**
@@ -762,7 +767,7 @@ function rearmFutureReminders(nowMs = Date.now()) {
   const cfg = loadRemindSettings();
   const now = Number(nowMs);
   const rows = db.all(
-    "SELECT id, todo_date, start_time, repeat, repeat_rule, remind_key, reminded_at FROM todos WHERE remind = 1",
+    "SELECT id, todo_date, start_time, repeat, repeat_rule, remind_advance_days, remind_key, reminded_at FROM todos WHERE remind = 1",
   );
   let n = 0;
   for (const t of rows) {
@@ -770,9 +775,12 @@ function rearmFutureReminders(nowMs = Date.now()) {
     // 重复事项的提醒以「记录下来的那次落点」为准；一次性待办就是它自己的日期
     const baseKey = (t.repeat || t.repeat_rule) ? t.remind_key : t.todo_date;
     if (!baseKey) continue;
+    /* ★ v4.28.0：必须用这条待办**自己**的提前天数（与 runScan / sendOne 同一口径）。
+       旧写法用全局值：单条设了提前 2 天、全局 0 天时，算出来的「新时刻」与真实时刻
+       差两天，于是该放开的不放开、或一改设置就把已经发过的再发一次。 */
     const m = localRemindMoment(
       { todo_date: baseKey, start_time: t.start_time },
-      cfg.remindDefaultTime, cfg.tzOffsetMinutes, cfg.remindAdvanceDays,
+      cfg.remindDefaultTime, cfg.tzOffsetMinutes, advanceOf(t, cfg.remindAdvanceDays),
     );
     if (!m || m.getTime() <= now) continue;             // 新时刻已过 → 不重发
     db.run("UPDATE todos SET reminded_at = NULL, remind_key = '' WHERE id = ?", [t.id]);

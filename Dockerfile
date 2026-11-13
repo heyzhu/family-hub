@@ -3,8 +3,8 @@
 # 本项目零第三方运行时依赖（原生 http + Node 内置 node:sqlite），
 # 因此镜像里没有 npm install、没有原生模块编译，构建只需要几秒。
 #
-#   docker build -t family-hub:4.27.0 .
-#   docker run -d --name family-hub -p 3455:3455 -v "$PWD/data:/data" family-hub:4.27.0
+#   docker build -t family-hub:4.28.1 .
+#   docker run -d --name family-hub -p 3455:3455 -v "$PWD/data:/data" family-hub:4.28.1
 #
 # 推荐用 docker compose 部署，见同目录 docker-compose.yml。
 # 数据全部落在 /data 卷里（family.db + uploads/），备份就是备份这个目录。
@@ -17,7 +17,7 @@ FROM node:22-alpine
 # 表现为「测试邮件能收到，待办提醒却一直不来」。装上 tzdata 才能让 TZ 真正生效。
 RUN apk add --no-cache tzdata
 
-ARG APP_VERSION=4.27.0
+ARG APP_VERSION=4.28.1
 LABEL org.opencontainers.image.title="family-hub" \
       org.opencontainers.image.description="我们一家 —— 万年历待办 / 图文动态 / 重点事项记录本" \
       org.opencontainers.image.version="${APP_VERSION}" \

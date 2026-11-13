@@ -949,8 +949,41 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     paintDraftHint(k);
   }
 
+  /* ═══ v4.28.1：版权 / 仓库 / 反馈三行 ═════════════════════════════════
+     桌面端沉在左侧导航的最底部（.rail-foot，margin-top:auto），手机端放在
+     「我的」页最底部（.app-foot 里同一份 HTML）。两处共用 brandFootHtml()，
+     省得版本号、年份在两处各写一遍最后对不上。
+     ★ 版本号取 /api/config（package.json 唯一来源），年份取运行时当前年，
+       不写死；链接一律新窗口 + rel="noopener"，避免 window.opener 反向控制。 */
+  const REPO_URL = 'https://github.com/heyzhu/family-hub';
+  const FEEDBACK_URL = 'https://ucnesevkt97r.feishu.cn/share/base/form/shrcnjPD0oOBFud80o3p4yqSdyh';
+
+  function brandFootHtml() {
+    const ver = (state.config && state.config.version) || '?';
+    const year = new Date().getFullYear();
+    return `<div class="bf-line">${esc(APP_NAME)} v${esc(ver)}</div>`
+      + `<div class="bf-line">© ${year} ${esc(APP_NAME)} · AGPL-3.0</div>`
+      + '<div class="bf-line bf-links">'
+      + `<a href="${REPO_URL}" target="_blank" rel="noopener">GitHub 仓库</a>`
+      + '<span class="bf-dot" aria-hidden="true">·</span>'
+      + `<a href="${FEEDBACK_URL}" target="_blank" rel="noopener">意见反馈</a>`
+      + '</div>';
+  }
+
+  /* 侧栏底栏在 #main 之外，render() 的 DOM 替换管不到它，因此单独刷一次。
+     innerHTML 写入会丢 hover 态，加一道签名缓存：内容没变就不碰 DOM。 */
+  let railFootSig = '';
+  function paintRailFoot() {
+    const html = brandFootHtml();
+    if (html === railFootSig) return;
+    railFootSig = html;
+    const el = $('#rail-foot');
+    if (el) el.innerHTML = html;
+  }
+
   function render() {
     if (!state.me) return;
+    paintRailFoot();
     const map = VIEW_OF;
     const el = $('#' + map[state.tab]);
     if (!el) return;
@@ -1212,13 +1245,17 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const o = opts || {};
     // v4.10.0：周期判定走 repeat.js 统一读取（repeat_rule 优先、repeat 回落）
     const isRepeat = !!(t.repeat || t.repeatRule);
-    /* v4.21.0 需求 2：重复事项也能勾 —— 但勾的是「这一天」。
-       规则：这一天必须正好是它的落点、且不晚于今天（补记未来的完成没有意义）。
-       默认取「今天」；日历日面板传 opts.dayKey，非今天的日期仍是静态 🔁。 */
-    const tickDay = String(o.dayKey || todayKey()).slice(0, 10);
-    const repeatTickable = isRepeat && Repeat.isOccurrence(t, tickDay) && tickDay <= todayKey();
+    /* v4.21.0 需求 2 / v4.28.0 修正：重复事项也能勾 —— 但勾的是「今天这一行代表的落点」。
+       提前 N 天提醒时，今天这一行代表的是 N 天后的那个落点（服务端算好放在 rowOccDate），
+       所以不能再用「今天是不是落点」来判断能否勾，也不能阻止勾「将来那个落点」——
+       用户此刻要表达的是「这件事今天处理完了，别再提醒我」。
+       日历日面板（opts.dayKey）仍然只允许勾不晚于今天的落点。 */
+    const useRowKey = !o.dayKey && !!t.rowOccDate;
+    const tickDay = String(o.dayKey || (useRowKey ? t.rowOccDate : todayKey())).slice(0, 10);
+    const repeatTickable = isRepeat && Repeat.isOccurrence(t, tickDay)
+      && (useRowKey || tickDay <= todayKey());
     const doneNow = isRepeat
-      ? (tickDay === todayKey() && !!t.doneToday)
+      ? (useRowKey ? !!t.doneToday : (tickDay === todayKey() && !!t.doneToday))
       : !!t.done;
     const noTick = o.noTick != null ? o.noTick : (isRepeat && !repeatTickable);
     const meta = [];
@@ -1283,7 +1320,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       ? '<span class="tick tick-static" title="重复事项：只有它到点的那一天才能勾选完成">🔁</span>'
       : (isRepeat
         ? `<button type="button" class="tick" data-act="todo-day-toggle" data-id="${t.id}" data-date="${esc(tickDay)}"
-                   title="${doneNow ? '取消今天的完成' : '标记今天完成（明天会自动回到未完成）'}">✓</button>`
+                   title="${doneNow ? '取消今天的完成' : '标记今天完成：今天不再提醒（明天/下个周期照常）'}">✓</button>`
         : `<button type="button" class="tick" data-act="todo-toggle" data-id="${t.id}" title="标记完成">✓</button>`);
 
     /* 三行固定结构（标题 / 元信息 / 备注）：备注为空也占位，这样每条待办高度完全一致，
@@ -1305,15 +1342,18 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   }
 
   /**
-   * v4.21.0 需求 2：主列表 = 一次性待办 + **今天正好到点的重复事项**。
+   * v4.21.0 需求 2 / v4.28.0 修正：主列表 = 一次性待办 + **今天该处理的那一次重复事项**。
    * 为什么不把重复事项无条件塞进列表：一条「每年 5 月 20 日」的纪念日会在一年里
    * 每天都占一行、还每天出现在「未完成」里 —— 那不是混排，是噪声。
-   * 只在它命中的那一天进列表，既满足「每天重复的待办正常出现在待办列表中」，
-   * 也不打扰其余日子；非当天的重复事项仍在下面的「周期提醒」卡里随时可查。
+   *
+   * 「今天该处理」由**服务端**算好（shapeTodo.rowOccDate）：
+   *   · 今天是它的提醒日（落点 − 提前天数）→ 代表那个落点；
+   *   · 或今天就是落点本身（提前 0 天时两者等价）。
+   * ★ v4.28.0：勾完「今天完成」之后**直接从列表移除** —— 它只表示「今天不再提醒」，
+   *   不是「这件事已完成」，所以也不该出现在「已完成」筛选里（重复事项明天/下个周期还会回来）。
    */
   function mainTodos() {
-    const today = todayKey();
-    const todayRepeats = state.todos.filter((t) => Repeat.rule(t) && Repeat.isOccurrence(t, today));
+    const todayRepeats = state.todos.filter((t) => Repeat.rule(t) && t.rowOccDate && !t.doneToday);
     return onceTodos().concat(todayRepeats);
   }
 
@@ -1397,7 +1437,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           <!-- v4.12.0：搜索框挪到原「每页条数」的位置（工具条右端），跟其它列表页保持一致 -->
           ${searchBarHtml({
             act: 'todo-query', clearAct: 'todo-q-clear', preserve: 'todo-q',
-            placeholder: '搜索标题 / 备注 / 参与人', value: state.todoQuery,
+            /* v4.28.1 需求 3：搜索框挪到分段按钮右侧同一行后，手机上只剩 ~170px ——
+               「搜索标题 / 备注 / 参与人」会被截成「搜索标题 / 备注 / 参…」，这里收成四个字。 */
+            placeholder: '搜索待办', value: state.todoQuery,
           })}
         </div>
         ${shown.length
@@ -1429,7 +1471,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const list = repeatTodos();
     const body = open
       ? `<div class="note-box" style="margin-bottom:10px">这些事项按周期到时间就会自动提醒。
-          <b>今天正好到点的，已经在上面「待办列表」里</b>，可以直接勾「今天完成」（明天自动回到未完成）；
+          <b>今天轮到的那一次已经在上面「待办列表」里</b>，勾一下表示今天不再提醒：
+          它会从列表里消失，但不会进「已完成」（这是周期事项，明天 / 下个周期照常回来）；
           这张卡里留着的是全部重复规则的清单，方便随时改或「结束重复」。</div>`
         + (list.length
           ? list.map((t) => todoHtml(t, { noTick: true })).join('')
@@ -4200,6 +4243,31 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
    * 单独抽出来是为了让 meHtml 的结构一眼能看清「有哪几组设置」，
    * 而不是让企业微信的七八行把「我的」页面撑成一锅粥。
    */
+  /**
+   * ★ v4.28.1 需求 1：账号映射框默认把**所有家庭成员**列出来。
+   *
+   * 界面上的一行是「家庭账号=企业微信 UserID」—— 左边自动填好、右边留空等管理员填，
+   * 打开就知道还差谁没绑；数据库里存的仍是历史上那一套 `企微UserID=家庭账号`
+   * （服务端 normalizeUserMap / userMapOf 一行都没动），只有界面上的左右顺序是反的。
+   *
+   * 已不在家庭里的账号（成员被删过）不再列出来 —— 那种映射本来也认不到人，
+   * 留着只会让人以为「这个配置还有用」。
+   */
+  function wecomMapText(w) {
+    const bound = new Map();          // username(小写) → 企微 UserID
+    for (const line of String((w && w.userMap) || '').split(/\r?\n/)) {
+      const i = line.indexOf('=');
+      if (i <= 0) continue;
+      const wx = line.slice(0, i).trim();
+      const fam = line.slice(i + 1).trim().replace(/^@/, '');
+      if (wx && fam) bound.set(fam.toLowerCase(), wx);
+    }
+    return (state.members || [])
+      .filter((m) => m && m.username)
+      .map((m) => `${m.username}=${bound.get(String(m.username).toLowerCase()) || ''}`)
+      .join('\n');
+  }
+
   /* v4.12.0：企业微信从「我的页里独立一张卡」改成「推送配置」里的展开区，
      所以这里只产出内容（不带 <section> 外壳）。 */
   function wecomSectionInner() {
@@ -4231,14 +4299,21 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           </div>
           <div class="row row-stack">
             <div class="r-label"><b>账号映射</b>
-              <small>每行一条：企业微信 UserID=家庭账号。记账记到谁名下、报表推给谁，都只看这张表。</small></div>
-            <textarea class="wecom-map" data-mk="wc-map-inline" rows="3"
-                      placeholder="zhangsan=alice&#10;lisi=bob">${esc((w && w.userMap) || '')}</textarea>
+              <small>左边是家庭账号（已自动列好），右边填 TA 在企业微信里的 UserID；留空 = 还没绑定。
+                记账记到谁名下、报表推给谁，都只看这张表。</small></div>
+            <!-- ★ v4.28.1：映射框里只有登录账号（英文），管理员未必记得谁是谁 ——
+                 框上面补一行「账号 = 昵称」的对照，看一眼就知道该给哪一行填。
+                 位置特意在输入框**之前**：绑定状态那句仍紧贴输入框下方，不挤走它。 -->
+            <div class="wecom-map-legend">${(state.members || [])
+              .map((m) => `${esc(m.username)} = ${esc(m.display_name)}`).join(' · ')}</div>
+            <textarea class="wecom-map" data-mk="wc-map-inline" spellcheck="false"
+                      rows="${Math.min(12, Math.max(3, (state.members || []).length + 1))}"
+                      placeholder="alice=zhangsan&#10;bob=lisi">${esc(wecomMapText(w))}</textarea>
             <div class="wecom-map-state">
               <span class="${statusCls}">${bondN ? `已绑定 ${bondN} 个账号` : '还没绑定任何账号'}</span>
               <span class="wms-hint">${bondN
                 ? '家人发消息、收报表都会按这里的对应关系认人。'
-                : '填好上面这张表，家人才能在微信里记账、催办和收报表。'}</span>
+                : 'UserID 在企业微信管理后台「通讯录 → 成员 → 账号」里看；填好保存即可。'}</span>
             </div>
             <div class="row-ops">
               <button type="button" class="btn-soft btn-sm" data-act="wecom-map-save">保存映射</button>
@@ -4347,12 +4422,49 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return body;
   }
 
+  /**
+   * ★ v4.28.1 需求 1：把映射框（家庭账号=企微 UserID）回写成服务端要的
+   * `企微UserID=家庭账号`，顺便把「填错的」挑出来。
+   *
+   * 为什么还要认另一种顺序：老版本界面上是「企微UserID=家庭账号」，
+   * 有人从旧截图 / 旧笔记里粘过来时不该报错 —— 只要**另一边**是家庭成员就认。
+   */
+  function wecomMapPayload() {
+    const el = document.querySelector('#main [data-mk="wc-map-inline"]');
+    if (!el) return null;
+    const byName = new Map();
+    for (const m of (state.members || [])) {
+      if (m && m.username) byName.set(String(m.username).toLowerCase(), m.username);
+    }
+    const out = [];
+    const seen = new Set();
+    const bad = [];
+    String(el.value).split(/\r?\n/).forEach((raw, idx) => {
+      const s = raw.trim();
+      if (!s || s.startsWith('#')) return;
+      const i = s.indexOf('=');
+      if (i < 0) { bad.push(`第 ${idx + 1} 行少了「=」：${s}`); return; }
+      const left = s.slice(0, i).trim().replace(/^@/, '');
+      const right = s.slice(i + 1).trim().replace(/^@/, '');
+      if (!left || !right) return;     // 只填了一边 = 这个人还没绑，跳过
+      let fam; let wx;
+      if (byName.has(left.toLowerCase())) { fam = byName.get(left.toLowerCase()); wx = right; }
+      else if (byName.has(right.toLowerCase())) { fam = byName.get(right.toLowerCase()); wx = left; }
+      else { bad.push(`第 ${idx + 1} 行左边不是家庭成员：${s}`); return; }
+      if (seen.has(wx)) { bad.push(`企业微信账号「${wx}」填了两次`); return; }
+      seen.add(wx);
+      out.push(`${wx}=${fam}`);
+    });
+    return { value: out.join('\n'), bad };
+  }
+
   /** v4.16.0：账号映射单独保存（它常改，不该逼着人重填五项凭证） */
   async function saveWecomMap() {
-    const el = document.querySelector('#main [data-mk="wc-map-inline"]');
-    if (!el) return;
+    const picked = wecomMapPayload();
+    if (!picked) return;
+    if (picked.bad.length) { toast(picked.bad[0], 'err'); return; }
     try {
-      const out = await api('/api/wecom', { method: 'POST', body: { userMap: el.value } });
+      const out = await api('/api/wecom', { method: 'POST', body: { userMap: picked.value } });
       state.wecom = out.wecom;
       render();
       toast(`账号映射已保存${out.wecom && out.wecom.bondCount ? `（${out.wecom.bondCount} 个）` : ''}`, 'ok');
@@ -4434,7 +4546,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const me = state.me;
     const members = state.members.map((m) => `
       <div class="row member-row">
-        ${avatarHtml(m.display_name)}
+        ${me.is_admin
+          ? `<button type="button" class="avatar-link" data-act="member-info" data-id="${m.id}"
+                     title="查看 ${esc(m.display_name)} 的全部参数">${avatarHtml(m.display_name)}</button>`
+          : avatarHtml(m.display_name)}
         <div class="r-label">
           <b>${esc(m.display_name)}${m.id === me.id ? ' <span class="badge">我</span>' : ''}${m.is_admin ? ' <span class="badge cat">管理员</span>' : ''}${m.record_lock_enabled ? ' <span class="badge priv">🔒 记录本已上锁</span>' : ''}</b>
           <small>@${esc(m.username)}</small>
@@ -4472,38 +4587,46 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
     /* —— ② 个人资料：昵称 / 头像 / 记录本密码 + 登录账号 / 修改密码 / 退出登录 ——
        需求原文：「登录账号、修改密码、退出登录归入个人资料」。
-       它们本来在「数据与安全」里，但账号密码属于「我是谁」，不属于「数据怎么备份」。 */
+       它们本来在「数据与安全」里，但账号密码属于「我是谁」，不属于「数据怎么备份」。
+
+       ★ v4.28.1 需求 2：改成「简洁、大气」的两组清单。
+       旧版六行完全同构（左边标题 + 右边一个小按钮），既分不清哪些是资料、哪些是账号安全，
+       还得逐行读小字才知道「现在是什么状态」。现在：
+         · 只有两个分组标题（账号 / 安全），不加多余说明；
+         · 每行右边先摆**当前值**，整行可点，行尾一个 › 就是点击暗示；
+         · 「退出登录」单独一条，不和「改密码」挤在一起。
+       ★ 文案顺序是刻意的：「记录本访问密码」与「已开启」之间**不留空白**，
+         拼起来仍是一句「记录本访问密码已开启」（界面与测试都按这句话读）。 */
+    const profItem = (o) => `<button type="button" class="prof-item${o.danger ? ' danger' : ''}" data-act="${o.act}">`
+      + `<span class="pi-ico" aria-hidden="true">${o.ico}</span>`
+      + `<span class="pi-main"><span class="pi-head"><b>${o.label}</b>${o.badge || ''}</span>`
+      + `${o.sub ? `<small>${o.sub}</small>` : ''}</span>`
+      + `${o.val ? `<span class="pi-val">${o.val}</span>` : ''}`
+      + '<span class="pi-go" aria-hidden="true">›</span></button>';
+
     const profileBody = `
-        <div class="row-list">
-          <div class="row">
-            <div class="r-label"><b>昵称</b>
-              <small>家人看到的称呼，改动会立即生效</small></div>
-            <button type="button" class="btn-ghost btn-sm" data-act="me-rename">修改</button>
+        <div class="prof">
+          <div class="prof-cap">账号</div>
+          <div class="prof-list">
+            ${profItem({ ico: '👤', act: 'me-rename', label: '昵称',
+              val: esc(me.display_name), sub: '家人看到的称呼，改完立即生效' })}
+            ${profItem({ ico: '🖼️', act: 'me-avatar', label: '头像',
+              val: me.avatar ? '自定义' : '默认',
+              sub: me.avatar ? '已使用自定义头像' : '默认使用昵称首字' })}
+            ${profItem({ ico: '@', act: 'me-username', label: '登录账号',
+              val: `当前：@${esc(me.username)}`, sub: '改完用新账号登录' })}
           </div>
-          <div class="row">
-            <div class="r-label"><b>头像</b>
-              <small>${me.avatar ? '已使用自定义头像' : '默认使用昵称首字，点上方头像可更换'}</small></div>
-            <button type="button" class="btn-ghost btn-sm" data-act="me-avatar">${me.avatar ? '更换' : '上传'}</button>
+          <div class="prof-cap">安全</div>
+          <div class="prof-list">
+            ${profItem({ ico: '🔑', act: 'record-lock', label: '记录本访问密码',
+              badge: `<span class="pi-badge${lockOn ? ' on' : ''}">${lockOn ? '已开启' : '未开启'}</span>`,
+              sub: lockOn
+                ? `${me.record_lock_custom ? '自定义密码' : '复用登录密码'} · 登录密码同样能解锁`
+                : '可复用登录密码，也可以单独设一个' })}
+            ${profItem({ ico: '🔒', act: 'me-password', label: '修改密码',
+              sub: '改完本机退出，需要重新登录' })}
           </div>
-          <div class="row">
-            <div class="r-label"><b>记录本访问密码</b>
-              <small>${lockOn
-                ? `已开启 · ${me.record_lock_custom ? '自定义密码' : '复用登录密码'}，登录密码同样能解锁`
-                : '未开启 · 可复用登录密码或自定义密码'}</small></div>
-            <button type="button" class="btn-ghost btn-sm" data-act="record-lock">${lockOn ? '管理' : '开启'}</button>
-          </div>
-          <div class="row">
-            <div class="r-label"><b>登录账号</b><small>当前：@${esc(me.username)} · 改完用新账号登录，本机不需要重新登录</small></div>
-            <button type="button" class="btn-ghost btn-sm" data-act="me-username">修改</button>
-          </div>
-          <div class="row">
-            <div class="r-label"><b>修改密码</b><small>修改后本机也会退出，需要重新登录</small></div>
-            <button type="button" class="btn-ghost btn-sm" data-act="me-password">修改</button>
-          </div>
-          <div class="row">
-            <div class="r-label"><b>退出登录</b><small>下次打开需要重新输入密码</small></div>
-            <button type="button" class="btn-danger btn-sm" data-act="me-logout">退出</button>
-          </div>
+          <button type="button" class="btn-ghost prof-exit" data-act="me-logout">退出登录</button>
         </div>`;
 
     /* —— ③ 消息提醒 ——
@@ -4714,7 +4837,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           </button>
           <div class="who">
             <b>${esc(me.display_name)}</b>
-            <div>@${esc(me.username)}${me.is_admin ? ' · 管理员' : ''}</div>
+            <!-- ★ v4.28.1 需求 2：身份、锁状态做成一枚枚小徽章摆在账号后面，
+                 比原来一句「@mama · 管理员」更容易扫读。 -->
+            <div class="me-sub"><span class="me-handle">@${esc(me.username)}</span>${me.is_admin
+              ? '<span class="badge cat">管理员</span>' : ''}${lockOn
+              ? '<span class="badge priv">🔒 记录本已上锁</span>' : ''}</div>
           </div>
           <button type="button" class="btn-ghost btn-sm" data-act="me-rename">改昵称</button>
         </div>
@@ -4768,7 +4895,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
       ${meFold('system', 'ℹ️', '系统状态', `v${esc((state.config && state.config.version) || '?')} · 管理员默认配置`, systemStatusHtml(s, g, cfg))}
 
-      <div class="app-foot">${esc(APP_NAME)} v${esc(state.config.version || '?')} · 数据保存在你自己的服务器上</div>`;
+      <div class="app-foot">${brandFootHtml()}</div>`;
   }
 
   /* ═══ 系统状态（v4.12.0：从「关于与系统状态」扩成「管理员的默认配置一览」）═══
@@ -6486,11 +6613,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   async function toggleTodoDay(id, dateKey) {
     const t = state.todos.find((x) => x.id === id);
     if (!t) return false;
-    const day = String(dateKey || '').slice(0, 10) || todayKey();
-    const before = !!t.doneToday && day === todayKey();
+    const day = String(dateKey || t.rowOccDate || '').slice(0, 10) || todayKey();
+    /* v4.28.0：doneToday 现在表示「今天这一行代表的落点是否已完成」，
+       不再要求落点必须是今天 —— 提前提醒时落点在 N 天之后。 */
+    const before = !!t.doneToday;
     const next = !before;
-    if (day !== todayKey()) {
-      // 只有「当天」能勾：补记过去的落点没有提醒价值，还会让人以为日历能改历史
+    const isRowDay = !!t.rowOccDate && day === t.rowOccDate;
+    if (!isRowDay && day !== todayKey()) {
+      // 日历日面板只允许勾「今天」；提前提醒的那一行允许勾它代表的那个落点
       toast('只能勾选今天的这一次', 'err');
       return false;
     }
@@ -6506,6 +6636,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       const real = state.todos.find((x) => x.id === id);
       if (real && out.todo) {
         real.doneToday = out.todo.doneToday;
+        real.rowOccDate = out.todo.rowOccDate;
         real.nextRemindKey = out.todo.nextRemindKey;
         real.nextOccurrence = out.todo.nextOccurrence;
       }
@@ -6683,16 +6814,31 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       · 变更行按 id 覆盖；
       · ids 是服务端「现在还存在」的全集 → 本地有、ids 没有的，就是别人删掉的，直接丢；
       · doneToday 是服务端今天的完成集合 → 每行都按它校正（勾选不改 todos.updated_at）。 */
-  function mergeTodos(local, changed, ids, doneToday) {
+  /**
+   * v4.21.0 需求 2 / v4.28.0 修正：增量合并且校正「今天这一行」的完成态。
+   * · doneMarks 是服务端回的 (todoId, occDate) 二元组 —— 完成标记按落点日存，
+   *   提前提醒时落点在将来，不能再用「今天的 id 集合」判断；
+   * · 老服务端只回 doneToday（今天的 id 集合）时按旧口径兜底（落点就是今天）。
+   */
+  function mergeTodos(local, changed, ids, doneMarks, doneToday) {
     const byId = new Map();
     for (const t of (local || [])) byId.set(Number(t.id), t);
     for (const t of (changed || [])) byId.set(Number(t.id), t);
     const keep = new Set((ids || []).map(Number));
+    const marks = new Map();
+    for (const pair of (doneMarks || [])) {
+      if (!Array.isArray(pair)) continue;
+      const id = Number(pair[0]);
+      if (!marks.has(id)) marks.set(id, new Set());
+      marks.get(id).add(String(pair[1]));
+    }
     const done = new Set((doneToday || []).map(Number));
     const out = [];
     byId.forEach((t, id) => {
       if (!keep.has(id)) return;
-      out.push(Object.assign({}, t, { doneToday: done.has(id) }));
+      const set = marks.get(id);
+      const doneTodayNow = set && t.rowOccDate ? set.has(String(t.rowOccDate)) : done.has(id);
+      out.push(Object.assign({}, t, { doneToday: !!doneTodayNow }));
     });
     return out;
   }
@@ -6710,7 +6856,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     }
     const out = await api('/api/todos' + (since ? `?since=${encodeURIComponent(since)}` : ''));
     if (since && Array.isArray(out.ids) && !out.reset) {
-      state.todos = mergeTodos(state.todos, out.todos, out.ids, out.doneToday);
+      state.todos = mergeTodos(state.todos, out.todos, out.ids, out.doneMarks, out.doneToday);
     } else {
       state.todos = out.todos;
       /* 全量回来重置计数：下一次增量从「完整的一份」开始往后跟 */
@@ -8335,6 +8481,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       case 'me-password': openPasswordForm(); break;
       case 'me-username': openUsernameForm(); break;
       case 'member-reset': openResetForm(id, el.dataset.name); break;
+      /* v4.28.0：点成员头像 → 查看他的全部可配置参数（仅管理员可见的入口） */
+      case 'member-info': await openMemberInfo(id); break;
       /* v4.10.0：删除成员（管理员）。★ 二次确认是需求原文：
          弹确认框写清「删的是谁、数据会一并删除、不可恢复」，确认后才发请求。 */
       case 'member-del': {
@@ -10161,6 +10309,105 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     });
   }
 
+  /* ═══ v4.28.0：管理员查看某个成员的**全部可配置参数** ═══════════
+     为什么需要：家人说「我收不到提醒」时，管理员过去只能隔着屏幕猜 ——
+     收件邮箱填了没、推送方式选了哪条、个人是不是把提醒关了、企微绑没绑，
+     每一条都在不同页面、还都是「他本人才能看到」的。
+     现在点一下头像就能看到全部生效值（含「跟随全局」时实际取到了什么）。
+     ★ 只读：这里是排查工具，改别人的设置仍然走各自的入口，避免误改。 */
+  function memberKv(k, v, tone) {
+    const text = String(v == null ? '' : v);
+    return `<div class="kv-row"><span class="k">${esc(k)}</span>`
+      + `<span class="v${tone ? ' ' + tone : ''}">${esc(text || '—')}</span></div>`;
+  }
+
+  function memberKvGroup(title, rows) {
+    const body = rows.filter(Boolean).join('');
+    if (!body) return '';
+    return `<div class="sub-head">${esc(title)}</div><div class="member-kv">${body}</div>`;
+  }
+
+  async function openMemberInfo(memberId) {
+    const id = Number(memberId);
+    if (!id) return;
+    let out;
+    try {
+      out = await api('/api/members/' + id);
+    } catch (err) {
+      toast(err.message || '读取成员参数失败', 'err');
+      return;
+    }
+    const m = out.member || {};
+    const p = out.prefs || {};
+    const e = out.effective || {};
+    const g = out.global || {};
+    const ch = out.channelsReady || {};
+    const bind = out.bind || {};
+    const cnt = out.counts || {};
+    const label = (v) => PUSH_LABEL[v] || PUSH_LABEL.auto;
+    const yn = (v) => (v ? '开' : '关');
+    const tone = (v) => (v ? 'on' : 'off');
+    const themeName = m.theme && THEME_META[m.theme] ? THEME_META[m.theme].name : '默认主题';
+    const kindCn = { todo: '待办', post: '动态', record: '记录本', comment: '评论' };
+    const kinds = Array.isArray(e.notifyKinds) ? e.notifyKinds : [];
+    const quiet = (s, en) => (s || en ? `${s || '—'} – ${en || '—'}` : '未设');
+    const readyCn = (x) => (!x ? '未知' : !x.ready ? '未配置 / 未启用' : x.enabled ? '已就绪' : '已配置但被家庭开关关掉');
+
+    openModal({
+      title: `成员参数 · ${m.display_name || m.username || ''}`,
+      body: `
+        ${memberKvGroup('账号与身份', [
+          memberKv('昵称', m.display_name),
+          memberKv('登录账号', '@' + String(m.username || '')),
+          memberKv('角色', m.is_admin ? '管理员' : '普通成员', m.is_admin ? 'on' : ''),
+          memberKv('界面主题', themeName),
+          memberKv('创建时间', m.created_at ? String(m.created_at).slice(0, 10) : ''),
+          memberKv('自定义头像', m.avatar ? '已上传' : '未上传（用昵称首字）'),
+        ])}
+        ${memberKvGroup('登录与安全', [
+          memberKv('记录本访问密码', m.record_lock_enabled
+            ? `已开启（${m.record_lock_custom ? '自定义密码' : '复用登录密码'}）` : '未开启', m.record_lock_enabled ? 'on' : 'off'),
+          memberKv('企业微信绑定', bind.bound ? String(bind.wecomUser || '已绑定') : '未绑定', bind.bound ? 'on' : 'off'),
+          memberKv('企业微信应用', readyCn({ ready: bind.ready, enabled: ch.wecom && ch.wecom.enabled })),
+        ])}
+        ${memberKvGroup('推送通道', [
+          memberKv('推送方式（默认通道）', label(m.push_channel)),
+          memberKv('待办类通道（含记录本提醒）', label(e.channels && e.channels.todo)),
+          memberKv('内容通知通道', label(e.channels && e.channels.notify)),
+          memberKv('记账推送通道', label(e.channels && e.channels.bill)),
+          memberKv('收件邮箱', m.notify_email || '未设置', m.notify_email ? '' : 'off'),
+          memberKv('邮件通道', readyCn(ch.mail)),
+          memberKv('企业微信通道', readyCn(ch.wecom)),
+          memberKv('飞书通道', readyCn(ch.feishu)),
+          memberKv('钉钉通道', readyCn(ch.dingtalk)),
+        ])}
+        ${memberKvGroup('待办提醒', [
+          memberKv('全家总开关', yn(g.remindEnabled), tone(g.remindEnabled)),
+          memberKv('个人开关', p.remind_enabled == null ? '跟随全家' : yn(p.remind_enabled !== '0')),
+          memberKv('实际是否收提醒', yn(e.remindEnabled), tone(e.remindEnabled)),
+          memberKv('默认提醒时间', e.remindDefaultTime || g.remindDefaultTime || '08:00'),
+          memberKv('提前提醒（家庭设置）', Number(g.advanceDays) > 0 ? `提前 ${g.advanceDays} 天` : '当天'),
+          memberKv('免打扰', quiet(e.remindQuietStart, e.remindQuietEnd)),
+        ])}
+        ${memberKvGroup('内容通知', [
+          memberKv('全家总开关', yn(g.notifyOnChange), tone(g.notifyOnChange)),
+          memberKv('个人开关', p.notify_on_change == null ? '跟随全家' : yn(p.notify_on_change !== '0')),
+          memberKv('实际是否收通知', yn(e.notifyOnChange), tone(e.notifyOnChange)),
+          memberKv('接收类型', kinds.length ? kinds.map((k) => kindCn[k] || k).join(' / ') : '全部（跟随全家）'),
+          memberKv('免打扰', quiet(p.notify_quiet_start, p.notify_quiet_end)),
+          memberKv('每分钟上限（全家）', `${Number(g.notifyMaxPerMin) || 20} 条`),
+        ])}
+        ${memberKvGroup('数据概览', [
+          memberKv('待办', `${Number(cnt.todos) || 0} 条`),
+          memberKv('记录本', `${Number(cnt.records) || 0} 条`),
+          memberKv('动态', `${Number(cnt.posts) || 0} 条`),
+          memberKv('账单', `${Number(cnt.bills) || 0} 笔`),
+        ])}
+        <div class="note-box" style="margin-top:12px">这里是当前生效的值：个人没有单独设置的项目，显示的是他从家庭设置里取到的默认值。本页只读，修改仍请到对应入口操作。</div>`,
+      foot: '<button type="button" class="btn-ghost" data-act="modal-close">关闭</button>',
+    });
+  }
+
   function openResetForm(memberId, name) {
     openModal({
       title: `为 ${name} 重置密码`,
@@ -10896,6 +11143,21 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <input type="number" data-mk="videoMaxMb" min="5" max="500" step="5"
                    value="${Number(s.videoMaxMb) || 50}" inputmode="numeric">
             <small class="field-hint">动态里单个视频文件。改大之后服务端请求体上限会跟着放宽，不用重启。</small></label>
+
+          <!-- v4.28.0：设置界面也能按人排查 —— 点成员头像看他的全部可配置参数。
+               放在这里是因为「为什么他收不到提醒」通常就是在这个页面被发现的。 -->
+          <div class="sub-head">成员参数（点头像查看）</div>
+          <div class="row-list">
+            ${(state.members || []).map((m) => `
+              <div class="row member-row">
+                <button type="button" class="avatar-link" data-act="member-info" data-id="${m.id}"
+                        title="查看 ${esc(m.display_name)} 的全部参数">${avatarHtml(m.display_name)}</button>
+                <div class="r-label"><b>${esc(m.display_name)}${m.is_admin ? ' <span class="badge cat">管理员</span>' : ''}</b>
+                  <small>@${esc(m.username)}</small></div>
+                <button type="button" class="btn-ghost btn-sm" data-act="member-info" data-id="${m.id}">查看参数</button>
+              </div>`).join('')}
+          </div>
+          <small class="field-hint">打开成员参数会关闭本窗口，本页未保存的修改不会保留。</small>
         </div>`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
         <button type="button" class="btn-primary" data-act="settings-save">保存</button>`,
