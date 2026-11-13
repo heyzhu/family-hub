@@ -106,6 +106,11 @@ CREATE TABLE IF NOT EXISTS todos (
   reminded_at  TEXT,
   remind_key   TEXT    NOT NULL DEFAULT '',
   visibility   TEXT    NOT NULL DEFAULT 'family' CHECK (visibility IN ('family','private')),
+  -- v4.28.2：指定可见成员（只有 visibility='private' 时有意义），存 ",2,3," 形式：
+  --   两端带逗号，服务端用 instr(visible_to, ',<id>,') 精确匹配，避免 id 前缀误命中
+  --   （2 与 12）。创建者本人不在里面 —— 他始终可见（user_id 就是本人）。
+  --   ★ 空串 + private 的老数据 = 「仅自己可见」，语义向后兼容，不需要改库值。
+  visible_to   TEXT    NOT NULL DEFAULT '',
   created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -156,6 +161,11 @@ CREATE TABLE IF NOT EXISTS posts (
   video_covers TEXT    NOT NULL DEFAULT '{}',              -- JSON 对象，视频路径 → 封面路径
   tags         TEXT    NOT NULL DEFAULT '[]',              -- JSON 数组，标签
   visibility   TEXT    NOT NULL DEFAULT 'family' CHECK (visibility IN ('family','private')),
+  -- v4.28.2：指定可见成员（只有 visibility='private' 时有意义），存 ",2,3," 形式：
+  --   两端带逗号，服务端用 instr(visible_to, ',<id>,') 精确匹配，避免 id 前缀误命中
+  --   （2 与 12）。创建者本人不在里面 —— 他始终可见（user_id 就是本人）。
+  --   ★ 空串 + private 的老数据 = 「仅自己可见」，语义向后兼容，不需要改库值。
+  visible_to   TEXT    NOT NULL DEFAULT '',
   created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -259,6 +269,11 @@ CREATE TABLE IF NOT EXISTS records (
   remind_at   TEXT    NOT NULL DEFAULT '',
   reminded_at TEXT    NOT NULL DEFAULT '',
   visibility  TEXT    NOT NULL DEFAULT 'family' CHECK (visibility IN ('family','private')),
+  -- v4.28.2：指定可见成员（只有 visibility='private' 时有意义），存 ",2,3," 形式：
+  --   两端带逗号，服务端用 instr(visible_to, ',<id>,') 精确匹配，避免 id 前缀误命中
+  --   （2 与 12）。创建者本人不在里面 —— 他始终可见（user_id 就是本人）。
+  --   ★ 空串 + private 的老数据 = 「仅自己可见」，语义向后兼容，不需要改库值。
+  visible_to   TEXT    NOT NULL DEFAULT '',
   created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

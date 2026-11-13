@@ -626,6 +626,44 @@ button:disabled:hover { background: var(--surface); }
 .chip.on { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
 .chip.on:hover { color: #fff; }
 .chip.chip-edit { color: var(--muted); border-style: dashed; }
+/* v4.28.2：参与人里「不在指定可见成员名单」的家人 —— 灰掉且不可点。
+   用 off 类而不是 disabled 样式（div 上 disabled 无效，但按钮上默认样式太淡），
+   保持一眼能看出「他在名单外，选不了」。 */
+.chip.off,
+.chip:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  background: var(--surface-3);
+  border-color: var(--line);
+  color: var(--muted);
+}
+.chip.off:hover,
+.chip:disabled:hover {
+  background: var(--surface-3);
+  border-color: var(--line);
+  color: var(--muted);
+}
+/* v4.28.2：可见范围（指定可见成员）的成员勾选面板 */
+.vis-members { margin-top: var(--sp-2); }
+.vis-members.hidden { display: none; }
+.vis-members-hint {
+  margin-bottom: 6px;
+  font-size: var(--fs-2xs);
+  line-height: 1.6;
+  color: var(--muted);
+}
+.vis-chip { line-height: 1.5; }
+/* 动态发布区的可见范围两档按钮：原来是一个开关按钮，现在并排两个 */
+.compose-vis { display: flex; gap: var(--sp-2); padding: 0 12px 8px; }
+/* v4.28.2：两档可见范围各占一半宽 —— 内容宽度不一致时（「👨‍👩‍👧 全家可见」比
+   「🔒 指定可见成员」短）若按内容分配，两个按钮会一宽一窄、看着像没对齐。 */
+.compose-vis > .btn-ghost { flex: 1 1 0; }
+.btn-ghost.on {
+  background: var(--primary-soft);
+  border-color: var(--primary-line);
+  color: var(--primary-ink);
+  font-weight: 600;
+}
 .chip-del .chip-x { font-style: normal; margin-left: 5px; opacity: .55; font-size: var(--fs-2xs); }
 .tag-filter {
   display: flex;
@@ -2860,6 +2898,10 @@ select.inp-compact { padding-right: 26px; }
   color: var(--muted);
 }
 .sub-head:first-child { margin-top: 0; }
+/* v4.28.2 需求 3：成员人数后面跟一句操作提示（管理员点头像可看该成员的配置）。
+   提示与标题同一行、次要色、字重正常 —— 是「怎么用」的说明，不是第二个标题。 */
+.sub-head-row { display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; }
+.sub-head-hint { font-weight: 400; letter-spacing: 0; color: var(--muted); opacity: .9; }
 /* 推送配置里「勾上才展开」的详细配置：左边一条淡竖线表示从属关系 */
 .push-sub { margin-top: var(--sp-2); padding-left: var(--sp-3); border-left: 2px solid var(--primary-soft); }
 

@@ -584,7 +584,8 @@ async function runRecordScan(now = new Date()) {
         },
       );
       if (res.errors.length) out.errors.push(...res.errors.map((e) => `「${r.title}」：${e}`));
-      if (res.mail || res.wecom || res.deferred) out.sent++;
+      /* ★ v4.28.2：push.sentAny() 统一判据（含飞书 / 钉钉），否则飞书单通道时 sent 恒为 0。 */
+      if (push.sentAny(res)) out.sent++;
       /* ★ 一条记录只提醒一次：无论发没发出去都落标记 ——
          否则「没配邮箱」的家庭会每分钟重扫同一条，日志被刷爆、真问题反而看不见。 */
       db.run('UPDATE records SET reminded_at = ? WHERE id = ?', [nowIso, r.id]);
@@ -606,6 +607,26 @@ async function runRecordScan(now = new Date()) {
  *     （返回 'waiting'，下一轮扫描（1 分钟后）再看）。跳过他会让他永远收不到，
  *     这比全家晚几小时更糟。
  */
+/**
+ * 这条待办对某人是否可见 —— 与 api.js 的 VISIBLE 同口径（v4.28.2）。
+ *
+ * 为什么提醒这里还要单独判一次：收件人是从 `participants`（一串昵称）算出来的，
+ * 而参与者名单是**创建当时**选的，之后创建者完全可能把某人从「指定可见成员」里去掉。
+ * 不定时（每次发送时）再判一次，才不会「已经不让看了，邮件还照发」。
+ *
+ * 判定只需要这一行自己的字段，不必再查库：
+ *   · family → 谁都能看；
+ *   · private → 创建者本人，或 visible_to（",2,3,"）里点名的人。
+ */
+function canSeeTodo(t, userId) {
+  if (!t) return false;
+  if (String(t.visibility || 'family') !== 'private') return true;
+  const uid = Number(userId) || 0;
+  if (!uid) return false;
+  if (Number(t.user_id) === uid) return true;
+  return String(t.visible_to || '').split(',').map((x) => Number(x)).includes(uid);
+}
+
 async function sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, advIn) {
   let participants = [];
   try { participants = JSON.parse(t.participants || '[]'); } catch { /* 忽略 */ }
@@ -632,6 +653,11 @@ async function sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, advIn) 
        「不是纯邮件」—— 否则默认通道的人会被这条门槛挡在外面。 */
     const viaWecom = channel !== 'mail';
     if (!u.notify_email && !viaWecom) continue;
+    /* ★ v4.28.2：这条待办对他就不可见 → 不发。
+       需求原文：「该条信息的推送逻辑以此设置为准，对不可见成员不推送」。
+       放在渠道判断之后、偏好判断之前都对；这里紧跟渠道判断，读起来是
+       「这个人在不在收件范围之内」的第一道门。 */
+    if (!canSeeTodo(t, u.id)) continue;
     if (!userprefs.wantsRemind(u.id, prefsMap.get(Number(u.id)))) continue;
     if (targets.some((x) => x.id === Number(u.id))) continue;           // 同一个人被两个昵称匹配到
     targets.push({
@@ -698,8 +724,11 @@ async function sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, advIn) 
       }),
     });
     /* v4.10.0：deferred = 企微主动推送被个人免打扰拦下、已沉入队列（due_at=免打扰结束）。
-       消息已安全落库、到点必发，所以按「已提醒」记账 —— 否则每轮重试、免打扰一结束反而连发。 */
-    if (!res.mail && !res.wecom && !res.deferred) {
+       消息已安全落库、到点必发，所以按「已提醒」记账 —— 否则每轮重试、免打扰一结束反而连发。
+       ★ v4.28.2：判据改用 push.sentAny()，飞书 / 钉钉也算「发出去了」。
+         旧写法只看 mail + wecom，只配飞书或钉钉的家庭会判成 failed → 不写 remind_key
+         → 每分钟重扫、每分钟再推一次。 */
+    if (!push.sentAny(res)) {
       // 一个都没发出去：不标记已提醒，下一轮自动重试（和原来「发信失败」同一种处理）
       if (res.errors.length) out.errors.push(...res.errors.map((e) => `「${t.title}」：${e}`));
       return 'failed';
@@ -707,7 +736,7 @@ async function sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, advIn) 
     if (res.errors.length) out.errors.push(...res.errors.map((e) => `「${t.title}」：${e}`));
     db.run('UPDATE todos SET reminded_at = ?, remind_key = ? WHERE id = ?', [nowIso, occKey, t.id]);
     out.sent++;
-    out.recipients += res.mail + res.wecom + (res.deferred || 0);
+    out.recipients += res.mail + res.wecom + res.feishu + res.dingtalk + (res.deferred || 0);
     if (res.wecom) out.viaWecom = (out.viaWecom || 0) + res.wecom;
     if (res.deferred) out.deferred = (out.deferred || 0) + res.deferred;
     if (res.fallback) out.fallback = (out.fallback || 0) + res.fallback;

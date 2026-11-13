@@ -197,7 +197,11 @@ async function flushInner(opts) {
         //   （且 due_at = 免打扰结束时刻，此刻多半已出时段）
         { sendMail, smtpReady, deferQuiet: false, deferKind: 'outbox', kind: String(list[0].kind || 'outbox') },
       );
-      if (!res.mail && !res.wecom) {
+      /* ★ v4.28.2：判据改用 push.sentAny()。
+         旧写法只看 res.mail / res.wecom —— 只配飞书或钉钉时，群机器人其实已经发出去了，
+         这里却抛「没有可用的推送通道」，于是 **不写 sent_at**，下一分钟原样再发一遍：
+         队列里每条都会无限重推（配合记账报表的 10 分钟节流，就是用户看到的定时重复推送）。 */
+      if (!push.sentAny(res)) {
         throw new Error(res.errors[0] || '没有可用的推送通道');
       }
       const ids = list.map((r) => Number(r.id));
@@ -207,6 +211,8 @@ async function flushInner(opts) {
       );
       out.mails++;
       if (res.wecom) out.wecom++;
+      if (res.feishu) out.feishu = (out.feishu || 0) + 1;
+      if (res.dingtalk) out.dingtalk = (out.dingtalk || 0) + 1;
       out.rows += list.length;
       for (const e of res.errors) out.errors.push(e);
     } catch (err) {

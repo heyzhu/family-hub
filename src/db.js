@@ -146,6 +146,9 @@ function todosColumns(opts) {
     );
   }
   cols.push(
+    /* v4.28.2：指定可见成员（visibility='private' 时生效）。存 ",2,3,"。
+       ★ 必须写进列清单：重建只搬清单里的列，漏了就是「用户选的可见范围凭空消失」。 */
+    ['visible_to', "TEXT    NOT NULL DEFAULT ''"],
     ['visibility', "TEXT    NOT NULL DEFAULT 'family' CHECK (visibility IN ('family','private'))"],
     ['created_at', "TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"],
     ['updated_at', "TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"],
@@ -311,6 +314,28 @@ function migrate() {
   if (!columnExists('bills', 'platform')) {
     engine.exec("ALTER TABLE bills ADD COLUMN platform TEXT NOT NULL DEFAULT ''");
     done.push('bills.platform');
+  }
+  /* v4.28.2：可见性从「仅自己可见」升级为「指定可见成员」。
+     三张表各补一列 visible_to（逗号分隔且两端带逗号，如 ",2,3,"）。
+     ★ 不改 visibility 的取值与 CHECK：'private' 仍然是那个值，只是含义从
+       「只有我」扩成「我 + 我勾的人」。老数据 visible_to 为空 → 仍然只有自己可见，
+       所以这次升级对历史内容是**零变化**的（不需要回填、不需要改库值）。
+     ★ 位置：必须留在两次 todos 重建之后（见上面那段警告）。
+     ★ 写成三段而不是 for 循环：_verify/docker.test.js 的 MIGRATE_ITEMS 快照靠正则
+       抓「done.push 后面紧跟引号字面量」，循环里传模板字符串会被抓成 `${t}.visible_to`
+       这种非字面量，快照对不上 —— 那等于把「加列必须有人来确认」这道闸门作废。
+       （本注释里刻意不写出那个函数调用的完整形态，否则也会被同一条正则抓进去。） */
+  if (!columnExists('todos', 'visible_to')) {
+    engine.exec("ALTER TABLE todos ADD COLUMN visible_to TEXT NOT NULL DEFAULT ''");
+    done.push('todos.visible_to');
+  }
+  if (!columnExists('posts', 'visible_to')) {
+    engine.exec("ALTER TABLE posts ADD COLUMN visible_to TEXT NOT NULL DEFAULT ''");
+    done.push('posts.visible_to');
+  }
+  if (!columnExists('records', 'visible_to')) {
+    engine.exec("ALTER TABLE records ADD COLUMN visible_to TEXT NOT NULL DEFAULT ''");
+    done.push('records.visible_to');
   }
   /* ★ v4.3.3：下面这批 ALTER 必须留在**两次 todos 重建之后**。
      migrate() 里 todos 会被 DROP + RENAME 两次（放开 NOT NULL、放开 repeat 约束），
@@ -798,13 +823,13 @@ function importAll(payload) {
         'push_channel', 'theme'], t.users);
       insertRows('todos', ['id', 'user_id', 'owner_name', 'title', 'note', 'todo_date', 'start_time', 'end_time',
         'location', 'participants', 'priority', 'repeat', 'done', 'remind', 'reminded_at', 'remind_key',
-        'visibility', 'created_at', 'updated_at'], t.todos);
-      insertRows('posts', ['id', 'user_id', 'owner_name', 'content', 'images', 'videos', 'tags', 'visibility', 'created_at', 'updated_at'], t.posts);
+        'visibility', 'visible_to', 'created_at', 'updated_at'], t.todos);
+      insertRows('posts', ['id', 'user_id', 'owner_name', 'content', 'images', 'videos', 'tags', 'visibility', 'visible_to', 'created_at', 'updated_at'], t.posts);
       // v4.21.0：旧备份里没有 todo_done_marks → 空数组直接返回，不报错
       insertRows('todo_done_marks', ['todo_id', 'occ_date', 'user_id', 'done_at'], t.todo_done_marks);
       insertRows('comments', ['id', 'post_id', 'user_id', 'owner_name', 'content', 'created_at'], t.comments);
       insertRows('records', ['id', 'user_id', 'owner_name', 'title', 'content', 'category', 'tags', 'images',
-        'attachments', 'pinned', 'archived', 'visibility', 'created_at', 'updated_at',
+        'attachments', 'pinned', 'archived', 'visibility', 'visible_to', 'created_at', 'updated_at',
         'content_json', 'remind', 'remind_time', 'remind_advance_days', 'remind_channel', 'remind_at', 'reminded_at'],
         t.records, { remind: 0 });
       // v1.9.0：旧备份文件里没有这两张表 → insertRows 对空数组直接返回，不会报错

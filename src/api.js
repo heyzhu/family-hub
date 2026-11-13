@@ -6,11 +6,13 @@
  * SQLite 没有行级安全（RLS），所以可见性判断必须由服务端代码保证。
  * 规则只有一条，并且只在这里实现一次：
  *
- *     可见  ⟺  visibility = 'family' OR user_id = <当前登录用户>
+ *     可见  ⟺  visibility = 'family'
+ *              OR user_id = <当前登录用户>
+ *              OR visible_to 里点了当前用户的名（v4.28.2「指定可见成员」）
  *
  * 所有针对 todos / posts / comments / records 的读取、修改、删除都必须带上
- * VISIBLE 谓词；写入时 user_id 一律取自服务端会话，绝不接受客户端传入。
- * 新增接口时如果绕过了 VISIBLE，就等于开了越权漏洞。
+ * VISIBLE 谓词（参数用 visArgs(me)，别手写占位符）；写入时 user_id 一律取自服务端会话，
+ * 绝不接受客户端传入。新增接口时如果绕过了 VISIBLE，就等于开了越权漏洞。
  */
 const fs = require('fs');
 const path = require('path');
@@ -45,8 +47,62 @@ const msgTpl = require('./msgTpl');
 const resetpw = require('./resetpw');
 const Repeat = require('../public/repeat.js');
 
-/** 可见性谓词。占位符顺序：先 user_id，再其它条件（必须放在 WHERE 的最后一组） */
-const VISIBLE = "(visibility = 'family' OR user_id = ?)";
+/**
+ * 可见性谓词 —— 全项目**唯一**的可见性实现（todos / posts / records 三张表共用）。
+ *
+ * 取值口径（v4.28.2 起）：
+ *   · `'family'`  → 全家可见；
+ *   · `'private'` → **指定可见成员**：创建者本人 + `visible_to` 里列出的人。
+ *     老数据 `visible_to` 为空 → 自然退化成「仅自己可见」，所以升级不改任何库值、
+ *     也不需要回填（这正是没有把取值改成 'custom' 的原因：那要重建三张表）。
+ *
+ * 占位符顺序：先 user_id（本人），再 `,<id>,`（被点名的成员）。
+ * 用 instr 而不是 LIKE：**精确匹配整段 id**，2 不会命中 12；
+ * 也不依赖 `%` / `_` 的转义规则（LIKE 里这两个字符在 id 里虽然不会出现，但规则不该靠这个）。
+ */
+const VISIBLE = "(visibility = 'family' OR user_id = ? OR instr(visible_to, ?) > 0)";
+
+/** VISIBLE 对应的两个参数（本人 id + 带逗号的 id 片段）。所有调用点都用它，别手写。 */
+function visArgs(me) {
+  const id = Number(me && me.id) || 0;
+  return [id, `,${id},`];
+}
+
+/**
+ * 把前端传来的「指定可见成员」规整成库里那一种格式 `",2,3,"`。
+ * 规则（服务端收口，不信前端）：
+ *   · 只保留真实存在的家庭成员（不存在的 id 直接丢，防止把垃圾写进库）；
+ *   · 去掉创建者本人（他始终可见，写进去只会让 SQL 多一次匹配）；
+ *   · 去重 + 升序，保证同一份选择每次落库都是同一个字符串（便于比对与测试）；
+ *   · 一个都不剩就返回空串 —— `''` + private 就是「仅自己可见」。
+ * @param {Array<number|string>|string} v 数组或 "2,3" 形式
+ * @param {number} ownerId 创建者 id（永远可见，不写进 visible_to）
+ */
+function normVisibleTo(v, ownerId) {
+  const raw = Array.isArray(v) ? v : String(v == null ? '' : v).split(',');
+  const owner = Number(ownerId) || 0;
+  const ids = [];
+  for (const x of raw) {
+    const id = Number(String(x).trim()) || 0;
+    if (!id || id === owner || ids.includes(id)) continue;
+    if (!db.get('SELECT id FROM users WHERE id = ?', [id])) continue;
+    ids.push(id);
+  }
+  ids.sort((a, b) => a - b);
+  return ids.length ? `,${ids.join(',')},` : '';
+}
+
+/** `",2,3,"` → `[2, 3]`（下发给前端用） */
+function visibleToOf(row) {
+  return String((row && row.visible_to) || '')
+    .split(',').map((x) => Number(x)).filter((n) => n > 0);
+}
+
+/* ★ 「这一行对某个人是否可见」的判据**只有一份实现**：reminders.canSeeTodo()。
+   为什么不在 api.js 里也留一份：待办提醒的收件人是从 participants（一串昵称）算出来的，
+   只有 reminders 知道那份名单怎么来的，判据跟着它走才不会走偏 ——
+   而可见性走偏的后果是「悄悄把私事发给不该看的人」，本项目最不能接受这种失败。
+   api.js 这一侧的隔离靠 VISIBLE 谓词（SQL 层面），两边是同一口径的文字版与 SQL 版。 */
 
 const VISIBILITIES = new Set(['family', 'private']);
 const PRIORITIES = new Set(['low', 'normal', 'high']);
@@ -271,6 +327,8 @@ const shapeTodo = (r, me, ctx) => {
     urgeStartAt: r.urge_start_at || '',
     remindedAt: r.reminded_at || '',
     visibility: r.visibility,
+    /* v4.28.2：指定可见成员（id 数组）；空数组 = 仅自己可见，与老数据一致。 */
+    visibleTo: visibleToOf(r),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     mine: r.user_id === me.id,
@@ -352,6 +410,8 @@ const shapePost = (r, me) => ({
   videoCovers: parseJsonObject(r.video_covers),
   tags: parseJsonArray(r.tags),
   visibility: r.visibility,
+  /* v4.28.2：指定可见成员（id 数组）；空数组 = 仅自己可见，与老数据一致。 */
+  visibleTo: visibleToOf(r),
   createdAt: r.created_at,
   /* v4.5.0 需求 3：**发布时间**是这条动态的固定属性，任何后续操作都不许改它。
      ★ 这里刻意再给一个 publishedAt 别名：本项目里 `created_at` 到处都是，
@@ -445,6 +505,8 @@ const shapeRecord = (r, me) => {
     // v1.9.0：归档。归档 ≠ 删除 —— 记录还在库里、还能搜到，只是列表默认不展示
     archived: !!r.archived,
     visibility: r.visibility,
+    /* v4.28.2：指定可见成员（id 数组）；空数组 = 仅自己可见，与老数据一致。 */
+    visibleTo: visibleToOf(r),
     // v4.12.0：记录本提醒（默认不提醒）。advanceDays = -1 表示跟随家庭设置。
     remind: !!r.remind,
     remindTime: String(r.remind_time || ''),
@@ -574,18 +636,18 @@ const todos = {
     const since = typeof o.since === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]*Z?$/.test(o.since) ? o.since : '';
     const ctx = remindCtx();
     const now = new Date().toISOString();
-    const totalRow = db.get(`SELECT COUNT(*) AS n FROM todos WHERE ${VISIBLE}`, [me.id]);
+    const totalRow = db.get(`SELECT COUNT(*) AS n FROM todos WHERE ${VISIBLE}`, visArgs(me));
     const total = Number((totalRow && totalRow.n) || 0);
     const rows = since
       ? db.all(
         `SELECT * FROM todos WHERE ${VISIBLE} AND updated_at >= ?
           ORDER BY updated_at ASC, id ASC LIMIT ${TODO_LIST_LIMIT}`,
-        [me.id, since],
+        [...visArgs(me), since],
       )
       : db.all(
         `SELECT * FROM todos WHERE ${VISIBLE}
           ORDER BY (todo_date IS NULL) ASC, todo_date ASC, start_time ASC, id ASC LIMIT ${TODO_LIST_LIMIT}`,
-        [me.id],
+        visArgs(me),
       );
     const out = {
       todos: rows.map((r) => shapeTodo(r, me, ctx)),
@@ -598,7 +660,7 @@ const todos = {
     if (since) {
       out.since = since;
       out.incremental = true;
-      out.ids = db.all(`SELECT id FROM todos WHERE ${VISIBLE}`, [me.id]).map((r) => Number(r.id));
+      out.ids = db.all(`SELECT id FROM todos WHERE ${VISIBLE}`, visArgs(me)).map((r) => Number(r.id));
       /* v4.28.0：完成标记按落点日存，增量同步不能再只回「今天的 id 集合」——
          提前提醒时，今天这一行代表的是几天后的落点。改成把窗口内的
          (todoId, occDate) 全回给前端，由它按每行的 rowOccDate 自行比对。
@@ -630,7 +692,7 @@ const todos = {
    * 权限：只有创建者能结束自己的重复（别人无权替你停掉提醒）。
    */
   endRepeat(me, id) {
-    const row = db.get(`SELECT * FROM todos WHERE id = ? AND ${VISIBLE}`, [id, me.id]);
+    const row = db.get(`SELECT * FROM todos WHERE id = ? AND ${VISIBLE}`, [id, ...visArgs(me)]);
     if (!row) throw fail('事项不存在或无权访问', 404);
     if (row.user_id !== me.id) throw fail('只有创建者可以结束这条重复提醒', 403);
     if (!String(row.repeat_rule || '') && !pickRepeat(row.repeat)) throw fail('这条待办不是重复事项');
@@ -655,7 +717,7 @@ const todos = {
    * @param {{date?:string, done?:boolean}} b
    */
   completeOccurrence(me, id, b) {
-    const row = db.get(`SELECT * FROM todos WHERE id = ? AND ${VISIBLE}`, [id, me.id]);
+    const row = db.get(`SELECT * FROM todos WHERE id = ? AND ${VISIBLE}`, [id, ...visArgs(me)]);
     if (!row) throw fail('事项不存在或无权访问', 404);
     const rule = getRepeatRule(row);
     if (!rule) {
@@ -701,6 +763,9 @@ const todos = {
        有重复规则 → 强制清空；没有开始日期 → 强制清空。 */
     const endDate = repeat ? '' : pickEndDate(b.endDate, date, '结束日期');
     const visibility = pickVisibility(b.visibility);
+    /* v4.28.2：指定可见成员。只在 private 时有意义 —— 全家可见时清空，
+       免得留下「选了全家、但库里还挂着一串 id」这种自相矛盾的数据（切回指定时前端会重选）。 */
+    const visibleTo = visibility === 'private' ? normVisibleTo(b.visibleTo, me.id) : '';
     const urgeMinutes = pickUrgeMinutes(b.urgeMinutes);
     /* 催促状态机（文档 5.10.1-4）：开催促 → pending（urge_count=0）；不开 → idle。
        urge_start_at 缺省走「首次提醒时刻」，只有显式传了才存。 */
@@ -713,8 +778,8 @@ const todos = {
                           location, participants, priority, repeat, repeat_rule, done, remind,
                           remind_advance_days, quick, urge_minutes,
                           urge_status, urge_max_count, urge_window_start, urge_window_end, urge_start_at,
-                          visibility, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                          visibility, visible_to, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         me.id, me.display_name, title, str(b.note, 2000, '备注'),
         date, endDate, timeOnly(b.startTime, '开始时间'), timeOnly(b.endTime, '结束时间'),
@@ -735,26 +800,37 @@ const todos = {
         timeOnly(b.urgeWindowEnd, '催促静默结束') || '22:00',
         timeOnly(b.urgeStartAt, '催促开始时刻') || '',
         visibility,
+        visibleTo,
         nowIso(), nowIso(),
       ],
     );
     const todo = shapeTodo(db.get('SELECT * FROM todos WHERE id = ?', [res.lastInsertRowid]), me, remindCtx());
     notify.changed({
-      actor: me, kind: 'todo', action: 'create', visibility, id: todo.id,
+      actor: me, kind: 'todo', action: 'create', visibility, visibleTo, id: todo.id,
       title: todo.title, detail: [todo.date || '未安排日期', todo.startTime].filter(Boolean).join(' '),
     });
     return todo;
   },
 
   update(me, id, b) {
-    const row = db.get(`SELECT * FROM todos WHERE id = ? AND ${VISIBLE}`, [id, me.id]);
+    const row = db.get(`SELECT * FROM todos WHERE id = ? AND ${VISIBLE}`, [id, ...visArgs(me)]);
     if (!row) throw fail('事项不存在或无权访问', 404);
 
     // 可见性只允许创建者本人修改，避免他人把别人的事「藏起来」
     let visibility = row.visibility;
+    /* v4.28.2：指定可见成员跟着可见性一起管。
+       · 改可见性 → 按新可见性重算成员（切回「全家可见」时清空名单）；
+       · 只改名单（visibleTo 单独传）→ 也视为「改可见范围」，同样只有创建者能改。
+       创建者本人用 row.user_id（不是 me.id）：别人代改时不能被写成代改人。 */
+    let visibleTo = String(row.visible_to || '');
+    const wantVisTo = b.visibleTo !== undefined ? b.visibleTo : b.visible_to;
     if (b.visibility != null && b.visibility !== row.visibility) {
       if (row.user_id !== me.id) throw fail('只有创建者可以修改可见性', 403);
       visibility = pickVisibility(b.visibility);
+      visibleTo = visibility === 'private' ? normVisibleTo(wantVisTo, row.user_id) : '';
+    } else if (wantVisTo !== undefined) {
+      if (row.user_id !== me.id) throw fail('只有创建者可以修改可见范围', 403);
+      visibleTo = visibility === 'private' ? normVisibleTo(wantVisTo, row.user_id) : '';
     }
 
     const date = b.date == null ? (row.todo_date || '') : optDate(b.date, '日期');
@@ -826,7 +902,7 @@ const todos = {
                         remind = ?, remind_advance_days = ?, urge_minutes = ?, urge_status = ?, urge_count = ?,
                         urge_max_count = ?, urge_window_start = ?, urge_window_end = ?, urge_start_at = ?,
                         reminded_at = ?, remind_key = ?,
-                        visibility = ?, updated_at = ?
+                        visibility = ?, visible_to = ?, updated_at = ?
         WHERE id = ?`,
       [
         b.title == null ? row.title : str(b.title, 100, '标题', { required: true }),
@@ -853,6 +929,7 @@ const todos = {
         remindedAt,
         remindKey,
         visibility,
+        visibleTo,
         nowIso(), id,
       ],
     );
@@ -864,10 +941,10 @@ const todos = {
     const todo = shapeTodo(db.get('SELECT * FROM todos WHERE id = ?', [id]), me, ctx);
     // 只勾选/取消完成不算「更新了内容」，不打扰家人
     const CONTENT_FIELDS = ['title', 'note', 'date', 'endDate', 'startTime', 'endTime', 'location',
-      'participants', 'repeat', 'visibility'];
+      'participants', 'repeat', 'visibility', 'visibleTo'];
     if (CONTENT_FIELDS.some((k) => b[k] != null)) {
       notify.changed({
-        actor: me, kind: 'todo', action: 'update', visibility, id: todo.id,
+        actor: me, kind: 'todo', action: 'update', visibility, visibleTo, id: todo.id,
         title: todo.title, detail: [todo.date || '未安排日期', todo.startTime].filter(Boolean).join(' '),
       });
     }
@@ -875,7 +952,7 @@ const todos = {
   },
 
   remove(me, id) {
-    const res = db.run(`DELETE FROM todos WHERE id = ? AND ${VISIBLE}`, [id, me.id]);
+    const res = db.run(`DELETE FROM todos WHERE id = ? AND ${VISIBLE}`, [id, ...visArgs(me)]);
     if (!res.changes) throw fail('事项不存在或无权删除', 404);
     /* v4.21.0 需求 2：顺手清掉这条重复事项的完成标记。
        外键 CASCADE 在正常情况下已经代劳，但 migrate() 重建表期间外键是关的，
@@ -914,7 +991,7 @@ const posts = {
   list(me, limit = 100, q = '') {
     const n = Math.min(Math.max(Number(limit) || 100, 1), 300);
     const where = [VISIBLE];
-    const params = [me.id];
+    const params = visArgs(me);
     const kw = String(q || '').trim().slice(0, 50);
     if (kw) {
       where.push('(content LIKE ? OR tags LIKE ? OR owner_name LIKE ?)');
@@ -992,24 +1069,26 @@ const posts = {
     const tags = strList(b.tags, 10, 16, '标签');
     if (!content && !images.length && !videos.length) throw fail('请输入内容，或选择图片 / 视频');
     const visibility = pickVisibility(b.visibility);
+    /* v4.28.2：指定可见成员（仅 private 生效；全家可见时清空名单）。 */
+    const visibleTo = visibility === 'private' ? normVisibleTo(b.visibleTo, me.id) : '';
     // v4.3.3 需求 8：视频封面（没传就是空对象，前端回退到 #t=0.1）
     const videoCovers = pickVideoCovers(b.videoCovers, videos);
     const res = db.run(
-      `INSERT INTO posts (user_id, owner_name, content, images, videos, video_covers, tags, visibility, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO posts (user_id, owner_name, content, images, videos, video_covers, tags, visibility, visible_to, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       [me.id, me.display_name, content, JSON.stringify(images), JSON.stringify(videos),
-        JSON.stringify(videoCovers), JSON.stringify(tags), visibility, nowIso(), nowIso()],
+        JSON.stringify(videoCovers), JSON.stringify(tags), visibility, visibleTo, nowIso(), nowIso()],
     );
     const post = shapePost(db.get('SELECT * FROM posts WHERE id = ?', [res.lastInsertRowid]), me);
     notify.changed({
-      actor: me, kind: 'post', action: 'create', visibility, id: post.id,
+      actor: me, kind: 'post', action: 'create', visibility, visibleTo, id: post.id,
       title: content || postSummary(post), detail: postDetail(post),
     });
     return post;
   },
 
   update(me, id, b) {
-    const row = db.get(`SELECT * FROM posts WHERE id = ? AND ${VISIBLE}`, [id, me.id]);
+    const row = db.get(`SELECT * FROM posts WHERE id = ? AND ${VISIBLE}`, [id, ...visArgs(me)]);
     if (!row) throw fail('动态不存在或无权访问', 404);
     if (row.user_id !== me.id) throw fail('只能修改自己发布的动态', 403);
     const content = b.content == null ? row.content : str(b.content, 5000, '内容');
@@ -1026,25 +1105,32 @@ const posts = {
       ...(b.videoCovers && typeof b.videoCovers === 'object' ? b.videoCovers : {}),
     };
     const videoCovers = pickVideoCovers(coverBase, videos);
-    db.run('UPDATE posts SET content = ?, images = ?, videos = ?, video_covers = ?, tags = ?, visibility = ?, updated_at = ? WHERE id = ?', [
+    /* v4.28.2：可见性 / 指定可见成员。改可见性 → 按新值重算名单；
+       只改名单也允许（同样是私密内容自己的事，创建者才能改，上面已校验）。 */
+    const nextVis = b.visibility == null ? row.visibility : pickVisibility(b.visibility);
+    const wantVisTo = b.visibleTo !== undefined ? b.visibleTo : b.visible_to;
+    const nextVisTo = nextVis !== 'private' ? ''
+      : (wantVisTo !== undefined ? normVisibleTo(wantVisTo, row.user_id) : String(row.visible_to || ''));
+    db.run('UPDATE posts SET content = ?, images = ?, videos = ?, video_covers = ?, tags = ?, visibility = ?, visible_to = ?, updated_at = ? WHERE id = ?', [
       content,
       JSON.stringify(images),
       JSON.stringify(videos),
       JSON.stringify(videoCovers),
       b.tags == null ? row.tags : JSON.stringify(strList(b.tags, 10, 16, '标签')),
-      b.visibility == null ? row.visibility : pickVisibility(b.visibility),
+      nextVis,
+      nextVisTo,
       nowIso(), id,
     ]);
     const post = shapePost(db.get('SELECT * FROM posts WHERE id = ?', [id]), me);
     notify.changed({
-      actor: me, kind: 'post', action: 'update', visibility: post.visibility, id: post.id,
+      actor: me, kind: 'post', action: 'update', visibility: post.visibility, visibleTo: nextVisTo, id: post.id,
       title: post.content || postSummary(post), detail: postDetail(post),
     });
     return post;
   },
 
   remove(me, id) {
-    const row = db.get(`SELECT * FROM posts WHERE id = ? AND ${VISIBLE}`, [id, me.id]);
+    const row = db.get(`SELECT * FROM posts WHERE id = ? AND ${VISIBLE}`, [id, ...visArgs(me)]);
     if (!row) throw fail('动态不存在或无权删除', 404);
     // 家庭内容允许家人协作整理，隐私内容只有本人能删
     if (row.visibility === 'private' && row.user_id !== me.id) throw fail('无权删除', 403);
@@ -1056,7 +1142,7 @@ const posts = {
 const comments = {
   create(me, b) {
     const postId = idOf(b.postId);
-    const post = db.get(`SELECT id, content, visibility FROM posts WHERE id = ? AND ${VISIBLE}`, [postId, me.id]);
+    const post = db.get(`SELECT id, content, visibility, visible_to FROM posts WHERE id = ? AND ${VISIBLE}`, [postId, ...visArgs(me)]);
     if (!post) throw fail('动态不存在或无权评论', 404);
     const content = str(b.content, 1000, '评论', { required: true });
     /* v4.3.3 需求 1：回复他人评论（两级结构，交互同朋友圈）。
@@ -1080,7 +1166,7 @@ const comments = {
     const comment = shapeComment(db.get('SELECT * FROM comments WHERE id = ?', [res.lastInsertRowid]), me);
     // 评论也算「更新了全家共享的内容」——通知除作者外的家人
     notify.changed({
-      actor: me, kind: 'comment', action: 'create', visibility: post.visibility, id: comment.id,
+      actor: me, kind: 'comment', action: 'create', visibility: post.visibility, visibleTo: post.visible_to, id: comment.id,
       title: post.content,
       // v4.3.3：邮件里要能看出这是「回复某人」的评论，而不是一句没头没尾的话
       detail: replyToName ? `回复 ${replyToName}：${content}` : content,
@@ -1092,7 +1178,7 @@ const comments = {
     // 本人可删；动态发布者也可清理自己动态下的评论
     const row = db.get('SELECT * FROM comments WHERE id = ?', [id]);
     if (!row) throw fail('评论不存在', 404);
-    const post = db.get(`SELECT id, user_id FROM posts WHERE id = ? AND ${VISIBLE}`, [row.post_id, me.id]);
+    const post = db.get(`SELECT id, user_id FROM posts WHERE id = ? AND ${VISIBLE}`, [row.post_id, ...visArgs(me)]);
     if (!post) throw fail('评论不存在或无权访问', 404);
     if (row.user_id !== me.id && post.user_id !== me.id) throw fail('只能删除自己的评论', 403);
     /* v4.3.3 需求 1：删顶层评论时，它下面的回复一起删（朋友圈同款语义）。
@@ -1117,7 +1203,7 @@ const comments = {
 const likes = {
   toggle(me, b) {
     const postId = idOf(b.postId);
-    const post = db.get(`SELECT id, content, visibility FROM posts WHERE id = ? AND ${VISIBLE}`, [postId, me.id]);
+    const post = db.get(`SELECT id, content, visibility, visible_to FROM posts WHERE id = ? AND ${VISIBLE}`, [postId, ...visArgs(me)]);
     if (!post) throw fail('动态不存在或无权访问', 404);
     const target = b.target === 'comment' ? 'comment' : 'post';
     let targetId = postId;
@@ -1164,8 +1250,8 @@ const likes = {
 const contribs = {
   create(me, b) {
     const postId = idOf(b.postId);
-    const post = db.get(`SELECT id, user_id, content, visibility FROM posts WHERE id = ? AND ${VISIBLE}`,
-      [postId, me.id]);
+    const post = db.get(`SELECT id, user_id, content, visibility, visible_to FROM posts WHERE id = ? AND ${VISIBLE}`,
+      [postId, ...visArgs(me)]);
     if (!post) throw fail('动态不存在或无权访问', 404);
     if (post.visibility === 'private' && post.user_id !== me.id) {
       throw fail('这条动态仅作者本人可见，不能一起写', 403);
@@ -1187,7 +1273,7 @@ const contribs = {
     db.run('UPDATE posts SET updated_at = ? WHERE id = ?', [nowIso(), postId]);
     const contrib = shapeContrib(db.get('SELECT * FROM post_contribs WHERE id = ?', [res.lastInsertRowid]), me);
     notify.changed({
-      actor: me, kind: 'post', action: 'update', visibility: post.visibility, id: postId,
+      actor: me, kind: 'post', action: 'update', visibility: post.visibility, visibleTo: post.visible_to, id: postId,
       title: post.content || '（动态）', detail: content || '（补充了图片 / 视频）',
     });
     return contrib;
@@ -1201,8 +1287,8 @@ const contribs = {
   update(me, id, b) {
     const row = db.get('SELECT * FROM post_contribs WHERE id = ?', [id]);
     if (!row) throw fail('共创内容不存在', 404);
-    const post = db.get(`SELECT id, user_id, content, visibility FROM posts WHERE id = ? AND ${VISIBLE}`,
-      [row.post_id, me.id]);
+    const post = db.get(`SELECT id, user_id, content, visibility, visible_to FROM posts WHERE id = ? AND ${VISIBLE}`,
+      [row.post_id, ...visArgs(me)]);
     if (!post) throw fail('共创内容不存在或无权访问', 404);
     if (Number(row.user_id) !== Number(me.id)) throw fail('只能编辑自己补充的内容', 403);
     const content = b.content == null ? row.content : str(b.content, 2000, '内容');
@@ -1219,7 +1305,7 @@ const contribs = {
     db.run('UPDATE posts SET updated_at = ? WHERE id = ?', [nowIso(), post.id]);
     const out = shapeContrib(db.get('SELECT * FROM post_contribs WHERE id = ?', [id]), me);
     notify.changed({
-      actor: me, kind: 'post', action: 'update', visibility: post.visibility, id: post.id,
+      actor: me, kind: 'post', action: 'update', visibility: post.visibility, visibleTo: post.visible_to, id: post.id,
       title: post.content || '（动态）', detail: content || '（修改了补充的图片 / 视频）',
     });
     return out;
@@ -1228,7 +1314,7 @@ const contribs = {
   remove(me, id) {
     const row = db.get('SELECT * FROM post_contribs WHERE id = ?', [id]);
     if (!row) throw fail('共创内容不存在', 404);
-    const post = db.get(`SELECT id, user_id FROM posts WHERE id = ? AND ${VISIBLE}`, [row.post_id, me.id]);
+    const post = db.get(`SELECT id, user_id FROM posts WHERE id = ? AND ${VISIBLE}`, [row.post_id, ...visArgs(me)]);
     if (!post) throw fail('共创内容不存在或无权访问', 404);
     if (row.user_id !== me.id && post.user_id !== me.id) throw fail('只能删除自己的补充内容', 403);
     db.run('DELETE FROM post_contribs WHERE id = ?', [id]);
@@ -1317,7 +1403,7 @@ const records = {
   list(me, query = {}, recordsKey) {
     guardRecords(me, recordsKey);
     const where = [VISIBLE];
-    const params = [me.id];
+    const params = visArgs(me);
     if (query.category) { where.push('category = ?'); params.push(String(query.category).slice(0, 20)); }
     /* v1.9.0 归档筛选。三种取值，默认值刻意保持与旧版一致（只看未归档）：
          '1'   只看已归档（「已归档」页签）
@@ -1347,13 +1433,15 @@ const records = {
   create(me, b, recordsKey) {
     guardRecords(me, recordsKey);
     const visibility = pickVisibility(b.visibility);
+    /* v4.28.2：指定可见成员（仅 private 生效；全家可见时清空）。 */
+    const visibleTo = visibility === 'private' ? normVisibleTo(b.visibleTo, me.id) : '';
     const content = str(b.content, 20000, '内容');
     const rm = recordRemindPatch(b, null);
     const res = db.run(
       `INSERT INTO records (user_id, owner_name, title, content, content_json, category, tags, images, attachments,
-                            pinned, visibility, created_at, updated_at,
+                            pinned, visibility, visible_to, created_at, updated_at,
                             remind, remind_time, remind_advance_days, remind_channel, remind_at, reminded_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'')`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'')`,
       [
         me.id, me.display_name,
         str(b.title, 120, '标题', { required: true }),
@@ -1367,6 +1455,7 @@ const records = {
         JSON.stringify(pickAttachments(b.attachments)),
         b.pinned ? 1 : 0,
         visibility,
+        visibleTo,
         nowIso(), nowIso(),
         rm.remind, rm.time, rm.adv, rm.channel, rm.at,
       ],
@@ -1374,19 +1463,26 @@ const records = {
     const record = shapeRecord(db.get('SELECT * FROM records WHERE id = ?', [res.lastInsertRowid]), me);
     // 记录本内容往往涉及隐私，但「全家共享」的那部分本来就是给家人看的；
     // 邮件正文里只放标题，不放正文。
-    notify.changed({ actor: me, kind: 'record', action: 'create', visibility, id: record.id, title: record.title, detail: '' });
+    notify.changed({ actor: me, kind: 'record', action: 'create', visibility, visibleTo, id: record.id, title: record.title, detail: '' });
     return record;
   },
 
   update(me, id, b, recordsKey) {
     guardRecords(me, recordsKey);
-    const row = db.get(`SELECT * FROM records WHERE id = ? AND ${VISIBLE}`, [id, me.id]);
+    const row = db.get(`SELECT * FROM records WHERE id = ? AND ${VISIBLE}`, [id, ...visArgs(me)]);
     if (!row) throw fail('记录不存在或无权访问', 404);
 
     let visibility = row.visibility;
+    /* v4.28.2：指定可见成员与待办同一套规则（改可见性或单独改名单都要是创建者）。 */
+    let visibleTo = String(row.visible_to || '');
+    const wantVisTo = b.visibleTo !== undefined ? b.visibleTo : b.visible_to;
     if (b.visibility != null && b.visibility !== row.visibility) {
       if (row.user_id !== me.id) throw fail('只有创建者可以修改可见性', 403);
       visibility = pickVisibility(b.visibility);
+      visibleTo = visibility === 'private' ? normVisibleTo(wantVisTo, row.user_id) : '';
+    } else if (wantVisTo !== undefined) {
+      if (row.user_id !== me.id) throw fail('只有创建者可以修改可见范围', 403);
+      visibleTo = visibility === 'private' ? normVisibleTo(wantVisTo, row.user_id) : '';
     }
 
     const newContent = b.content == null ? row.content : str(b.content, 20000, '内容');
@@ -1394,7 +1490,7 @@ const records = {
     const rm = recordRemindPatch(b, row);
     db.run(
       `UPDATE records SET title = ?, content = ?, content_json = ?, category = ?, tags = ?, images = ?, attachments = ?,
-                          pinned = ?, archived = ?, visibility = ?, updated_at = ?,
+                          pinned = ?, archived = ?, visibility = ?, visible_to = ?, updated_at = ?,
                           remind = ?, remind_time = ?, remind_advance_days = ?, remind_channel = ?, remind_at = ?, reminded_at = ?
         WHERE id = ?`,
       [
@@ -1409,6 +1505,7 @@ const records = {
         b.pinned == null ? row.pinned : (b.pinned ? 1 : 0),
         b.archived == null ? row.archived : (b.archived ? 1 : 0),
         visibility,
+        visibleTo,
         nowIso(),
         rm.remind, rm.time, rm.adv, rm.channel, rm.at,
         rm.resetReminded ? '' : String(row.reminded_at || ''),
@@ -1417,16 +1514,16 @@ const records = {
     );
     const record = shapeRecord(db.get('SELECT * FROM records WHERE id = ?', [id]), me);
     // 只「归档/取消归档/置顶」不算内容变更，不打扰家人（与待办勾选完成同理）
-    const CONTENT_FIELDS = ['title', 'content', 'category', 'images', 'attachments', 'visibility'];
+    const CONTENT_FIELDS = ['title', 'content', 'category', 'images', 'attachments', 'visibility', 'visibleTo'];
     if (CONTENT_FIELDS.some((k) => b[k] != null)) {
-      notify.changed({ actor: me, kind: 'record', action: 'update', visibility: record.visibility, id: record.id, title: record.title, detail: '' });
+      notify.changed({ actor: me, kind: 'record', action: 'update', visibility: record.visibility, visibleTo, id: record.id, title: record.title, detail: '' });
     }
     return record;
   },
 
   remove(me, id, recordsKey) {
     guardRecords(me, recordsKey);
-    const res = db.run(`DELETE FROM records WHERE id = ? AND ${VISIBLE}`, [id, me.id]);
+    const res = db.run(`DELETE FROM records WHERE id = ? AND ${VISIBLE}`, [id, ...visArgs(me)]);
     if (!res.changes) throw fail('记录不存在或无权删除', 404);
     return { id };
   },
@@ -1444,7 +1541,7 @@ const records = {
     if (cat === '通用') throw fail('「通用」是默认分类，不能删除');
     const res = db.run(
       `UPDATE records SET category = '通用', updated_at = ? WHERE category = ? AND ${VISIBLE}`,
-      [nowIso(), cat, me.id],
+      [nowIso(), cat, ...visArgs(me)],
     );
     const hidden = loadHiddenCategories();
     if (!hidden.includes(cat)) hidden.push(cat);
@@ -1748,7 +1845,7 @@ function latestActivity(me) {
   const maxOf = (table) => {
     const row = db.get(
       `SELECT MAX(updated_at) AS t FROM ${table} WHERE ${VISIBLE} AND user_id != ?`,
-      [me.id, me.id],
+      [...visArgs(me), me.id],
     );
     return (row && row.t) || '';
   };
@@ -3552,7 +3649,7 @@ async function handle({ method, pathname, query, body, me, token, recordsKey, ip
        权限：owner 可看任何一条待办的流水；普通成员只能看**自己的**待办的。 */
     if (is('GET') && second === 'nag-logs') {
       const tid = idOf(query.get('todoId'));
-      const row = db.get(`SELECT * FROM todos WHERE id = ? AND ${VISIBLE}`, [tid, me.id]);
+      const row = db.get(`SELECT * FROM todos WHERE id = ? AND ${VISIBLE}`, [tid, ...visArgs(me)]);
       if (!row) throw fail('待办不存在或无权访问', 404);
       if (!me.is_admin && row.user_id !== me.id) throw fail('只能查看自己待办的催促日志', 403);
       return { status: 200, json: { logs: urge.nagLogs(tid) } };

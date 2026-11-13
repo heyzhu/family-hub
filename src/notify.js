@@ -241,6 +241,21 @@ function recipientsExcept(actorIds) {
 }
 
 /**
+ * 把「指定可见成员」的两种入参形式统一成 id 数组。
+ * 上游可能传 `",2,3,"`（数据库里那种格式）或 `[2,3]`（新接口），这里都认。
+ * 非法值（空串 / 0 / 非数字）直接丢 —— 名单只影响「发给谁」，宁可少发也不发错人。
+ */
+function toIdList(v) {
+  const raw = Array.isArray(v) ? v : String(v == null ? '' : v).split(',');
+  const out = [];
+  for (const x of raw) {
+    const id = Number(String(x).trim()) || 0;
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
  * v2.0.0：把「个人免打扰结束时刻」算出来。
  * 传入的时刻若落在该用户自己的免打扰时段内，返回免打扰结束的瞬时；否则原样返回。
  * 复用 outOfQuiet 是刻意的 —— 跨零点、起止相同等边界只有一处实现。
@@ -295,14 +310,17 @@ function dispatch(targets, subject, text, html, cfg) {
       smtpReady: !!(cfg.smtpUser && cfg.smtpPass),
       sendMail: ({ to, subject: s, text: t, html: h }) => mailer.sendMail(smtpOpts(cfg, to, s, t, h)),
     });
-    if (res.mail || res.wecom) {
+    /* ★ v4.28.2：判据统一走 push.sentAny()（含飞书 / 钉钉）。
+       旧写法只看 mail + wecom，只配飞书 / 钉钉的家庭会被记成「没有可用通道」并计 dropped，
+       统计与推送日志都对不上真实投递。 */
+    if (push.sentAny(res)) {
       lastStatus.sent++;
-      lastStatus.recipients += res.mail + res.wecom + (res.deferred || 0);
+      lastStatus.recipients += res.mail + res.wecom + res.feishu + res.dingtalk + (res.deferred || 0);
     }
     for (const e of res.errors) pushError(e);
-    if (!res.mail && !res.wecom && !res.deferred && !res.errors.length) {
+    if (!push.sentAny(res) && !res.errors.length) {
       lastStatus.dropped++;
-      pushError('这条通知没有可用的推送通道（邮件与企业微信都发不出去），已跳过');
+      pushError('这条通知没有可用的推送通道（邮件 / 企业微信 / 飞书 / 钉钉都发不出去），已跳过');
     }
   }).catch((err) => pushError(err && err.message ? err.message : err));
 }
@@ -375,13 +393,20 @@ function buildDigestHtml(items) {
  * 事件先进待发队列，到点由 flushDue() 合并发出；两者都没设时行为与旧版一致（立即发）。
  *
  * @param {{actor:object, kind:'todo'|'post'|'record'|'comment', action:'create'|'update',
- *          title?:string, detail?:string, visibility?:string}} ev
+ *          title?:string, detail?:string, visibility?:string, visibleTo?:string|number[]}} ev
  * @returns {boolean} 是否真的排入了发送队列（便于测试断言）
  */
 function changed(ev) {
   try {
     if (!ev || !ev.actor || !ev.actor.id) return false;
-    if (ev.visibility && ev.visibility !== 'family') return false;      // 仅自己可见不外发
+    /* v4.28.2：可见性从「全家 / 仅自己」变成「全家 / 指定可见成员」。
+       · family → 照旧发给除作者外的全体（再看个人偏好）；
+       · private → **只发给被点名的成员**，没被点名的人连邮件都不该收到
+         （需求原文：「该条信息的推送逻辑以此设置为准，对不可见成员不推送」）。
+         名单为空 = 仅自己可见 → 一个收件人都没有，直接不发。 */
+    const visPrivate = String(ev.visibility || 'family') === 'private';
+    const allowed = visPrivate ? toIdList(ev.visibleTo) : null;
+    if (visPrivate && !allowed.length) return false;
     if (!isEnabled(ev.kind)) return false;                              // 总开关 + 该类型的分项开关
 
     const cfg = reminders.loadRemindSettings();
@@ -390,7 +415,10 @@ function changed(ev) {
 
     // v2.0.0：先算出「按个人偏好过滤后的收件人」——没有收件人就别排队了
     const prefsMap = userprefs.loadAll();
-    const targets = notifyTargets([ev.actor.id], ev.kind, prefsMap);
+    let targets = notifyTargets([ev.actor.id], ev.kind, prefsMap);
+    /* 私密内容只发给名单里的人。★ 放在 notifyTargets 之后：个人偏好（不想收 / 分项关闭）
+       依然优先，名单只能进一步收窄，不能反过来把「关掉了通知」的人拉回来。 */
+    if (visPrivate) targets = targets.filter((t) => allowed.includes(Number(t.id)));
     if (!targets.length) return false;
 
     const nowMs = Date.now();
@@ -408,6 +436,7 @@ function changed(ev) {
         if (queued) {
           queued.title = clip(ev.title, 60);
           queued.detail = clip(ev.detail, 400);
+          queued.allow = visPrivate ? allowed : null;   // 窗口内改了可见范围也要跟上
         }
         return false;
       }
@@ -460,6 +489,7 @@ function changed(ev) {
           pending.push({
             key: dkey, actorId: ev.actor.id, actorName, kind: ev.kind, action: ev.action,
             title: shown.title, detail: shown.detail, at: at2,
+            allow: visPrivate ? allowed : null,
           });
           pendingAt = Math.max(pendingAt, at2);
         }
@@ -477,6 +507,9 @@ function changed(ev) {
       title: shown.title,
       detail: shown.detail,
       at,
+      /* v4.28.2：私密内容排队时也要记住「只发给谁」——汇总是在 later 才发的，
+         不带着名单，到点就会发给全家（这正是「不可见成员也收到推送」的口子）。 */
+      allow: visPrivate ? allowed : null,
     });
     pendingAt = Math.max(pendingAt, at);
     return true;
@@ -546,29 +579,47 @@ function flushDue(nowMs = Date.now()) {
     //   分项开关（notify_kinds）反过来是逐条看：这批里只要有任意一条类型
     //   是他愿意收的，就发给他 —— 收件人只收一封摘要，没有「半封」的说法。
     const prefsMap = userprefs.loadAll();
-    const actorIds = due.map((e) => e.actorId);
-    const targets = recipientsExcept(actorIds)
-      .filter((u) => due.some((e) => userprefs.wantsNotify(u.id, e.kind, prefsMap.get(Number(u.id)))))
-      .map((u) => ({
-        id: Number(u.id), email: u.notify_email, username: u.username,
-        name: u.display_name || u.username,
-        channel: push.normalizeChannel(u.push_channel),
-      }));
-    if (!targets.length) {
-      // 没有收件人：明确记账，别让攒了半天的通知无声消失（这是本项目最忌讳的静默失败）
-      lastStatus.dropped += due.length;
-      pushError(`有 ${due.length} 条变更通知到点了，但家里没有其他成员配置收件邮箱或企业微信（或都在个人设置里关掉了这类通知），已跳过`);
-      return { sent: 0, pending: pending.length };
+    /* ★ v4.28.2：先按「可见名单」分组再发。
+       一条摘要会把多条变更并进同一封邮件，所以收件人必须**看得见摘要里的每一条**：
+         · allow == null → 全家可见，一组；
+         · allow == [2,3] → 指定成员可见，同一份名单的人一组；
+       同一分钟里既有全家可见又有私密变更时会拆成两封 —— 这是正确性的代价，
+       把私密标题塞进集体摘要等于对不可见成员泄露内容。
+       （收件人仍然按「整批排除作者」算，理由见上面那段注释。） */
+    const groups = new Map();
+    for (const e of due) {
+      const key = e.allow == null ? '' : e.allow.join(',');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
     }
-    if (!passRateLimit()) return { sent: 0, pending: pending.length };
-
-    const digest = buildDigest(due);
-    dispatch(
-      targets,
-      digest.subject,
-      digest.text, digest.html, cfg,
-    );
-    return { sent: due.length, pending: pending.length };
+    let sent = 0;
+    let dropped = 0;
+    for (const list of groups.values()) {
+      const actorIds = list.map((e) => e.actorId);
+      const targets = recipientsExcept(actorIds)
+        .filter((u) => list.some((e) => userprefs.wantsNotify(u.id, e.kind, prefsMap.get(Number(u.id)))))
+        .map((u) => ({
+          id: Number(u.id), email: u.notify_email, username: u.username,
+          name: u.display_name || u.username,
+          channel: push.normalizeChannel(u.push_channel),
+        }));
+      if (!targets.length) { dropped += list.length; continue; }
+      if (!passRateLimit()) { dropped += list.length; continue; }
+      const digest = buildDigest(list);
+      dispatch(
+        targets,
+        digest.subject,
+        digest.text, digest.html, cfg,
+      );
+      sent += list.length;
+    }
+    if (dropped) {
+      // 没有收件人：明确记账，别让攒了半天的通知无声消失（这是本项目最忌讳的静默失败）
+      lastStatus.dropped += dropped;
+      pushError(`有 ${dropped} 条变更通知到点了，但家里没有其他成员配置收件邮箱或企业微信`
+        + '（或都在个人设置里关掉了这类通知、或不在「指定可见成员」名单里），已跳过');
+    }
+    return { sent, pending: pending.length };
   } catch (err) {
     pushError(err && err.message ? err.message : err);
     return { sent: 0, pending: pending.length };

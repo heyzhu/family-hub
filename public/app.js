@@ -394,7 +394,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        ★ 草稿必须落在 state 里：收起后 textarea 不在 DOM 上，
          只靠 data-preserve 会直接丢掉用户敲了一半的字。 */
     composeOpen: false,
-    compose: { images: [], videos: [], visibility: 'family', text: '', tags: '' },
+    compose: { images: [], videos: [], visibility: 'family', visibleTo: [], text: '', tags: '' },
     /* v4.3.3 需求 6：草稿恢复提示（'' = 不显示；'post' = 动态草稿已恢复）。
        记录本的恢复提示画在弹窗里，不需要 state。
        必须进 DATA_SIG.moments —— 它是界面状态，不进指纹那次 render 会被早退掉。 */
@@ -1314,7 +1314,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     }
     if (t.priority === 'high') meta.push('<span class="badge p-high">重要</span>');
     if (t.priority === 'low') meta.push('<span class="badge p-low">稍后</span>');
-    if (t.visibility === 'private') meta.push('<span class="badge priv">🔒 仅自己可见</span>');
+    if (t.visibility === 'private') meta.push(`<span class="badge priv">${visBadgeText(t)}</span>`);
 
     const tick = noTick
       ? '<span class="tick tick-static" title="重复事项：只有它到点的那一天才能勾选完成">🔁</span>'
@@ -1701,7 +1701,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           <div class="post-head">
             ${avatarHtml(p.ownerName)}
             <div class="post-who">
-              <b>${esc(p.ownerName)}</b>${p.visibility === 'private' ? ' <span class="badge priv">🔒 仅自己可见</span>' : ''}
+              <b>${esc(p.ownerName)}</b>${p.visibility === 'private' ? ` <span class="badge priv">${visBadgeText(p)}</span>` : ''}
               <div class="when">发布于 ${esc(fmtTime(p.publishedAt || p.createdAt))}</div>
             </div>
             <!-- v4.23.0 需求 3：原来这里常驻「一起写 / 编辑 / 删除」三个按钮，
@@ -1775,12 +1775,27 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           ${COMPOSE_EMOJIS.map((e) =>
             `<button type="button" class="emoji-pick" data-act="compose-emoji-pick" data-emoji="${e}">${e}</button>`).join('')}
         </div>` : ''}
+        <!-- v4.28.2：可见范围（默认全家可见）。选「指定可见成员」后展开成员勾选，
+             默认一个都不勾 = 仅自己可见；没勾的人看不到这条动态、也收不到通知。 -->
+        <div class="compose-vis">
+          <button type="button" class="btn-ghost btn-sm${state.compose.visibility === 'private' ? '' : ' on'}"
+                  data-act="compose-vis" data-vis="family">👨‍👩‍👧 全家可见</button>
+          <button type="button" class="btn-ghost btn-sm${state.compose.visibility === 'private' ? ' on' : ''}"
+                  data-act="compose-vis" data-vis="private">🔒 指定可见成员</button>
+        </div>
+        ${state.compose.visibility === 'private' ? `<div class="vis-members">
+          <div class="vis-members-hint">默认只有你自己可见；勾选要一起看的家人：</div>
+          <div class="chips">${visOthers().length
+            ? visOthers().map((m) => `<button type="button" class="chip vis-chip${
+              (state.compose.visibleTo || []).map(Number).includes(Number(m.id)) ? ' on' : ''}"
+                data-act="compose-vis-member" data-vis-id="${Number(m.id)}">${esc(m.display_name)}</button>`).join('')
+            : '<span class="field-hint">家里还没有其他成员</span>'}</div>
+        </div>` : ''}
         <div class="composer-bar">
           <div class="composer-ops-left">
             <button type="button" class="btn-ghost btn-sm" data-act="compose-pick">＋ 图片</button>
             <button type="button" class="btn-ghost btn-sm" data-act="compose-vpick">＋ 视频</button>
             <button type="button" class="btn-ghost btn-sm${state.composeEmoji ? ' on' : ''}" data-act="compose-emoji">😊 表情</button>
-            <button type="button" class="btn-ghost btn-sm" data-act="compose-priv">${state.compose.visibility === 'private' ? '🔒 仅自己可见' : '👨‍👩‍👧 全家可见'}</button>
           </div>
           <div class="composer-ops-right">
             <span class="draft-hint${draftHintText('post') ? '' : ' hidden'}${((state.draftState || {}).post || {}).pending ? ' saving' : ''}" id="post-draft-hint">${esc(draftHintText('post'))}</span>
@@ -1921,7 +1936,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         ${list.length
           ? list.map((p) => `
             <div class="cal-post">
-              <div class="cal-post-head">${avatarHtml(p.ownerName)}<b>${esc(p.ownerName)}</b>${p.visibility === 'private' ? ' <span class="badge priv">🔒 仅自己可见</span>' : ''}<span class="c-time">${esc(fmtTime(p.publishedAt || p.createdAt))}</span></div>
+              <div class="cal-post-head">${avatarHtml(p.ownerName)}<b>${esc(p.ownerName)}</b>${p.visibility === 'private' ? ` <span class="badge priv">${visBadgeText(p)}</span>` : ''}<span class="c-time">${esc(fmtTime(p.publishedAt || p.createdAt))}</span></div>
               ${p.content ? `<div class="post-content">${esc(p.content)}</div>` : ''}
               ${p.images.length
                 ? `<div class="post-imgs n${Math.min(p.images.length, 9)}" data-gal="${esc(JSON.stringify(p.images))}">${p.images
@@ -2275,7 +2290,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <div class="rec-foot">
           <span class="badge cat">${esc(r.category)}</span>
           ${atts.length ? `<span class="badge att-badge" title="${esc(atts.map((a) => a.name).join('、'))}">📎 ${atts.length} 个附件</span>` : ''}
-          ${r.visibility === 'private' ? '<span class="badge priv">🔒 仅自己可见</span>' : ''}
+          ${r.visibility === 'private' ? `<span class="badge priv">${visBadgeText(r)}</span>` : ''}
           ${r.remind ? `<span class="badge rec-remind" title="到 ${esc(r.remindTime || '跟随系统')} 提醒我${r.remindedAt ? '（已提醒过）' : ''}">🔔 ${r.remindedAt ? '已提醒' : '待提醒'}</span>` : ''}
           <span>${esc(r.ownerName)} · ${esc(fmtTime(r.updatedAt))}</span>
         </div>
@@ -2294,7 +2309,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const badges = [
       `<span class="badge cat">${esc(r.category)}</span>`,
       r.pinned ? '<span class="badge p-high">★ 置顶</span>' : '',
-      r.visibility === 'private' ? '<span class="badge priv">🔒 仅自己可见</span>' : '',
+      r.visibility === 'private' ? `<span class="badge priv">${visBadgeText(r)}</span>` : '',
     ].filter(Boolean).join('');
     /* v4.17.0 需求 2/3：整页可看的图（正文内联 + 图片附件）合成**一个灯箱图组**，
        挂在 .rec-view 根上 —— 正文图、附件图点开都能左右翻到彼此；
@@ -4878,7 +4893,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <button type="button" class="btn-soft btn-sm" data-act="admin-settings">设置</button>
           </div>
         </div>` : ''}
-        <div class="sub-head">成员（${state.members.length} 人）</div>
+        <div class="sub-head sub-head-row">成员（${state.members.length} 人）${
+          me.is_admin ? '<span class="sub-head-hint">点头像可查看该成员的配置信息</span>' : ''}</div>
         <div class="row-list">${members}</div>`)}
 
       ${meFold('notify', '🔔', '消息推送设置',
@@ -6238,6 +6254,89 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
    *   ⑤ 邮件提醒 + 催促合并成「提醒方式」 —— 两者本来就是「怎么提醒我」的两种强度，
    *      分成两个控件时用户会两个都填/都不填，最后谁也说不清会发生什么。
    */
+  /* ═══ v4.28.2 可见范围：待办 / 动态 / 记录本三处共用的一套控件 ═══
+     需求：把原来的「仅自己可见」改成「指定可见成员」——
+       · 默认「全家可见」（三个创建入口的默认值都是它）；
+       · 选「指定可见成员」时，默认只有自己可见，由创作者自己勾要一起看的人；
+       · 没勾的人就是不可见（列表看不到、详情打不开、推送也不发给他）。
+     ★ 存储口径：visibility 仍是 'family' / 'private'（不改库值，老数据零变化），
+       'private' 的含义变成「我 + visible_to 里的人」；visible_to 为空 = 仅自己可见。
+       所以下面这些函数都只负责**界面**与**提交字段**，判断可见性永远由服务端做。 */
+
+  /** 除自己以外的家庭成员（自己始终可见，不出现在勾选列表里） */
+  function visOthers() {
+    const meId = Number((state.me && state.me.id) || 0);
+    return (state.members || []).filter((m) => Number(m.id) !== meId);
+  }
+
+  /** 可见范围选择器 + 成员勾选面板。visibleTo 是 id 数组（新数据）或逗号串（兜底） */
+  function visPickHtml(vis, visibleTo) {
+    const priv = vis === 'private';
+    const sel = new Set((Array.isArray(visibleTo) ? visibleTo : String(visibleTo || '').split(','))
+      .map((x) => Number(x)).filter(Boolean));
+    const others = visOthers();
+    const chips = others.length
+      ? others.map((m) => `<button type="button" class="chip vis-chip${sel.has(Number(m.id)) ? ' on' : ''}"
+            data-act="vis-member" data-vis-id="${Number(m.id)}">${esc(m.display_name)}</button>`).join('')
+      : '<span class="field-hint">家里还没有其他成员</span>';
+    return `
+      <div class="segmented" data-act="vis-pick">
+        <button type="button" data-vis="family" class="${priv ? '' : 'on'}">👨‍👩‍👧 全家可见</button>
+        <button type="button" data-vis="private" class="${priv ? 'on' : ''}">🔒 指定可见成员</button>
+      </div>
+      <div class="vis-members${priv ? '' : ' hidden'}" data-vis-box>
+        <div class="vis-members-hint">默认只有你自己可见；勾选要一起看的家人，没勾的人看不到、也收不到推送。</div>
+        <div class="chips">${chips}</div>
+      </div>`;
+  }
+
+  /** 从弹窗当前状态读出 { visibility, visibleTo } —— 保存时统一用它，不各写一套 */
+  function visReading(layer) {
+    const visibility = layer && layer.dataset.visibility === 'private' ? 'private' : 'family';
+    const ids = Array.from((layer || document).querySelectorAll('[data-act="vis-member"].on'))
+      .map((b) => Number(b.dataset.visId)).filter(Boolean);
+    return { visibility, visibleTo: visibility === 'private' ? ids : [] };
+  }
+
+  /** 可见性徽章文案：全家可见 / 指定 N 人 / 仅自己可见 */
+  function visBadgeText(t) {
+    if (!t || t.visibility !== 'private') return '';
+    const n = (t.visibleTo || []).length;
+    return n ? `🔒 指定 ${n} 人可见` : '🔒 仅自己可见';
+  }
+
+  /**
+   * 待办弹窗里的「参与人物」联动：不可见的人置灰、不可点。
+   * 需求原文：「若某成员被设为不可见，则参与人物点选处该成员显示为灰色不可选状态」。
+   * ★ 只对**登记在册的成员**生效；历史手输的名字（比如没账号的「奶奶」）没有 id，
+   *   无法判断可见性，保持可点 —— 否则老数据会被一条规则直接锁死。
+   */
+  function syncPartChips(layer) {
+    if (!layer) return;
+    const priv = layer.dataset.visibility === 'private';
+    const allow = new Set(Array.from(layer.querySelectorAll('[data-act="vis-member"].on'))
+      .map((b) => Number(b.dataset.visId)));
+    const meId = Number((state.me && state.me.id) || 0);
+    const idOf = new Map();
+    for (const m of state.members || []) idOf.set(String(m.display_name), Number(m.id));
+    const blocked = [];
+    for (const chip of layer.querySelectorAll('#part-chips [data-act="part-toggle"]')) {
+      const uid = idOf.get(String(chip.dataset.name || ''));
+      const off = !!priv && !!uid && uid !== meId && !allow.has(uid);
+      chip.classList.toggle('off', off);
+      chip.disabled = off;
+      chip.title = off ? '不在「指定可见成员」里，收不到这条待办的提醒' : '';
+      if (off) blocked.push(String(chip.dataset.name || ''));
+    }
+    /* 已经选中、现在又被设成不可见的人要从参与人里摘掉：
+       否则保存下去就是「参与人里有他，但他看不到这条待办」——
+       服务端也不会给他发提醒（par 与可见性口径冲突），用户只会觉得「选了却没通知」。 */
+    if (blocked.length) {
+      const list = modalParticipants().filter((n) => !blocked.includes(n));
+      if (list.length !== modalParticipants().length) setModalParticipants(list);
+    }
+  }
+
   async function openTodoForm(todo) {
     const isEdit = !!todo;
     try { await refreshMembers(); } catch { /* 拉不到就用现有列表兜底，不阻断填写 */ }
@@ -6290,12 +6389,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     openModal({
       title: isEdit ? '编辑待办' : '添加待办',
       body: `
-        <!-- ① 可见范围置顶 -->
+        <!-- ① 可见范围置顶（v4.28.2：默认全家可见；选「指定可见成员」后默认仅自己） -->
         <div class="field"><span>可见范围</span>
-          <div class="segmented" data-act="vis-pick">
-            <button type="button" data-vis="family" class="${t.visibility === 'family' ? 'on' : ''}">👨‍👩‍👧 全家可见</button>
-            <button type="button" data-vis="private" class="${t.visibility === 'private' ? 'on' : ''}">🔒 仅自己可见</button>
-          </div>
+          ${visPickHtml(t.visibility, t.visibleTo)}
         </div>
 
         <label class="field"><span>要做什么</span>
@@ -6349,7 +6445,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           <small class="field-hint" id="time-hint"></small>
         </div>
 
-        <div class="field"><span>参与人物<span class="field-hint">（点一下即可选中/取消，提醒会发给选中的成员）</span></span>
+        <div class="field"><span>参与人物<span class="field-hint">（点一下即可选中/取消，提醒会发给选中的成员；「指定可见成员」之外的家人不可选）</span></span>
           <div class="chips" id="part-chips">
             ${names.map((n) =>
               `<button type="button" class="chip${chosen.has(n) ? ' on' : ''}" data-act="part-toggle" data-name="${esc(n)}">${esc(n)}${n === myName ? '（我）' : ''}</button>`).join('')}
@@ -6468,6 +6564,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         const durSel = layer.querySelector('[data-mk="duration"]');
         if (durSel) durSel.value = layer.dataset.duration;
         syncTimeUI(layer);
+        /* v4.28.2：进弹窗先按当前可见范围把参与人算一遍 ——
+           编辑一条「指定可见成员」的待办时，没被勾的人本来就该是灰的。 */
+        syncPartChips(layer);
         const first = layer.querySelector('[data-mk="title"]');
         if (first && !isEdit) setTimeout(() => first.focus(), 60);
       },
@@ -6527,7 +6626,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       // urge_start_at / urge_window_* 不再出现在界面上，也就不再提交 ——
       // 服务端对这三个键是「不传就保持原值」，老数据原样留着，不影响任何判断。
       urgeMaxCount: Math.max(0, Math.round(Number(modalValue('urgeMaxCount')) || 0)),
-      visibility: layer.dataset.visibility || 'family',
+      /* v4.28.2：可见范围 + 指定可见成员一起提交。
+         visibility='family' 时 visibleTo 传空数组，服务端也会强制清空。 */
+      ...visReading(layer),
     };
     if (!body.title) { toast('请填写「要做什么」', 'err'); return; }
     if (body.repeat && !body.date) { toast('选择重复规则需要先设置日期', 'err'); return; }
@@ -7626,6 +7727,13 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       }
       case 'prio-pick': break;
       case 'vis-pick': break;
+      /* v4.28.2：「指定可见成员」里逐个勾选。勾完立刻同步参与人候选的可用状态。 */
+      case 'vis-member': {
+        el.classList.toggle('on');
+        el.setAttribute('aria-pressed', el.classList.contains('on') ? 'true' : 'false');
+        syncPartChips($('#modal-layer'));
+        break;
+      }
 
       /* 动态 */
       case 'compose-pick': $('#compose-file').click(); break;
@@ -7772,9 +7880,27 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       /* 记录本：归档视图切换（v1.9.0） */
       case 'rec-arch-view': break;      // 由分段控件处理器负责
       case 'post-view': break;          // 同上
-      case 'compose-priv':
-        state.compose.visibility = state.compose.visibility === 'private' ? 'family' : 'private';
+      /* v4.28.2：动态发布区的可见范围。原来的一个「🔒 仅自己可见」开关
+         换成「全家可见 / 指定可见成员」两档；切到指定时清空名单
+         —— 需求要求「默认仅自己可见」，不能沿用上一帖勾过的人。 */
+      case 'compose-vis':
+        if (el.dataset.vis === 'private') {
+          if (state.compose.visibility !== 'private') state.compose.visibleTo = [];
+          state.compose.visibility = 'private';
+        } else {
+          state.compose.visibility = 'family';
+          state.compose.visibleTo = [];
+        }
         render(); break;
+      case 'compose-vis-member': {
+        const uid = Number(el.dataset.visId) || 0;
+        const cur = (state.compose.visibleTo || []).map(Number);
+        const i = cur.indexOf(uid);
+        if (i >= 0) cur.splice(i, 1); else cur.push(uid);
+        state.compose.visibleTo = cur;
+        render();
+        break;
+      }
       case 'compose-publish': await publishPost(); break;
       case 'post-edit': {
         state.postMenu = 0;   // v4.23.0：从菜单进来，先收起菜单
@@ -8516,7 +8642,15 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     $$('button', seg).forEach((b) => b.classList.toggle('on', b === btn));
     const layer = $('#modal-layer');
     if (act === 'prio-pick' && layer) layer.dataset.priority = btn.dataset.prio;
-    if (act === 'vis-pick' && layer) layer.dataset.visibility = btn.dataset.vis;
+    if (act === 'vis-pick' && layer) {
+      /* v4.28.2：可见范围切换。成员面板跟着显隐；参与人里的不可见成员立刻置灰。
+         ★ 不在这里清空已勾的成员：从「指定」切回「全家」再切回来时，
+           用户刚才勾的人应该还在（切到全家时服务端会忽略 visibleTo）。 */
+      layer.dataset.visibility = btn.dataset.vis === 'private' ? 'private' : 'family';
+      const box = layer.querySelector('[data-vis-box]');
+      if (box) box.classList.toggle('hidden', layer.dataset.visibility !== 'private');
+      syncPartChips(layer);
+    }
     /* v4.12.0：「重复」已从按钮组改成弹窗内自己的 <select>，
        它的选中态与副作用（隐藏「标为已完成」）都搬去了 openTodoForm 的 change 监听里，
        这里不再有 repeat-pick 分支。 */
@@ -9256,6 +9390,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     images: (state.compose.images || []).slice(0, 9),
     videos: (state.compose.videos || []).slice(0, 3),
     visibility: state.compose.visibility || 'family',
+    /* v4.28.2：草稿也要记住「指定可见成员」—— 否则半成品被恢复后
+       会悄悄变成「全家可见」，那等于把用户明确加过锁的内容放开了。 */
+    visibleTo: (state.compose.visibleTo || []).slice(0, 50),
     at: new Date().toISOString(),
   });
   const draftIsEmpty = (d) => !d
@@ -9296,6 +9433,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       images: (Array.isArray(d.images) ? d.images : []).filter((x) => x && x.path),
       videos: (Array.isArray(d.videos) ? d.videos : []).filter((x) => x && x.path),
       visibility: d.visibility === 'private' ? 'private' : 'family',
+      visibleTo: (Array.isArray(d.visibleTo) ? d.visibleTo : []).map(Number).filter(Boolean),
       text: String(d.text || ''),
       tags: String(d.tags || ''),
     };
@@ -9329,6 +9467,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       images,
       attachments,
       visibility: layer.dataset.visibility || 'family',
+      visibleTo: visReading(layer).visibleTo,
       pinned: layer.dataset.pinned === '1',
       at: new Date().toISOString(),
     };
@@ -9361,6 +9500,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       images: [],
       videos: [],
       visibility: visibility || state.compose.visibility || 'family',
+      visibleTo: [],
       text: '',
       tags: '',
     };
@@ -9411,11 +9551,18 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         body: {
           content, images, videos, tags,
           videoCovers,
+          /* v4.28.2：可见范围与「指定可见成员」。动态发布区不是弹窗，
+             所以这里直接取 state（弹窗里才有 layer.dataset）。 */
           visibility: state.compose.visibility || 'family',
+          visibleTo: (state.compose.visibleTo || []).slice(0, 50),
         },
       });
-      const keepVisibility = state.compose.visibility;   // 可见性偏好保留，避免每次都要重选
-      resetCompose(keepVisibility);
+      /* v4.28.2：发布成功后**回到「全家可见」**，不沿用上一条的可见范围。
+         沿用会很危险：上一条若是「指定可见成员」，resetCompose 会把名单清空，
+         下一条就变成「private + 空名单 = 仅自己可见」，而按钮只是一行小字的变化，
+         用户几乎不会察觉 —— 然后困惑「为什么没人回我」。
+         默认值按需求就是全家可见，每次重新确认一次更安全。 */
+      resetCompose('family');
       /* v4.3.3 需求 6：发布成功 = 草稿使命完成，删掉本地那份，
          否则下次打开会把刚发出去的内容又「恢复」成一条半成品。 */
       dropDraft(POST_DRAFT_KEY);
@@ -9541,10 +9688,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             `<button type="button" class="chip" data-act="form-tag-add" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}</div>
         </div>` : ''}
         <div class="field"><span>谁能看到</span>
-          <div class="segmented" data-act="post-vis-pick">
-            <button type="button" data-vis="family" class="${p.visibility === 'family' ? 'on' : ''}">👨‍👩‍👧 全家可见</button>
-            <button type="button" data-vis="private" class="${p.visibility === 'private' ? 'on' : ''}">🔒 仅自己可见</button>
-          </div>
+          ${visPickHtml(p.visibility, p.visibleTo)}
         </div>`,
       foot: `
         <div class="spacer"></div>
@@ -9574,7 +9718,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       images,
       videos,
       videoCovers,
-      visibility: layer.dataset.visibility || 'family',
+      ...visReading(layer),
     };
     if (!body.content && !images.length && !videos.length) { toast('写点什么，或选张图片 / 一段视频吧', 'err'); return; }
     try {
@@ -9724,9 +9868,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       attachments: (Array.isArray(draft.attachments) ? draft.attachments : []).filter(Boolean),
       pinned: !!draft.pinned,
       visibility: draft.visibility === 'private' ? 'private' : 'family',
+      visibleTo: (Array.isArray(draft.visibleTo) ? draft.visibleTo : []).map(Number).filter(Boolean),
     } : {
       title: '', content: '', category: '通用', images: [], attachments: [],
-      pinned: false, visibility: 'family',
+      pinned: false, visibility: 'family', visibleTo: [],
     });
     const cats = recordCategories();
     const curCat = r.category || '通用';
@@ -9743,10 +9888,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
              移动端也不用为了改可见性滑到表单最底。 -->
         <div class="rec-head-fields">
           <div class="field"><span>谁能看到</span>
-            <div class="segmented" data-act="rec-vis-pick">
-              <button type="button" data-vis="family" class="${r.visibility === 'family' ? 'on' : ''}">👨‍👩‍👧 全家可见</button>
-              <button type="button" data-vis="private" class="${r.visibility === 'private' ? 'on' : ''}">🔒 仅自己可见</button>
-            </div>
+            ${visPickHtml(r.visibility, r.visibleTo)}
           </div>
           ${recRemindBlock(r)}
         </div>
@@ -9943,7 +10085,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       images,
       attachments,
       pinned: layer.dataset.pinned === '1',
-      visibility: layer.dataset.visibility || 'family',
+      ...visReading(layer),
       /* v4.12.0：记录本提醒。三处「跟随系统」都用「缺省值」表达：
          remindTime 空串 / remindAdvanceDays -1 / remindChannel 空串。
          服务端 recordRemindPatch() 认这几个值，不会把它们当成「用户填了空」。 */
@@ -11501,15 +11643,15 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   });
 
   document.addEventListener('click', (e) => {
-    const seg = e.target.closest('.segmented[data-act="rec-vis-pick"], .segmented[data-act="rec-pin-pick"], .segmented[data-act="post-vis-pick"]');
+    /* v4.28.2：可见范围统一走 `vis-pick`（上面那个通用处理器）；
+       这里只剩「置顶」这一组分段按钮 —— 旧的 rec-vis-pick / post-vis-pick 已合并掉。 */
+    const seg = e.target.closest('.segmented[data-act="rec-pin-pick"]');
     if (!seg) return;
     const btn = e.target.closest('button');
     if (!btn) return;
     const layer = $('#modal-layer');
     if (!layer) return;
-    if (seg.dataset.act === 'rec-vis-pick') layer.dataset.visibility = btn.dataset.vis;
-    else if (seg.dataset.act === 'post-vis-pick') layer.dataset.visibility = btn.dataset.vis;
-    else layer.dataset.pinned = btn.dataset.pin;
+    layer.dataset.pinned = btn.dataset.pin;
   });
 
   /* ── 启动 ─────────────────────────────────────────────── */

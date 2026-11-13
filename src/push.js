@@ -507,6 +507,32 @@ function clearLogs() {
   return n;
 }
 
+/**
+ * 一次投递到底算不算「发出去了」。
+ *
+ * ★ v4.28.2 修复（问题 2：只配飞书 / 钉钉时每 10 分钟重复推送）：
+ *   调用方原来各自写成 `res.mail > 0 || res.wecom > 0`，把 v4.24.0 才加进来的
+ *   飞书 / 钉钉两条**即时通道漏掉了**。后果是一整条负反馈链：
+ *     1. 飞书 / 钉钉其实已经发成功，但调用方判成「一个都没发出去」；
+ *     2. 于是不写「已发」标记（todos.remind_key / 报表 last_key / outbox.sent_at）；
+ *     3. 下一轮扫描又看到「没发过」→ 再发一次；
+ *     4. 记账报表的重试节流正好是 10 分钟 → 表现就是「每 10 分钟重复推送」。
+ *   判据统一收在这里，今后再加通道只要改这一处，不会再有第四个调用点漏掉。
+ *
+ * 兼容两种返回体：push.deliver 用 `mail`，bills.sendReports 用 `mails`。
+ * `deferred`（免打扰已入队）也算成功 —— 消息已安全落库、到点必发，
+ * 上游必须据此记账，否则免打扰一结束就会连发。
+ *
+ * @param {object} res push.deliver / bills.sendReports 的返回值
+ * @returns {boolean}
+ */
+function sentAny(res) {
+  const r = res || {};
+  const n = (v) => Number(v) || 0;
+  return n(r.mail) > 0 || n(r.mails) > 0 || n(r.wecom) > 0
+    || n(r.feishu) > 0 || n(r.dingtalk) > 0 || n(r.deferred) > 0;
+}
+
 /** 某成员的个人免打扰时段（user_prefs；没设置 = 空串 = 不启用） */
 function quietPrefsOf(userId) {
   const id = Number(userId) || 0;
@@ -601,6 +627,7 @@ module.exports = {
   KIND_CHANNEL_KEY,
   wecomIdOf,
   wecomBodyOf,
+  sentAny,
   deliver,
   labelOf,
   hasWecomRecipients,

@@ -1276,8 +1276,11 @@ function todoPreviewFor(userId, todayKey) {
      重复规则是 JS 实现（含农历换算），SQL 里写不出来，硬写成 SQL 会变成第二份规则。 */
   const rows = db.all(
     "SELECT * FROM todos WHERE (todo_date = ? OR repeat != '' OR repeat_rule != '')" +
-    " AND (visibility = 'family' OR user_id = ?) ORDER BY start_time, id",
-    [day, Number(userId)],
+    /* v4.28.2：可见性与 api.js 的 VISIBLE 同口径 —— 全家可见 / 我创建的 / 被点名让我看的。
+       只按 user_id 判的话，别人「指定可见成员」把我拉进去的待办不会出现在我的日报预告里。 */
+    " AND (visibility = 'family' OR user_id = ? OR instr(visible_to, ?) > 0)"
+    + ' ORDER BY start_time, id',
+    [day, Number(userId), `,${Number(userId)},`],
   );
   /* 已经勾过「完成」的落点不再预告：勾选表示「这一天不做了 / 不再提醒」，
      与待办列表、企业微信「今日待办」保持同一口径。窗口取 [这一天, +5]：
@@ -1765,8 +1768,11 @@ async function tick(now = new Date()) {
   const tz = cfg.tzOffsetMinutes;
   const today = reminders.wallDateKey(now, tz);
   /* v4.5.0 需求 5：企业微信推送成功也要算「已发」——
-     否则只开企业微信、没配邮箱的家庭会每分钟重推一次（10 分钟节流后就变成刷屏）。 */
-  const delivered = (out.mails > 0) || (out.wecom > 0);
+     否则只开企业微信、没配邮箱的家庭会每分钟重推一次（10 分钟节流后就变成刷屏）。
+     ★ v4.28.2 修复：判据收进 push.sentAny()，把飞书 / 钉钉也计入。
+       旧写法只看 mails + wecom，于是「推送方式全部选了飞书群 / 钉钉群」的家庭
+       每次都被判成没发出去 → 写 lastTry → **每 10 分钟重推一次报表**，永不停止。 */
+  const delivered = push.sentAny(out);
   if (delivered) {
     if (plan.dateKey) {
       putSetting('bill_report_last_key', plan.dateKey);
@@ -1779,6 +1785,8 @@ async function tick(now = new Date()) {
   }
   if (out.mails) console.log(`[bill] 已发送记账报表 ${out.mails} 封（收件人 ${out.recipients}）`);
   if (out.wecom) console.log('[bill] 记账报表已推送到企业微信');
+  if (out.feishu) console.log('[bill] 记账报表已推送到飞书群');
+  if (out.dingtalk) console.log('[bill] 记账报表已推送到钉钉群');
   if (out.skipped) console.warn(`[bill] 记账报表未发送：${out.skipped}（10 分钟后重试）`);
   if (out.errors.length) console.error('[bill] 记账报表发送失败：', out.errors.join('；'));
   return { sent: true, ...out };
