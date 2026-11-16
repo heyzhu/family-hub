@@ -422,8 +422,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        它们原来在「记账设置」页签里。 */
     meOpen: { profile: false, members: false, notify: false, push: false, ai: false, cat: false, backup: false, system: false },
     /* v4.16.0 需求 4：推送渠道设置里「邮件 / 企业微信」两块配置的折叠状态。
-       默认展开（undefined 当作 true），点了标题才收起。 */
-    pushOpen: { mail: true, wecom: true },
+       ★ v4.28.3 需求 4：默认**收起** —— 展开「推送渠道设置」时先看到四条通道的总览，
+         想改哪一条再点开，不用先滚过两大段配置。undefined 仍当作展开。 */
+    pushOpen: { mail: false, wecom: false },
     // v2.0.0 家庭记账
     bills: [],
     billChat: [],
@@ -1800,11 +1801,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           <div class="composer-ops-right">
             <span class="draft-hint${draftHintText('post') ? '' : ' hidden'}${((state.draftState || {}).post || {}).pending ? ' saving' : ''}" id="post-draft-hint">${esc(draftHintText('post'))}</span>
             <button type="button" class="btn-ghost btn-sm" data-act="draft-save">💾 存草稿</button>
-            <button type="button" class="btn-primary btn-sm" data-act="compose-publish">发布</button>
           </div>
         </div>
-        <input type="text" class="composer-tags" maxlength="80" placeholder="添加标签（用空格分隔，如：出游 美食）"
-               data-preserve="compose-tags" data-act="compose-tags" value="${esc(draftTags)}">
+        <!-- v4.28.3 需求 2：标签与「发布」同一行 —— 输入框吃满剩余宽度，按钮固定在右端 -->
+        <div class="composer-foot">
+          <input type="text" class="composer-tags" maxlength="80" placeholder="添加标签（用空格分隔，如：出游 美食）"
+                 data-preserve="compose-tags" data-act="compose-tags" value="${esc(draftTags)}">
+          <button type="button" class="btn-primary btn-sm" data-act="compose-publish">发布</button>
+        </div>
         <input type="file" accept="image/*" multiple class="hidden" id="compose-file">
         <input type="file" accept="video/*" multiple class="hidden" id="compose-video-file">
       </div>` : '';
@@ -3015,7 +3019,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   /* ── v4.25.0 需求 4：记账这一类的推送渠道（个人） ──────────────
      与「待办提醒 / 内容通知」里的渠道下拉同一套语义：留空 = 沿用「我的推送方式」。
      报表是**按人发**的（每人一份），所以这一项必须是个人偏好，不是家庭设置。 */
-  const CAT_CHANNELS = ['auto', 'wecom', 'feishu', 'dingtalk', 'mail', 'both'];
+  const CAT_CHANNELS = ['wecom', 'feishu', 'dingtalk', 'mail'];
 
   /** 我在「记账」这一类上单独指定的通道；'' = 跟随全局 */
   function billChannelOf() {
@@ -3027,7 +3031,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const v = billChannelOf();
     return v
       ? `我：${PUSH_LABEL[v]}`
-      : `我：跟随推送方式（${PUSH_LABEL[pushChannelOf(me)] || '智能'}）`;
+      : `我：跟随推送方式（${PUSH_LABEL[pushChannelOf(me)] || '企业微信'}）`;
   }
 
   /** 记账渠道下拉（管理员弹窗与成员弹窗共用一份） */
@@ -3037,7 +3041,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       <label class="field field-sm"><span>记账推送渠道
         <span class="field-hint">（不单独指定就跟随「推送方式」）</span></span>
         <select data-act="bill-channel">
-          <option value=""${!cur ? ' selected' : ''}>跟随我的推送方式（${esc(PUSH_LABEL[pushChannelOf(state.me)] || '智能')}）</option>
+          <option value=""${!cur ? ' selected' : ''}>跟随推送方式设置（首选 ${esc(PUSH_LABEL[pushChannelOf(state.me)] || '企业微信')}）</option>
           ${CAT_CHANNELS.map((v) => `<option value="${v}"${cur === v ? ' selected' : ''}>${esc(PUSH_LABEL[v])}</option>`).join('')}
         </select></label>`;
   }
@@ -3054,7 +3058,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       <label class="field field-sm"><span>我自己收到的${kind === 'notify' ? '内容通知' : '待办提醒'}走哪条通道
         <span class="field-hint">（个人偏好，留空跟随「推送方式」；只影响你自己）</span></span>
         <select data-act="my-channel" data-kind="${kind === 'notify' ? 'notify' : 'todo'}">
-          <option value=""${!cur ? ' selected' : ''}>跟随我的推送方式（${esc(PUSH_LABEL[pushChannelOf(state.me)] || '智能')}）</option>
+          <option value=""${!cur ? ' selected' : ''}>跟随推送方式设置（首选 ${esc(PUSH_LABEL[pushChannelOf(state.me)] || '企业微信')}）</option>
           ${CAT_CHANNELS.map((v) => `<option value="${v}"${cur === v ? ' selected' : ''}>${esc(PUSH_LABEL[v])}</option>`).join('')}
         </select></label>`;
   }
@@ -3141,9 +3145,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <small>${wxHint}</small></div>
             ${wcN ? '' : `<button type="button" class="btn-soft btn-sm" data-act="bill-push-goto-map">去账号映射</button>`}</div>
         </div>
-        <div class="note-box bill-push-note">报表严格按每个人自己的「推送方式」投递：
-          仅邮件 → 只发邮件；仅企业微信 → 只发企业微信；两者都选 → 两条都收；
-          智能 → 企业微信优先、发不了才落邮件。关掉日报只影响汇总消息，不影响提醒和手动记账。</div>
+        <div class="note-box bill-push-note">报表严格按每个人自己的「首选 + 兜底」投递：先走首选，发不出去才补兜底，<b>不会两条同时发</b>。
+          三类内容里「记账」可以单独指定首选（下面「记账推送渠道」），兜底始终沿用推送方式设置里的兜底。
+          关掉日报只影响汇总消息，不影响提醒和手动记账。</div>
         ${msgTplBlock('bill')}`;
   }
 
@@ -4197,60 +4201,75 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   }
 
   /**
-   * v4.7.0 需求 2：主动提醒的推送通道。
-   * 说明必须写清「企业微信发不出去时会回退邮件」——不然用户以为选了企业微信就一定收得到。
+   * 主动提醒的推送通道（v4.7.0 → v4.28.3）。
+   *
+   * v4.28.3：拆成「首选 + 兜底」两个**具体**通道，『智能』『双渠道』已下线 ——
+   * 它们是把「先发哪条、失败要不要换」交给系统猜，现在两件事都由用户选。
+   * 因此这里不再需要别名表：库里的老值由服务端迁移落成具体通道。
    */
-  /* v4.8.0 需求 4/5：默认策略从「只用邮件」改成「优先企业微信、邮件兜底」。
-     v4.13.0（问题 7）：新增 **仅企业微信**（wecom）。
-     ★ 'wecom' 以前是 v4.7.0 的旧值、被折成 'auto'；现在它是正式通道，
-       所以别名表清空 —— 再折一次会把「仅企业微信」显示成「智能」。 */
   const PUSH_LABEL = {
-    auto: '智能（优先企业微信）',
-    wecom: '仅企业微信',
+    wecom: '企业微信',
     feishu: '飞书群',
     dingtalk: '钉钉群',
     mail: '邮件',
-    both: '邮件 + 企业微信',
   };
-  const PUSH_ALIAS = {};
+  /* 展示顺序：即时通道在前、邮件在后（与「首选」下拉框一致） */
+  const PUSH_ORDER = ['wecom', 'feishu', 'dingtalk', 'mail'];
   function pushChannelOf(me) {
-    let v = String((me && me.push_channel) || 'auto');
-    if (PUSH_ALIAS[v]) v = PUSH_ALIAS[v];
-    return PUSH_LABEL[v] ? v : 'auto';
+    const v = String((me && me.push_channel) || 'wecom');
+    return PUSH_LABEL[v] ? v : 'wecom';
   }
-  /** 这个人的企业微信到底通不通 —— 状态必须写在界面上，否则「选了智能却走邮件」没法解释 */
+  /** 兜底通道；'' = 没设兜底（首选失败就如实报错，不替用户换通道） */
+  function pushFallbackOf(me) {
+    const v = String((me && me.push_fallback) || '');
+    return PUSH_LABEL[v] ? v : '';
+  }
+  /** 「企业微信 · 兜底 邮件」这样的一行摘要 */
+  function pushModeText(me) {
+    const p = PUSH_LABEL[pushChannelOf(me)] || '企业微信';
+    const f = pushFallbackOf(me);
+    return f ? `${p} · 兜底 ${PUSH_LABEL[f]}` : `${p}（无兜底）`;
+  }
+  /** 这个人的企业微信到底通不通 —— 状态必须写在界面上，否则「选了企微却收到邮件」没法解释 */
   function pushInfoOf(me) {
     const info = (me && me.push_info) || {};
     return { bound: !!info.bound, ready: !!info.ready, wecomUser: String(info.wecomUser || '') };
   }
+  /** 这条通道「家庭级」配没配好（来自 /api/me 的 push_channels） */
+  function channelConfigured(ch) {
+    const pc = (state.me && state.me.push_channels) || {};
+    return !!(pc[ch] && pc[ch].enabled);
+  }
+  /** 已启用且已配置的通道，按 PUSH_ORDER 排 —— 两个下拉框的唯一数据源 */
+  function pushOptions() {
+    return PUSH_ORDER.filter(channelConfigured);
+  }
   function pushChannelSummary(me) {
     const ch = pushChannelOf(me);
+    const fbk = pushFallbackOf(me);
     const { bound, ready } = pushInfoOf(me);
     const noMail = !(me && me.notify_email);
-    if (ch === 'mail') {
-      return '当前：只用邮件' + (noMail ? ' · 还没设置收件邮箱，邮件发不出去' : '');
+    const line = (label, note) => `${label}${note ? ` · ${note}` : ''}`;
+    const parts = [];
+    if (ch === 'mail') parts.push(line('首选 邮件', noMail ? '还没设置收件邮箱，这类消息发不出去' : ''));
+    else if (ch === 'wecom') {
+      parts.push(line('首选 企业微信', ready
+        ? (bound ? '已绑定' : '你还没绑定企业微信账号，这条走不通')
+        : '企业微信应用未启用，这条走不通'));
+    } else if (ch === 'feishu' || ch === 'dingtalk') {
+      const name = ch === 'feishu' ? '飞书' : '钉钉';
+      const st = state.settings || null;
+      const stt = st ? (ch === 'feishu' ? st.feishuStatus : st.dingtalkStatus) : null;
+      const note = !st ? `群机器人由管理员配置` : (!stt || !stt.configured ? `管理员还没配置${name}群机器人` : `已配置${name}群机器人`);
+      parts.push(line(`首选 ${name}群`, note));
     }
-    const wx = !ready ? '企业微信应用未启用'
-      : !bound ? '你还没绑定企业微信账号'
-        : '企业微信已绑定';
-    if (ch === 'both') return `当前：邮件 + 企业微信 · ${wx}，两条都发`;
-    if (ch === 'wecom') {
-      return ready && bound
-        ? '当前：仅企业微信 · 已绑定，失败也不会转成邮件'
-        : `当前：仅企业微信 · ${ready ? '你还没绑定企业微信账号' : '企业微信应用未启用'}，这期间收不到提醒`;
+    if (fbk) {
+      const noMailFb = fbk === 'mail' && noMail;
+      parts.push(`兜底 ${PUSH_LABEL[fbk]}${noMailFb ? '（没设收件邮箱，兜不住）' : ''}`);
+    } else {
+      parts.push('没有兜底');
     }
-    /* v4.24.0 需求 2：飞书 / 钉钉是「群 Webhook」通道 —— 没有个人绑定，
-       能不能收只取决于管理员配没配好机器人。 */
-    const hookState = (name) => {
-      const st = state.settings || null;   // 只有管理员拉得到 /api/settings；成员看不到配置细节
-      if (!st) return `${name}群机器人由管理员在「推送渠道设置」里配置，没配好之前收不到`;
-      const stt = name === '飞书' ? st.feishuStatus : st.dingtalkStatus;
-      if (!stt || !stt.configured) return `管理员还没配置${name}群机器人，这期间收不到提醒`;
-      return `管理员已配置${name}群机器人，消息会发到群里`;
-    };
-    if (ch === 'feishu') return `当前：飞书群 · ${hookState('飞书')}，失败不会转成邮件`;
-    if (ch === 'dingtalk') return `当前：钉钉群 · ${hookState('钉钉')}，失败不会转成邮件`;
-    return `当前：智能 · ${wx}${bound && ready ? '，提醒优先发到企业微信' : '，现在会走邮件'}；发不出去会自动回退邮件`;
+    return `当前：${parts.join(' → ')}`;
   }
 
   /**
@@ -4957,7 +4976,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           <div class="rs-head"><span class="rs-title">默认推送</span>
             ${(s ? s.pushMailEnabled !== false || s.pushWecomEnabled !== false : true) ? rsPill('ok', '已配置') : rsPill('off', '两个通道都关着')}</div>
           <div class="rs-grid">
-            ${rsCell('推送方式', pushText + ` · 我：${PUSH_LABEL[pushChannelOf(me)] || '智能'}`, '', true)}
+            ${rsCell('推送方式', pushText + ` · 我：${PUSH_LABEL[pushChannelOf(me)] || '企业微信'}`, '', true)}
             ${rsCell('待办提醒', `${s ? (s.remindEnabled !== false ? '开' : '关') : ((g && g.remindEnabled !== false) ? '开' : '关')} · ${remindTime} · ${advanceLabel(advD)}`, '', true)}
             ${rsCell('内容通知', (quietS && quietE) ? `免打扰 ${quietS}–${quietE} 后合并 · 上限 ${notifyMaxPerMin()}/分` : `变更即发 · 上限 ${notifyMaxPerMin()}/分`, '', true)}
             ${rsCell('记账推送', billText)}
@@ -6383,7 +6402,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       const base = mail && wc ? '邮件 + 企业微信'
         : mail ? '只用邮件'
           : wc ? '只用企业微信' : '两个通道都关着';
-      return `${base} · 我：${PUSH_LABEL[pushChannelOf(state.me)] || '智能'}`;
+      return `${base} · 我：${PUSH_LABEL[pushChannelOf(state.me)] || '企业微信'}`;
     })();
 
     openModal({
@@ -8779,6 +8798,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   /* 每页条数设置 / 待办时长选择 / 记账统计维度 */
   document.addEventListener('change', async (e) => {
     const el = e.target;
+    /* v4.28.3：首选一变，兜底下拉里要把同一条通道摘掉（首选=兜底 等于没兜底） */
+    if (el.dataset && el.dataset.act === 'push-primary') {
+      syncPushFallbackOptions();
+      return;
+    }
     if (el.dataset && el.dataset.act === 'todo-page-size') {
       const n = Number(el.value);
       if (PAGE_SIZES.includes(n)) {
@@ -10031,7 +10055,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        手机上一个 <select> 里放 30 多个汉字：Chrome 会按**最长选项**算最小内容宽度，
        在 320~360px 屏上直接把「提醒方式」这一行顶出弹窗右边界。
        现在选项只说「跟随系统」，当前通道走下面的 .field-hint 说明。 */
-    const chLabel = { '': '跟随系统', mail: '只用邮件', wecom: '只用企业微信', both: '邮件 + 企业微信' };
+    const chLabel = { '': '跟随系统', mail: '邮件', wecom: '企业微信', feishu: '飞书群', dingtalk: '钉钉群' };
     return `
       <div class="field">
         <div class="rec-remind-head">
@@ -10052,7 +10076,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           </div>
           <label class="field field-sm"><span>提醒方式</span>
             <select data-mk="recRemindChannel">
-              ${['', 'mail', 'wecom', 'both'].map((v) =>
+              ${['', 'wecom', 'mail', 'feishu', 'dingtalk'].map((v) =>
                 `<option value="${v}"${curCh === v ? ' selected' : ''}>${esc(chLabel[v])}</option>`).join('')}
             </select></label>
           <small class="field-hint" id="rec-remind-hint">留空 = 跟随系统：默认 ${esc(sysTime)}·
@@ -10317,7 +10341,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       <label class="field field-sm"><span>这一类的推送渠道
         <span class="field-hint">（不单独指定就跟随「推送方式」）</span></span>
         <select data-pref="${key}">
-          <option value=""${!cur ? ' selected' : ''}>跟随我的推送方式（${esc(PUSH_LABEL[pushChannelOf(state.me)] || '智能')}）</option>
+          <option value=""${!cur ? ' selected' : ''}>跟随推送方式设置（首选 ${esc(PUSH_LABEL[pushChannelOf(state.me)] || '企业微信')}）</option>
           ${['auto', 'wecom', 'feishu', 'dingtalk', 'mail', 'both'].map((v) => `
             <option value="${v}"${cur === v ? ' selected' : ''}>${esc(PUSH_LABEL[v])}</option>`).join('')}
         </select></label>`;
@@ -10776,109 +10800,131 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   }
 
   /**
-   * v4.25.0 需求 2：**区分已启用 / 未启用**的推送渠道。
+   * v4.28.3：通道状态只剩两种「说得清」的情况 —— 能用 / 不能用，以及为什么。
    *
    * 数据来自两处：
    *   · `state.me.push_channels`（服务端 withPushInfo 下发，成员也能拿到）—— 家庭开关 + 是否配置齐全；
    *   · `state.settings`（仅管理员）—— 用来把「未启用」细化成「总开关关着」还是「还没配」。
    * 没有 settings 时（成员）就说「由管理员配置」，不猜。
+   *
+   * ★ 不再有 auto / both 这两个组合值 —— 组合已经由「首选 + 兜底」表达。
    */
   function channelStatusOf(ch) {
     const pc = (state.me && state.me.push_channels) || {};
+    const st = pc[ch];
+    if (st && st.enabled) return { enabled: true, text: '已启用' };
     const s = state.settings || null;
-    const adminNote = !s;
-    const base = (name, offKey, offText, noCfgText) => {
-      const st = pc[name];
-      const enabled = st ? !!st.enabled : null;
-      if (enabled === true) return { enabled: true, text: '已启用' };
-      const off = s ? s[offKey] === false : false;
-      return {
-        enabled: false,
-        text: off ? `未启用：${offText}` : (adminNote ? `未启用（${noCfgText}，由管理员配置）` : `未启用：${noCfgText}`),
-      };
+    const off = (key, offText, noCfgText) => {
+      if (s && s[key] === false) return `未启用：${offText}`;
+      return s ? `未启用：${noCfgText}` : `未启用（由管理员配置）`;
     };
-    if (ch === 'mail') return base('mail', 'pushMailEnabled', '「邮件推送」总开关关着', '还没配发件邮箱');
-    if (ch === 'wecom') return base('wecom', 'pushWecomEnabled', '「企业微信推送」总开关关着', '企业微信应用未启用');
-    if (ch === 'feishu') return base('feishu', 'pushFeishuEnabled', '「飞书推送」总开关关着', '还没配飞书群机器人');
-    if (ch === 'dingtalk') return base('dingtalk', 'pushDingtalkEnabled', '「钉钉推送」总开关关着', '还没配钉钉群机器人');
-    if (ch === 'both') {
-      const a = base('wecom', 'pushWecomEnabled', '「企业微信推送」总开关关着', '企业微信应用未启用');
-      const b = base('mail', 'pushMailEnabled', '「邮件推送」总开关关着', '还没配发件邮箱');
-      /* 文案口径必须与上面四项一致（都以「未启用：」开头），否则弹窗里这一条看起来像另一种状态。 */
-      return { enabled: a.enabled && b.enabled, text: a.enabled && b.enabled ? '两条都已启用' : '未启用：邮件与企业微信没有同时启用' };
-    }
-    /* auto = 智能路由：只要有一条即时通道能用就算可用 */
-    const wx = (pc.wecom && pc.wecom.enabled) || false;
-    const ml = (pc.mail && pc.mail.enabled) || false;
-    return wx || ml
-      ? { enabled: true, text: wx ? '已启用（优先企业微信）' : '已启用（走邮件）' }
-      : { enabled: false, text: '未启用：企业微信与邮件都不能用' };
+    if (ch === 'mail') return { enabled: false, text: off('pushMailEnabled', '「邮件推送」总开关关着', '还没配发件邮箱') };
+    if (ch === 'wecom') return { enabled: false, text: off('pushWecomEnabled', '「企业微信推送」总开关关着', '企业微信应用未启用') };
+    if (ch === 'feishu') return { enabled: false, text: off('pushFeishuEnabled', '「飞书推送」总开关关着', '还没配飞书群机器人') };
+    return { enabled: false, text: off('pushDingtalkEnabled', '「钉钉推送」总开关关着', '还没配钉钉群机器人') };
   }
 
+  /**
+   * 「推送方式」弹窗：**首选** + **兜底** 两个下拉。
+   *
+   * 需求原话：两者的选项都必须是「已启用且已配置」的单个渠道；
+   * 一个都没有时不要让人选，直接提示去配置 —— 让人先选一个空通道、
+   * 再自己发现发不出去，是最差的一种交互。
+   */
   function openPushChannelForm() {
-    const cur = pushChannelOf(state.me);
-    const { bound, ready } = pushInfoOf(state.me);
-    const bindLine = !ready
-      ? '企业微信应用还没启用，选「智能」时目前会走邮件。'
-      : bound
-        ? `已绑定企业微信账号（UserID：${esc(pushInfoOf(state.me).wecomUser)}）。`
-        : '你还没绑定企业微信账号 —— 需要管理员在下方「企业微信」区块里把你的企业微信 UserID 对应到你的家庭账号，绑定后才会真正发到企业微信。';
-    /* v4.25.0 需求 2：每个选项后面直接标状态 —— 不用选完才知道「这条根本发不出去」。 */
-    const OPTS = [
-      ['auto', '智能（推荐）· 优先企业微信，发不出去自动回退邮件'],
-      ['wecom', '仅企业微信 · 只发企微，失败不转邮件'],
-      ['feishu', '飞书群 · 发到管理员配置的飞书群机器人'],
-      ['dingtalk', '钉钉群 · 发到管理员配置的钉钉群机器人'],
-      ['mail', '只用邮件'],
-      ['both', '邮件 + 企业微信（两条都发）'],
-    ];
-    const optHtml = OPTS.map(([v, label]) => {
-      const st = channelStatusOf(v);
-      const tag = st.enabled ? '（已启用）' : `（${esc(st.text)}）`;
-      return `<option value="${v}"${cur === v ? ' selected' : ''}>${esc(label)}${tag}</option>`;
-    }).join('');
-    const onList = OPTS.map(([v]) => v).filter((v) => channelStatusOf(v).enabled)
-      .map((v) => PUSH_LABEL[v]).filter(Boolean);
-    const offList = ['wecom', 'feishu', 'dingtalk', 'mail'].filter((v) => !channelStatusOf(v).enabled)
-      .map((v) => PUSH_LABEL[v]);
+    const opts = pushOptions();
+    const curP = pushChannelOf(state.me);
+    const curF = pushFallbackOf(state.me);
+
+    if (!opts.length) {
+      openModal({
+        title: '推送方式',
+        body: `<div class="note-box">
+            <b>现在还没有一条能用的推送渠道</b>，所以暂时没得选。<br>
+            需要先配置好至少一条：邮件（发件邮箱）、企业微信（CorpID / Secret / AgentID + 账号映射）、
+            飞书群机器人或钉钉群机器人（Webhook 地址）。
+          </div>
+          <div class="note-box">${state.me && state.me.is_admin
+            ? '你是管理员，直接去「我的 → 推送渠道设置」配好再回来选。'
+            : '这件事由管理员在「推送渠道设置」里配置，配好后回来就能选。'}</div>`,
+        foot: `${state.me && state.me.is_admin ? '<button type="button" class="btn-ghost" data-act="push-hint-goto">去推送配置</button>' : ''}
+          <button type="button" class="btn-primary" data-act="modal-close">知道了</button>`,
+      });
+      return;
+    }
+
+    /* 首选下拉：只有已配置的通道。（当前值若已不可用，下面单独提示，不混进选项里） */
+    const optHtml = (cur, allowEmpty) => [
+      allowEmpty ? `<option value=""${!cur ? ' selected' : ''}>不设兜底（首选失败就报错）</option>` : '',
+      ...opts.map((v) => `<option value="${v}"${cur === v ? ' selected' : ''}>${esc(PUSH_LABEL[v])}</option>`),
+    ].join('');
+    const lostP = !opts.includes(curP);
+    const lostF = !!curF && !opts.includes(curF);
+
     openModal({
       title: '推送方式',
       body: `
         <div class="note-box">
-          <b>已启用</b>：${onList.length ? esc(onList.join('、')) : '<span class="warn-text">暂无（管理员还没配好任何通道）</span>'}<br>
-          <b>未启用</b>：${offList.length ? esc(offList.join('、')) : '无'}
-          <br><span class="field-hint">未启用的通道也可以先选上 —— 管理员配置好之后自动生效，不用回来重选。
-            想知道每条为什么没启用，看下面选项括号里的原因。</span>
+          <b>已启用且已配置</b>：${esc(opts.map((v) => PUSH_LABEL[v]).join('、'))}
+          <br><span class="field-hint">这里只列能真正发出去的通道 —— 选一个发不出去的通道，
+            界面好看但消息会安静地停在日志里。</span>
         </div>
-        <label class="field"><span>待办提醒与内容通知发到哪里</span>
-          <select data-mk="pushChannel">${optHtml}</select></label>
+        ${lostP ? `<div class="note-box warn-text">你现在选的首选「${esc(PUSH_LABEL[curP])}」已经不可用（被关掉或没配好），请重新选一个。</div>` : ''}
+        ${lostF ? `<div class="note-box warn-text">你原来的兜底「${esc(PUSH_LABEL[curF])}」已经不可用，已按「不设兜底」处理。</div>` : ''}
+        <label class="field"><span>首选推送方式
+          <span class="field-hint">（待办提醒 / 内容通知 / 记账都先走它）</span></span>
+          <select data-mk="pushPrimary" data-act="push-primary">${optHtml(opts.includes(curP) ? curP : opts[0], false)}</select></label>
+        <label class="field"><span>兜底推送方式
+          <span class="field-hint">（首选发不出去时才走它）</span></span>
+          <select data-mk="pushFallback">${optHtml(opts.includes(curF) ? curF : '', true)}</select></label>
         <div class="note-box">
-          <b>智能（默认）</b>：先发企业微信；没绑定、应用没启用或发送失败时，<b>自动回退邮件</b>，不会漏消息。<br>
-          <b>仅企业微信</b>：只走企业微信，<b>失败也不发邮件</b> —— 确定自己只看企微、不想邮箱收到时才选它。<br>
-          <b>飞书群 / 钉钉群</b>：发到管理员配好的群机器人所在的群里，<b>全家可见</b>；机器人没配好或发送失败不会转成邮件。<br>
-          <b>只用邮件</b>：完全不经即时消息。<br>
-          <b>两条都发</b>：同一份内容同时到邮箱和企业微信。<br>
-          无论选哪种，<b>各条通道看到的消息内容完全一样</b>：同样的标题、同样的正文。<br>
-          这一项是<b>全局默认</b>；待办 / 内容 / 记账三类还可以在各自的设置里单独指定通道（不指定就跟着这里走）。
+          <b>首选</b>：消息先走这条。<b>兜底</b>：首选没发出去（没绑定 / 通道故障 / 发送失败）才补发这一条，
+          <b>不会两条同时发</b>。<br>
+          兜底留空 = 不设兜底，首选失败会在推送日志里写明原因，不会静默丢弃。<br>
+          这一项是<b>全局默认</b>；待办提醒 / 内容通知 / 记账三类还可以各自指定<b>首选</b>
+          （在各自的设置里），<b>兜底始终跟着这里走</b>。
         </div>
-        <div class="note-box">${bindLine}</div>`,
+        <div class="note-box">${pushInfoOf(state.me).ready
+          ? (pushInfoOf(state.me).bound
+            ? `已绑定企业微信账号（UserID：${esc(pushInfoOf(state.me).wecomUser)}）。`
+            : '你还没绑定企业微信账号 —— 选企业微信做首选/兜底之前，需要管理员在「推送渠道设置 → 企业微信」里把你的 UserID 对应到家庭账号。')
+          : '企业微信应用还没启用（管理员可在「推送渠道设置」里开启）；在那之前选企业微信不会生效。'}</div>`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
         <button type="button" class="btn-primary" data-act="push-channel-save">保存</button>`,
     });
   }
 
+  /** 首选改了以后，兜底下拉里要把同一条通道摘掉（首选=兜底 等于没兜底） */
+  function syncPushFallbackOptions() {
+    const layer = document.getElementById('modal-layer');
+    if (!layer) return;
+    const pSel = layer.querySelector('[data-mk="pushPrimary"]');
+    const fSel = layer.querySelector('[data-mk="pushFallback"]');
+    if (!pSel || !fSel) return;
+    const p = pSel.value;
+    for (const opt of Array.from(fSel.options)) {
+      if (!opt.value) continue;
+      const same = opt.value === p;
+      opt.disabled = same;
+      opt.hidden = same;
+      if (same && fSel.value === opt.value) fSel.value = '';
+    }
+  }
+
   async function savePushChannel() {
-    const channel = modalValue('pushChannel');
+    const primary = modalValue('pushPrimary');
+    const fallback = modalValue('pushFallback');
+    if (!primary) { toast('请先选一个首选推送方式', 'err'); return; }
+    if (fallback && fallback === primary) { toast('兜底不能和首选是同一条通道', 'err'); return; }
     try {
-      const out = await api('/api/me/push-channel', { method: 'POST', body: { channel } });
+      const out = await api('/api/me/push-channel', { method: 'POST', body: { channel: primary, fallback } });
       state.me = out.user;
       closeModal();
       render();
-      const ch = pushChannelOf(state.me);
-      toast(`推送方式已改为「${PUSH_LABEL[ch]}」`, 'ok');
+      toast(`推送方式已改为「${PUSH_LABEL[primary]}${fallback ? ` · 兜底 ${PUSH_LABEL[fallback]}` : ''}」`, 'ok');
       /* v4.13.0（问题 7）：选完方式就把「这种方式还差什么」摆出来 ——
          以前选完只是存了一下，用户并不知道自己还没配发件邮箱 / 还没绑定企微。 */
-      openPushChannelHint(ch);
+      openPushChannelHint(primary);
     } catch (err) { toast(err.message, 'err'); }
   }
 

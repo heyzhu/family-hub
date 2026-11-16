@@ -9,21 +9,20 @@
  * 依赖方向：push → db / config / wecom（都不反向 require 本模块，不成环）。
  * ★ 绝不 require notifications / reminders / outbox —— 那三个都要反过来用它。
  *
- * 通道取值（v4.13.0 → v4.24.0）：
- *   'auto'  **默认**。优先企业微信；企业微信发不出去（没绑定 / 应用没启用 / 发送失败）
- *           就回退邮件 —— 邮件是兜底，不是主路。
- *   'wecom' **仅企业微信**（v4.13.0 新增）：只发企业微信，失败也不回退邮件。
- *           适合「邮件那点额度/延迟不想用、就是要走企微」的人；代价是没绑定就收不到，
- *           所以界面在选它时会明确提醒「先把企微绑定好」。
- *   'feishu' / 'dingtalk'（v4.24.0 新增）：发到管理员配好的飞书 / 钉钉**群机器人**。
- *           群 Webhook 没有「个人绑定」的概念 —— 全家一个群，一次投递全家可见，
- *           多人选同一条通道时**只发一条**（按通道去重）。失败同样不回退邮件，
- *           但原因会写进推送日志。
- *   'mail'  只用邮件（给明确不想要即时消息的人）
- *   'both'  邮件 + 企业微信两条都发
- *   ★ v4.7.0 里 'wecom' 曾经是「优先企微、失败回退邮件」的旧值（后来被 'auto' 取代）。
- *     现在它有了新语义，LEGACY_CHANNELS 不再把它折成 'auto' ——
- *     写库值没变，改的是解释方式；真实老数据极少（v4.8.0 起默认就是 'auto'）。
+ * 通道取值（v4.28.3 起）：只剩四条**具体**通道 —— 'wecom' / 'mail' / 'feishu' / 'dingtalk'。
+ *
+ * 每人对每条内容有两层选择：
+ *   · 首选（users.push_channel，或 user_prefs.channel_todo/notify/bill 的单类覆盖）——
+ *     消息先走它；
+ *   · 兜底（users.push_fallback，全局唯一）—— 首选发不出去（没绑定 / 发送失败 /
+ *     通道没配）时才走它；空串 = 不设兜底。
+ *
+ * ★ v4.28.3 删掉了 'auto'（智能）与 'both'（双渠道）：
+ *   'auto' 是在替用户猜优先级、'both' 是让同一份内容发两遍。现在两件事都由用户显式选。
+ *   老库里的这两个值由 db.js 的一次性迁移落成「wecom + mail」，
+ *   normalizeChannel 里也保留了同样的映射 —— 迁移没跑到也不会投递失败。
+ * ★ 首选整条通道都没配（不是「这个人没绑定」）时，会落到兜底或任一可用通道：
+ *   「绝不静默丢弃」是这个模块从 v4.7.0 起的硬承诺。
  */
 
 // ★ db.js 导出的是 { db, ... }，引擎挂在 .db 上；解构取错会得到「get is not a function」
@@ -35,18 +34,25 @@ const dingtalk = require('./dingtalk');
 const quiet = require('./quiet');   // 纯计算模块，零依赖，不会成环
 const userprefs = require('./userprefs');   // 只依赖 db；push → userprefs 单向
 
-const CHANNELS = ['auto', 'wecom', 'mail', 'both', 'feishu', 'dingtalk'];
-const DEFAULT_CHANNEL = 'auto';
-/* v4.13.0：'wecom' 已是正式通道，不再有需要归一的历史值。
-   保留这张表（空对象）是为了让 normalizeChannel 的调用点与语义保持稳定。 */
-const LEGACY_CHANNELS = {};
+/* v4.28.3：通道模型从「六选一」改成「首选 + 兜底」。
+   『智能』『双渠道』这两种模式被删除 —— 它们原本是在替用户猜：
+     · 智能   = 先企业微信、失败回退邮件；
+     · 双渠道 = 邮件和企业微信都发一遍。
+   现在两件事都由用户显式选择：**首选**发不出去时才走**兜底**。
+   语义变了，取值集合也收敛成四条**具体**通道（不再有组合值）。 */
+const CHANNELS = ['wecom', 'mail', 'feishu', 'dingtalk'];
+/** 老库 / 没选过的人用这个默认首选：等价于原来的「智能」语义的首腿，升级后行为不变 */
+const DEFAULT_CHANNEL = 'wecom';
+/* v4.28.3：'auto' / 'both' 已下线，但它们还躺在老库里（users.push_channel /
+   user_prefs.channel_*）。这里做一次映射，保证「没迁移到」的脏数据也能正常投递。
+   ★ auto → wecom 只是首选；它的「邮件兜底」由 db.js 的一次性迁移写进 push_fallback。
+     万一迁移没跑到，deliver 的「首选不可用就降级」仍不会让消息丢掉。 */
+const LEGACY_CHANNELS = { auto: 'wecom', both: 'wecom' };
 const CHANNEL_LABEL = {
-  auto: '智能（优先企业微信）',
-  wecom: '仅企业微信',
+  wecom: '企业微信',
   feishu: '飞书群',
   dingtalk: '钉钉群',
   mail: '邮件',
-  both: '邮件 + 企业微信',
 };
 
 /** 任何脏值一律当默认值处理：用户把设置改坏了也不该让提醒停掉 */
@@ -56,12 +62,28 @@ function normalizeChannel(v) {
   return CHANNELS.includes(s) ? s : DEFAULT_CHANNEL;
 }
 
-/** 读某个家庭成员的推送通道（没设置过 = 'auto'） */
+/** 兜底通道：'' = 不设兜底（首选发不出去就如实报错，不替用户换通道） */
+function normalizeFallback(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase();
+  if (!s) return '';
+  if (LEGACY_CHANNELS[s]) return LEGACY_CHANNELS[s];
+  return CHANNELS.includes(s) ? s : '';
+}
+
+/** 读某个家庭成员的推送通道（首选）；没设置过 = DEFAULT_CHANNEL */
 function channelOf(userId) {
   const id = Number(userId) || 0;
   if (!id) return DEFAULT_CHANNEL;
   const row = db.get('SELECT push_channel FROM users WHERE id = ?', [id]);
   return normalizeChannel(row && row.push_channel);
+}
+
+/** 读某个家庭成员的兜底通道；没设置过 / 关掉 = ''（不兜底） */
+function fallbackOf(userId) {
+  const id = Number(userId) || 0;
+  if (!id) return '';
+  const row = db.get('SELECT push_fallback FROM users WHERE id = ?', [id]);
+  return normalizeFallback(row && row.push_fallback);
 }
 
 /**
@@ -95,6 +117,32 @@ function channelFor(userId, kind, prefsMap) {
     if (v && v !== 'inherit') return normalizeChannel(v);
   }
   return channelOf(id);
+}
+
+/**
+ * v4.28.3：一次拿到「首选 + 兜底」。
+ *
+ * 需求口径：待办提醒 / 内容通知 / 记账三类**默认跟随**全局的首选+兜底；
+ * 用户可以在某一类上单独指定**首选**，而**兜底永远沿用全局设置** ——
+ * 不允许「三类各配一套兜底」，否则出问题时没人说得清消息到底该往哪落。
+ *
+ * @returns {{primary:string, fallback:string, overridden:boolean}}
+ *   overridden = 这一类的首选是用户单独指定的（不是跟随全局）
+ */
+function modeFor(userId, kind, prefsMap) {
+  const id = Number(userId) || 0;
+  if (!id) return { primary: DEFAULT_CHANNEL, fallback: '', overridden: false };
+  const globalPrimary = channelOf(id);
+  const fallback = fallbackOf(id);
+  const key = KIND_CHANNEL_KEY[String(kind || '').trim()];
+  if (key) {
+    const p = prefsMap ? (prefsMap.get(id) || {}) : userprefs.load(id);
+    const v = String(p[key] == null ? '' : p[key]).trim().toLowerCase();
+    if (v && v !== 'inherit' && v !== 'auto' && v !== 'both') {
+      return { primary: normalizeChannel(v), fallback, overridden: true };
+    }
+  }
+  return { primary: globalPrimary, fallback, overridden: false };
 }
 
 /** 家庭账号（username）→ 企业微信 UserID；没绑定返回空串 */
@@ -196,193 +244,200 @@ async function deliver(targets, msg, ctx) {
   /* v4.23.0 需求 5：日志用的分类。调用方不传就是 'push'（不猜，宁可粗一点也不写错）。 */
   const kind = String(o.kind || o.deferKind || 'push').slice(0, 20);
 
-  const mailTo = [];
-  const wxTo = [];
-  /* v4.24.0 需求 2：群机器人通道按通道去重 —— 同一条消息投给全家群只发一次，
-     选了这条通道的每个人的 plan 都会被同一次投递的结果回填。 */
-  const hookPlans = { feishu: [], dingtalk: [] };
+  /* v4.28.3：先按「首选 + 兜底」给每个人算出投递计划，再分两轮发。
+     上一版是「顺着 ch 的取值写分支」，六种取值各自 if 一遍，谁都说不清
+     『智能』『双渠道』到底在哪一行生效。现在只有两个动作：发首选；首选没成就发兜底。 */
+  const canMail = mailOn && typeof o.sendMail === 'function' && (o.smtpReady !== false);
+  const avail = {
+    wecom: wecomOn && wxReady,
+    feishu: fsOn && fsReady,
+    dingtalk: dtOn && dtReady,
+    mail: canMail,
+  };
+  /** 这条通道「家庭级」是否配置齐全（与具体某个人无关） */
+  const chLabel = (ch) => CHANNEL_LABEL[ch] || ch;
+  const unavailableWhy = (ch) => {
+    if (ch === 'mail') return mailOn ? '还没配置发件邮箱' : '「邮件推送」总开关关着';
+    if (ch === 'wecom') return wecomOn ? '企业微信应用未启用' : '「企业微信推送」总开关关着';
+    if (ch === 'feishu') return fsOn ? '还没配置飞书群机器人的 Webhook' : '「飞书推送」总开关关着';
+    return dtOn ? '还没配置钉钉群机器人的 Webhook' : '「钉钉推送」总开关关着';
+  };
+  /** 对**这个收件人**来说，这条通道能不能落 */
+  const usableFor = (ch, t, wx) => {
+    if (!avail[ch]) return { ok: false, why: unavailableWhy(ch) };
+    if (ch === 'wecom' && !wx) return { ok: false, why: '还没绑定企业微信账号' };
+    if (ch === 'mail' && !t.email) return { ok: false, why: '没有设置收件邮箱' };
+    return { ok: true, why: '' };
+  };
+  const firstUsable = (t, wx, except) => CHANNELS.find((c) => c !== except && usableFor(c, t, wx).ok) || '';
+
   /* v4.23.0 需求 5：每个收件人一条「投递计划」，发送完成后按它写日志 ——
      一条日志要能回答「这个人这条消息走了哪条通道、成没成、为什么没成」。 */
   const plans = [];
   /* v4.25.0 需求 4：类别通道是个人偏好，一次取全，别逐人查库 */
   const prefsMap = userprefs.loadAll();
   for (const t of list) {
-    /* 优先级：调用方显式指定的 channel（免打扰冲刷 / 单测）> 该类内容自己的渠道 > 我的推送方式 */
-    const ch = normalizeChannel(t.channel || channelFor(t.id, kind, prefsMap));
+    const mode = modeFor(t.id, kind, prefsMap);
+    /* 调用方显式指定的 channel（免打扰冲刷 / 单测）优先；它只顶替**首选**，
+       兜底永远取该成员在设置里选的兜底 —— 与「三类自定义」同一口径。 */
+    const explicit = String(t.channel || '').trim().toLowerCase();
+    let primary = explicit ? normalizeChannel(explicit) : mode.primary;
+    const primarySet = primary;
+    let fallback = normalizeFallback(mode.fallback);
     const uname = t.username || usernameOf(t.id);
     const wx = t.wecomUser || wecomIdOf(uname, cfg);
     const name = t.name || uname || t.email || wx || `用户${Number(t.id) || ''}`;
-    let wantWx = wecomOn && (ch === 'auto' || ch === 'wecom' || ch === 'both') && !!wx && wxReady;
-    /* v4.24.0 需求 2：飞书 / 钉钉通道。只在「明确选了它」时走 —— auto 的语义保持
-       「优先企业微信、邮件兜底」不变，不偷偷扩展成「任意一条能用的即时通道」，
-       否则「我没配飞书却突然收到飞书消息」这种事没法向用户解释。 */
-    const hookCh = (ch === 'feishu' || ch === 'dingtalk') ? ch : '';
-    const hookOn = hookCh === 'feishu' ? fsOn : dtOn;
-    const hookReady = hookCh === 'feishu' ? fsReady : dtReady;
-    let wantHook = !!hookCh && hookOn && hookReady;
-    let deferredQuiet = false;
+
+    /* 首选这条通道**整个家庭都没配**（不是「这个人没绑定」）时：
+       有兜底就交给兜底轮，没兜底就落到任意一条能用的通道上 ——
+       「绝不静默丢弃」是这个模块从 v4.7.0 起的硬承诺，用户选错一个没配的通道
+       不该表现为「提醒坏了」。 */
+    let degradeWhy = '';
+    if (!avail[primary]) {
+      /* ★ 降级目标必须对**这个人**可用：光看通道配好了不够 ——
+         首选企微没配、兜底定成邮件、可他又没留邮箱，那条「已改发邮件」就成了假消息。 */
+      const alt = (fallback && usableFor(fallback, t, wx).ok)
+        ? fallback
+        : firstUsable(t, wx, primary);
+      if (alt) {
+        degradeWhy = `首选「${chLabel(primary)}」不可用（${unavailableWhy(primary)}），已改发「${chLabel(alt)}」`;
+        if (alt === fallback) { primary = alt; fallback = ''; } else { primary = alt; }
+      }
+    }
+    if (fallback === primary) fallback = '';
+
     const plan = {
-      t, ch, name, userId: Number(t.id) || 0, wantWx: false, wantMail: false,
-      ok: false, channel: '', detail: '', deferred: false,
+      t, ch: primary, primary, primarySet, fallback, name, wx,
+      userId: Number(t.id) || 0, ok: false, channel: '', detail: '', deferred: false,
+      failWhy: degradeWhy, usedFallback: false,
     };
+
     /* v4.10.0（差异 #12）：即时通道的**主动推送**同样受个人免打扰约束 ——
        在免打扰时段内不立即发，把消息沉进 mail_outbox（channel=该即时通道，due_at=免打扰结束时刻），
        到点由既有的冲刷任务发出。回执类（记账回执 / 完成回执）走的是消息应答路径，
        不经过本函数，天然不受影响 —— 与文档「免打扰只拦主动推送，不拦回执」一致。
-       邮件腿不受这里管：上游（reminders / notify）在生成发送计划时已经把时刻挪出了免打扰。 */
-    if ((wantWx || wantHook) && o.deferQuiet !== false) {
+       ★ 只对首选生效：兜底是「首选失败」时才走的路，而免打扰不是失败，是**推迟**。 */
+    if ((primary === 'wecom' || primary === 'feishu' || primary === 'dingtalk') && o.deferQuiet !== false) {
       const prefs = quietPrefsOf(t.id);
       const quietEnd = quiet.outOfQuiet(nowMs, prefs, config.tzOffsetMinutes);
-      if (quietEnd !== nowMs) {
-        if (deferInstant(t.id, msg, quietEnd, o.deferKind, wantWx ? 'wecom' : hookCh)) {
-          out.deferred++;
-          plan.deferred = true;
-          plan.detail = `免打扰时段内，已入队，${new Date(quietEnd).toISOString()} 后发送`;
-        }
-        wantWx = false;    // 本轮不发（消息已安全入队，上游按「已投递」记账）
-        wantHook = false;
-        deferredQuiet = true;  // 这个人整体缓发：邮件腿也不立即发（消息同一条已在队列里）
+      if (quietEnd !== nowMs && deferInstant(t.id, msg, quietEnd, o.deferKind, primary)) {
+        out.deferred++;
+        plan.deferred = true;
+        plan.detail = `免打扰时段内，已入队，${new Date(quietEnd).toISOString()} 后发送`;
       }
     }
-    /* v4.8.0 需求 4：邮件是**兜底**，不再是主路。
-       · auto：企业微信能用就只发企业微信，用不上（没绑定 / 应用没启用）才发邮件；
-       · wecom / feishu / dingtalk：**只发选中的即时通道**，发不出去也不回退邮件（原因进日志）；
-       · both：邮件 + 企业微信两条都发；
-       · mail：只发邮件（用户明确不要即时消息）。
-       ★ 无论如何都不静默丢弃 —— 这是本模块从 v4.7.0 起的硬承诺。 */
-    const wantMail = mailOn && !deferredQuiet
-      && (ch === 'mail' || ch === 'both' || (ch === 'auto' && !wantWx));
-    plan.wantWx = wantWx;
-    plan.wantMail = wantMail;
-    if (!deferredQuiet) {
-      if (wantWx) plan.channel = 'wecom';
-      else if (wantHook) plan.channel = hookCh;
-      else if (wantMail && t.email) plan.channel = 'mail';
-    }
     plans.push(plan);
-    if (wantWx) {
-      wxTo.push({ to: wx, ch, email: t.email || '', name, plan });
-    }
-    if (wantHook) hookPlans[hookCh].push(plan);
-    if (wantMail && t.email) {
-      mailTo.push(t.email);
-      if (ch === 'auto' && !wantWx) out.fallback++;   // 「本来想发企业微信，落到了邮件」
-    }
-    if (ch === 'wecom' && !wantWx && !deferredQuiet) {
-      /* 仅企业微信 = 没有邮件兜底，所以「为什么收不到」必须说清楚，
-         否则用户只会觉得「提醒坏了」。 */
-      let why = '';
-      if (!wecomOn) why = '企业微信推送总开关已关闭，选了「仅企业微信」的家人收不到消息';
-      else if (!wxReady) why = '企业微信应用未启用，选了「仅企业微信」的家人收不到消息';
-      else why = `${name}还没绑定企业微信账号，「仅企业微信」模式下收不到消息`;
-      out.errors.push(why);
-      plan.detail = why;
-    } else if (hookCh && !wantHook && !deferredQuiet) {
-      /* v4.24.0 需求 2：飞书 / 钉钉通道发不出去时同样说清楚为什么（没有邮件兜底）。 */
-      const label = hookCh === 'feishu' ? '飞书' : '钉钉';
-      const why = !hookOn
-        ? `${label}推送总开关已关闭，选了「${label}群」的家人收不到消息`
-        : `还没配置${label}群机器人的 Webhook 地址，选了「${label}群」的家人收不到消息`;
-      out.errors.push(why);
-      plan.detail = why;
-    } else if (!deferredQuiet && !plan.channel) {
-      plan.detail = (!t.email && ch === 'auto')
-        ? '没绑定企业微信，也没留收件邮箱，这条消息没有可用的通道'
-        : '当前通道不可用（总开关关着 / 未配置），这条消息没有发出去';
-    }
   }
 
-  // ① 邮件：仍然一封群发（不改变原有发信量与合并逻辑）
-  let mailOk = false;
-  let mailErr = '';
-  if (mailTo.length && mailOn) {
-    const canMail = typeof o.sendMail === 'function' && (o.smtpReady !== false);
-    if (!canMail) {
-      mailErr = `未配置发件邮箱，${mailTo.length} 位家人的邮件没发出去`;
-      out.errors.push(mailErr);
-    } else {
+  /* ── 一轮投递：把 batch 里的人按各自本轮的通道分桶发出去 ──────────────
+     which='primary' 用首选通道，'fallback' 用兜底通道。
+     群机器人（飞书 / 钉钉）一趟只发一条，结果回填给同通道的所有人。 */
+  async function dispatchPass(batch, which) {
+    if (!batch.length) return;
+    const mailItems = [];
+    const wxItems = [];
+    const hookItems = { feishu: [], dingtalk: [] };
+    for (const p of batch) {
+      const ch = which === 'primary' ? p.primary : p.fallback;
+      if (!ch) continue;
+      const u = usableFor(ch, p.t, p.wx);
+      if (!u.ok) { p.failWhy = p.failWhy || `${chLabel(ch)}：${u.why}`; continue; }
+      if (ch === 'wecom') wxItems.push(p);
+      else if (ch === 'mail') mailItems.push(p);
+      else hookItems[ch].push(p);
+    }
+
+    const sendHook = async (chName, plist) => {
+      if (!plist.length) return;
+      const mod = chName === 'feishu' ? feishu : dingtalk;
+      const hcfg = chName === 'feishu' ? fsCfg : dtCfg;
+      const label = chName === 'feishu' ? '飞书' : '钉钉';
+      try {
+        const r = await mod.sendText(hcfg, { content: wecomBodyOf(msg) });
+        if (r && r.ok === false) throw new Error(r.errorText || r.error || '发送失败');
+        out[chName] = (out[chName] || 0) + 1;
+        for (const p of plist) { p.ok = true; p.channel = chName; }
+      } catch (err) {
+        const why = `${label}群机器人：${(err && err.message) || err}`;
+        out.errors.push(why);
+        for (const p of plist) p.failWhy = why;
+      }
+    };
+    await sendHook('feishu', hookItems.feishu);
+    await sendHook('dingtalk', hookItems.dingtalk);
+
+    /* 邮件仍然一封群发（不改变原有发信量与合并逻辑） */
+    if (mailItems.length) {
       try {
         await o.sendMail({
-          to: mailTo,
+          to: mailItems.map((p) => p.t.email),
           subject: String(msg.subject || ''),
           text: String(msg.text || ''),
           html: String(msg.html || ''),
         });
-        out.mail = mailTo.length;
-        mailOk = true;
+        out.mail += mailItems.length;
+        for (const p of mailItems) { p.ok = true; p.channel = 'mail'; }
       } catch (err) {
-        mailErr = `邮件：${(err && err.message) || err}`;
-        out.errors.push(mailErr);
+        const why = `邮件：${(err && err.message) || err}`;
+        out.errors.push(why);
+        for (const p of mailItems) p.failWhy = why;
+      }
+    }
+
+    /* 企业微信只能按人逐个发（没有「群发给这几个人」以外的合并概念） */
+    const sendWecom = typeof o.sendWecom === 'function'
+      ? o.sendWecom
+      : (toUser, content) => wecom.sendText(cfg, { toUser, content });
+    /* v4.23.0：报表的邮件是「个人版」、企业微信是「全家版」，两者内容不同；
+       允许调用方单独给企微一份 msg（不传就与邮件同一份，行为不变）。 */
+    const wxMsg = o.wecomMsg || msg;
+    for (const p of wxItems) {
+      try {
+        const r = await sendWecom(p.wx, wecomBodyOf(wxMsg));
+        if (r && r.ok === false) throw new Error(r.error || '发送失败');
+        out.wecom++;
+        p.ok = true;
+        p.channel = 'wecom';
+      } catch (err) {
+        const why = `企业微信(${p.name})：${(err && err.message) || err}`;
+        out.errors.push(why);
+        p.failWhy = why;
       }
     }
   }
+
+  await dispatchPass(plans.filter((p) => !p.deferred), 'primary');
+
+  /* 第二轮：首选没成、且用户设了兜底的人。兜底与首选相同则跳过（不重复发同一通道）。 */
+  const needFallback = plans.filter((p) => !p.deferred && !p.ok && p.fallback && p.fallback !== p.primary);
+  if (needFallback.length) {
+    await dispatchPass(needFallback, 'fallback');
+    for (const p of needFallback) {
+      if (!p.ok) continue;
+      p.usedFallback = true;
+      out.fallback++;
+      p.detail = `${p.failWhy || `首选「${chLabel(p.primary)}」没发出去`} → 已改用「${chLabel(p.fallback)}」送达`;
+    }
+  }
+
+  /* 收尾：成功的清掉中间态原因；失败的把「为什么」写清楚，一个都不许沉默 */
   for (const p of plans) {
-    if (!p.wantMail || p.deferred) continue;
-    if (!p.t.email) { p.detail = p.detail || '没有设置收件邮箱'; continue; }
-    if (mailOk) { p.ok = true; p.channel = 'mail'; p.detail = ''; }
-    else p.detail = mailErr || '邮件没有发出去';
-  }
-
-  // ② 企业微信：只能按人逐个发（没有「群发给这几个人」以外的合并概念）
-  const sendWecom = typeof o.sendWecom === 'function'
-    ? o.sendWecom
-    : (toUser, content) => wecom.sendText(cfg, { toUser, content });
-  /* v4.23.0：报表的邮件是「个人版」、企业微信是「全家版」，两者内容不同；
-     允许调用方单独给企微一份 msg（不传就与邮件同一份，行为不变）。 */
-  const wxMsg = o.wecomMsg || msg;
-  for (const t of wxTo) {
-    try {
-      const r = await sendWecom(t.to, wecomBodyOf(wxMsg));
-      if (r && r.ok === false) throw new Error(r.error || '发送失败');
-      out.wecom++;
-      if (t.plan) { t.plan.ok = true; t.plan.channel = 'wecom'; t.plan.detail = ''; }
-    } catch (err) {
-      const why = `企业微信(${t.name || t.to})：${(err && err.message) || err}`;
-      out.errors.push(why);
-      if (t.plan) t.plan.detail = why;
-      /* v4.13.0：只有「智能」才用邮件兜底 —— 「仅企业微信」就是不要邮件，
-         失败时再补一封邮件等于偷偷改了用户的选择。 */
-      if (t.ch === 'auto' && t.email && mailOn && typeof o.sendMail === 'function' && o.smtpReady !== false) {
-        try {
-          await o.sendMail({
-            to: [t.email], subject: String(msg.subject || ''),
-            text: String(msg.text || ''), html: String(msg.html || ''),
-          });
-          out.mail++;
-          out.fallback++;
-          if (t.plan) {
-            t.plan.ok = true;
-            t.plan.channel = 'mail';
-            t.plan.detail = `${why} → 已自动改用邮件送达`;
-          }
-        } catch (e2) {
-          const why2 = `邮件兜底(${t.name || t.email})：${(e2 && e2.message) || e2}`;
-          out.errors.push(why2);
-          if (t.plan) t.plan.detail = `${why}；${why2}`;
-        }
-      }
+    if (p.deferred) continue;
+    if (p.ok) {
+      if (p.usedFallback) continue;                     // 上面已经写好「已改用兜底送达」
+      p.detail = p.detail || '';
+      continue;
     }
-  }
-
-  // ③ 飞书 / 钉钉群机器人（v4.24.0 需求 2）：群 Webhook 一次投递全家可见，
-  //    多人选同一条通道只发一条；文案与企微同一版式（wecomBodyOf：标题并首行 + 按行截断）。
-  const sendHook = async (mod, hcfg, chName) => {
-    const plist = hookPlans[chName];
-    if (!plist.length) return;
-    const label = chName === 'feishu' ? '飞书' : '钉钉';
-    try {
-      const r = await mod.sendText(hcfg, { content: wecomBodyOf(msg) });
-      if (r && r.ok === false) throw new Error(r.errorText || r.error || '发送失败');
-      out[chName] = (out[chName] || 0) + 1;
-      for (const p of plist) { p.ok = true; p.channel = chName; p.detail = ''; }
-    } catch (err) {
-      const why = `${label}群机器人：${(err && err.message) || err}`;
-      out.errors.push(why);
-      for (const p of plist) p.detail = why;
+    if (!p.failWhy) {
+      p.failWhy = p.primary === p.fallback
+        ? `首选与兜底都是「${chLabel(p.primary)}」，这条消息没有发出去`
+        : `首选「${chLabel(p.primary)}」没发出去，且没有设置兜底方式`;
     }
-  };
-  await sendHook(feishu, fsCfg, 'feishu');
-  await sendHook(dingtalk, dtCfg, 'dingtalk');
+    p.detail = p.fallback && p.fallback !== p.primary
+      ? `${p.failWhy}；兜底「${chLabel(p.fallback)}」也没发出去`
+      : p.failWhy;
+    if (!out.errors.includes(p.detail)) out.errors.push(p.detail);
+  }
 
   if (!out.mail && !out.wecom && !out.feishu && !out.dingtalk && !out.deferred) out.skipped = 'no-channel';
   /* v4.23.0 需求 5：逐人写推送日志。写失败绝不影响推送本身。 */
@@ -582,6 +637,35 @@ function labelOf(ch) {
 }
 
 /**
+ * 家庭里「已启用且已配置」的通道，按固定优先级排列。
+ *
+ * 这是 v4.28.3 两个下拉框的唯一数据源：界面上只允许选这四条里的**单个**通道，
+ * 一个都没有时提示「先配好再选」—— 而不是让用户先选一个空通道、再自己发现发不出去。
+ * 判定与 deliver 里的 avail 完全同源（同一套 isReady / 总开关），避免两边各说各话。
+ */
+function configuredChannels() {
+  const wcfg = wecom.loadConfig();
+  const list = {
+    wecom: config.pushWecomEnabled !== false && wecom.isReady(wcfg),
+    mail: config.pushMailEnabled !== false && mailReady(),
+    feishu: config.pushFeishuEnabled !== false && feishu.isReady(),
+    dingtalk: config.pushDingtalkEnabled !== false && dingtalk.isReady(),
+  };
+  return CHANNELS.filter((c) => list[c]);
+}
+
+/* SMTP 账号密码存在 reminders 的设置里。在这里 require 会成环
+   （reminders → push），所以只在调用时惰性取一次，取不到就当「没配」。 */
+function mailReady() {
+  try {
+    const rem = require('./reminders').loadRemindSettings();
+    return !!(rem && rem.smtpUser && rem.smtpPass);
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
  * 家里是否至少有一个人「选了某条即时通道、且那条通道真的可用」。
  *
  * 用途：判断「SMTP 没配，提醒是不是真的发不出去了」。旧逻辑只看 SMTP ——
@@ -597,12 +681,14 @@ function hasWecomRecipients() {
   if (!wxOk && !fsOk && !dtOk) return false;
   const rows = db.all("SELECT id, username, notify_email FROM users");
   for (const u of rows) {
-    const ch = channelOf(u.id);
-    // v4.13.0：'wecom' 现在也是「会走企业微信」的正式取值
-    if (wxOk && (ch === 'auto' || ch === 'wecom' || ch === 'both') && wecomIdOf(u.username, wcfg)) return true;
+    /* v4.28.3：首选与兜底都算「会走这条通道」——
+       只看首选会漏掉「首选邮件、兜底企微」的人，发件箱就永远不冲刷了。 */
+    const mode = modeFor(u.id, '');
+    const wants = (ch) => mode.primary === ch || mode.fallback === ch;
+    if (wxOk && wants('wecom') && wecomIdOf(u.username, wcfg)) return true;
     // v4.24.0：群 Webhook 没有「个人绑定」—— 只要有人选了、通道可用就算
-    if (ch === 'feishu' && fsOk) return true;
-    if (ch === 'dingtalk' && dtOk) return true;
+    if (wants('feishu') && fsOk) return true;
+    if (wants('dingtalk') && dtOk) return true;
   }
   return false;
 }
@@ -622,8 +708,12 @@ module.exports = {
   LEGACY_CHANNELS,
   CHANNEL_LABEL,
   normalizeChannel,
+  normalizeFallback,
   channelOf,
+  fallbackOf,
+  modeFor,
   channelFor,
+  configuredChannels,
   KIND_CHANNEL_KEY,
   wecomIdOf,
   wecomBodyOf,

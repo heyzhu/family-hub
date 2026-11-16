@@ -39,17 +39,17 @@ const KEYS = [
   'notify_kinds',          // 逗号分隔 todo,post,record,comment；不存在 = 跟随全局
   'notify_quiet_start',
   'notify_quiet_end',
-  /* v4.25.0 需求 4：三类推送内容各自的**推送渠道**（待办 / 内容 / 记账）。
-     值 = push.CHANNELS 里的一个；不存在或空串 = 沿用「我的推送方式」（push_channel）。
-     ★ 这里不 require push：push → db 单向，反过来会成环（push 要在发消息时读它）。
-       所以常量在本文件复制一份，`_verify/api.test.js` 有断言盯着两份不许分叉。 */
+  /* v4.28.3：这三项现在表示「这一类内容的**首选**通道」。
+     兜底不在这里 —— 兜底永远沿用「推送方式设置」里的兜底，不允许三类各配一套。
+     值 = 一条具体通道；不存在或空串 = 沿用全局首选。 */
   'channel_todo',
   'channel_notify',
   'channel_bill',
 ];
 
-/* 与 push.CHANNELS 必须一致（断言在同一条测试里）。'' = 继承全局推送方式。 */
-const CHANNEL_VALUES = ['auto', 'wecom', 'mail', 'both', 'feishu', 'dingtalk'];
+/* 与 push.CHANNELS 必须一致（断言在同一条测试里）。'' = 继承全局首选。
+   ★ 这里不 require push：push → db 单向，反过来会成环（push 要在发消息时读它）。 */
+const CHANNEL_VALUES = ['wecom', 'mail', 'feishu', 'dingtalk'];
 const CHANNEL_KEYS = ['channel_todo', 'channel_notify', 'channel_bill'];
 
 /* 与 notify.ALL_KINDS 必须一致。
@@ -159,14 +159,17 @@ function normalize(patch) {
     }
   }
 
-  /* v4.25.0 需求 4：三类内容各自的推送渠道。'' / 'inherit' = 删掉这一行（沿用全局推送方式）。 */
+  /* v4.28.3：这三类只表示「首选方式」。'' / 'inherit' = 删掉这一行（沿用全局首选）；
+     兜底永远取全局那一个，这里不存。
+     ★ 已下线的 auto / both **不再**当成 inherit 静默清空 —— 它们不在 CHANNEL_VALUES 里，
+       所以这里会 400。理由与其它设置项一致：「保存成功了但没生效」比报错难查得多。 */
   for (const k of CHANNEL_KEYS) {
     if (!(k in p)) continue;
     const raw = p[k];
     if (raw === null || raw === undefined) { out[k] = null; continue; }
     const v = String(raw).trim().toLowerCase();
     if (!v || v === 'inherit') { out[k] = null; continue; }
-    if (!CHANNEL_VALUES.includes(v)) throw fail('推送渠道只能是「沿用全局」或 ' + CHANNEL_VALUES.join(' / ') + ' 之一');
+    if (!CHANNEL_VALUES.includes(v)) throw fail('首选推送方式只能是「沿用全局」或 ' + CHANNEL_VALUES.join(' / ') + ' 之一');
     out[k] = v;
   }
 

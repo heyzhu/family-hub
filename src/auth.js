@@ -99,7 +99,7 @@ function resolveSession(token) {
   const row = db.get(
     `SELECT s.expires_at, s.last_seen_at, s.records_unlocked_key,
             u.id, u.username, u.display_name, u.is_admin, u.record_lock_enabled,
-            u.record_lock_hash, u.notify_email, u.push_channel,
+            u.record_lock_hash, u.notify_email, u.push_channel, u.push_fallback,
             u.avatar, u.theme, u.created_at
        FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token = ?`,
@@ -127,8 +127,9 @@ function resolveSession(token) {
     display_name: row.display_name,
     is_admin: !!row.is_admin,
     notify_email: String(row.notify_email || ''),
-    // v4.7.0：主动提醒走哪条通道；v4.8.0 默认值改为 auto（优先企业微信、邮件兜底）
-    push_channel: String(row.push_channel || 'auto'),
+    // v4.28.3：首选 / 兜底两个具体通道（见 setPushChannel 的注释）
+    push_channel: String(row.push_channel || 'wecom'),
+    push_fallback: String(row.push_fallback || ''),
     avatar: String(row.avatar || ''),
     /* ★ v4.11.0：resolveSession 是「第二个」构造 user 的地方（第一个是 publicUser）。
        往用户对象加字段时必须两处都加，否则登录后第一次 /api/me 会缺字段 ——
@@ -188,7 +189,8 @@ function publicUser(row) {
     display_name: row.display_name,
     is_admin: !!row.is_admin,
     notify_email: String(row.notify_email || ''),
-    push_channel: String(row.push_channel || 'auto'),
+    push_channel: String(row.push_channel || 'wecom'),
+    push_fallback: String(row.push_fallback || ''),
     avatar: String(row.avatar || ''),
     /* 空串 = 还没选过。前端见到空串就用默认主题，
        这样「老用户第一次登录」和「用户主动选了默认主题」在前端表现一致。 */
@@ -392,21 +394,36 @@ function setNotifyEmail(userId, email) {
 }
 
 /**
- * 设置本人的「主动提醒通道」（v4.7.0 需求 2，v4.8.0 需求 4 调整默认）。
- *   auto  **默认**：优先企业微信，发不出去（没绑定 / 应用没启用 / 发送失败）回退邮件
- *   mail  只发邮件（明确不想要企业微信消息的人）
- *   both  两条都发
- * 非法值一律拒绝，而不是悄悄改成默认 —— 用户以为改了、实际没改是最难查的问题。
- * ★ v4.13.0：'wecom' 变成正式取值 = **仅企业微信**（失败不回退邮件）。
- *   以前它是 v4.7.0 的旧值、被折成 'auto'；现在直接落库。
+ * 设置本人的「首选 / 兜底推送方式」（v4.28.3 重构）。
+ *
+ * 旧模型是六选一的**模式**（智能 / 仅企微 / 只用邮件 / 双渠道 / 飞书 / 钉钉），
+ * 前两者一个在替用户猜优先级、一个在被用户当成「都要」。现在拆成两个**具体的**通道：
+ *   · 首选：消息先走它；
+ *   · 兜底：首选发不出去（没绑定 / 发送失败 / 通道没配）时才走它，'' = 不设兜底。
+ * 组合值（auto / both）已下线，再传就 400 —— 不能让老前端的缓存把模型又写回去。
  */
-const PUSH_CHANNELS = ['auto', 'wecom', 'mail', 'both', 'feishu', 'dingtalk'];
+const PUSH_CHANNELS = ['wecom', 'mail', 'feishu', 'dingtalk'];
 function setPushChannel(userId, channel) {
   const ch = String(channel == null ? '' : channel).trim().toLowerCase();
   if (!PUSH_CHANNELS.includes(ch)) {
-    throw Object.assign(new Error('推送方式只能是 auto / wecom / feishu / dingtalk / mail / both'), { status: 400 });
+    throw Object.assign(new Error('首选推送方式只能是 wecom / mail / feishu / dingtalk 之一'), { status: 400 });
   }
   db.run('UPDATE users SET push_channel = ? WHERE id = ?', [ch, userId]);
+  return publicUser(db.get('SELECT * FROM users WHERE id = ?', [userId]));
+}
+
+/** 设置本人的「兜底推送方式」；传空串 = 不设兜底（首选失败就如实报错） */
+function setPushFallback(userId, fallback) {
+  const raw = String(fallback == null ? '' : fallback).trim().toLowerCase();
+  if (raw && !PUSH_CHANNELS.includes(raw)) {
+    throw Object.assign(new Error('兜底推送方式只能是 wecom / mail / feishu / dingtalk 之一，或留空'), { status: 400 });
+  }
+  /* v4.28.3：兜底与首选相同等于没配 —— 「首选失败再试一次同一个渠道」没有意义，
+     而且会让界面上出现两个一模一样的下拉。这里直接落成空串，不依赖前端自觉。 */
+  const cur = db.get('SELECT push_channel FROM users WHERE id = ?', [userId]);
+  const primary = String((cur && cur.push_channel) || '').trim().toLowerCase();
+  const val = (raw && raw === primary) ? '' : raw;
+  db.run('UPDATE users SET push_fallback = ? WHERE id = ?', [val, userId]);
   return publicUser(db.get('SELECT * FROM users WHERE id = ?', [userId]));
 }
 
@@ -618,6 +635,7 @@ module.exports = {
   updateProfile,
   changeUsername,
   setPushChannel,
+  setPushFallback,
   PUSH_CHANNELS,
   setTheme,
   THEMES,

@@ -1947,7 +1947,9 @@ select.inp-compact { padding-right: 26px; }
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-3);
-  flex-wrap: wrap;
+  /* ★ v4.28.3 需求 2：素材三个按钮与「存草稿」必须在**同一行**，
+     所以这里不换行；空间不够时由两侧按钮各自收缩，而不是把右边挤到第二行。 */
+  flex-wrap: nowrap;
   margin-top: var(--sp-4);
   padding-top: var(--sp-4);
   border-top: 1px dashed var(--line);
@@ -1956,7 +1958,17 @@ select.inp-compact { padding-right: 26px; }
    ★ 草稿提示用「小圆点闪一下 + 文案」表示正在保存，落盘后变成具体时刻 ——
      比一句静态「已保存」更能让人相信「我刚才打的字真的存住了」。 */
 .composer-ops-left,
-.composer-ops-right { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+.composer-ops-right { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: nowrap; }
+/* 左对齐 图片/视频/表情，右对齐 草稿提示 + 存草稿 */
+.composer-ops-right { margin-left: auto; justify-content: flex-end; }
+/* v4.28.3 需求 2：标签输入框 + 发布按钮同一行；输入框吃满剩余宽度，按钮固定右端 */
+.composer-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.composer-foot > .btn { flex: 0 0 auto; height: var(--h-md); }
 .composer-bar .btn-ghost.on { background: var(--primary-soft); color: var(--primary-ink); }
 .draft-hint {
   font-size: var(--fs-2xs);
@@ -1998,8 +2010,10 @@ select.inp-compact { padding-right: 26px; }
 }
 .emoji-pick:hover { background: var(--surface-3); }
 .composer-tags {
-  width: 100%;
-  margin-top: var(--sp-3);
+  /* v4.28.3：与「发布」同处一行 —— 不再整宽 + 上外边距（外边距交给 .composer-foot） */
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
   height: var(--h-md);
   border: 1px solid var(--line);
   border-radius: var(--r-s);
@@ -3480,25 +3494,19 @@ body.kb-active .main { padding-bottom: calc(var(--kb, 0px) + 40px); }
     font-size: clamp(11px, 3.3vw, 13px);
     overflow: hidden; text-overflow: ellipsis;
   }
-  /* v4.13.0：表情面板窄屏 8 列（10 列时每个按钮不到 32px，容易点错）；
-     草稿提示与「存草稿 / 发布」独占一行靠右，不跟左边四个按钮挤。 */
+  /* v4.13.0：表情面板窄屏 8 列（10 列时每个按钮不到 32px，容易点错）。 */
   .emoji-panel { grid-template-columns: repeat(8, 1fr); }
-  .composer-ops-right { width: 100%; justify-content: flex-end; }
-  /* ★ v4.14.0 需求 6：「全家可见」必须和「图片 / 视频 / 表情」待在同一行。
-     原来这一组是 flex-wrap: wrap，窄屏上「全家可见」会被挤到第二行，
-     第二行只剩它一个、左边空一大块，看着像布局坏了。
-     现在：整组不换行 + 各自按内容宽分配（flex: 0 1 auto），必要时才收缩，
-     并把内边距和字号各收一档 —— 360px 屏四个按钮加起来仍有富余，
-     不会缩字、不会溢出、更不会叠在一起。overflow: hidden 是兜底：
+  /* ★ v4.28.3 需求 2：窄屏同样是**一行** —— 图片 / 视频 / 表情靠左，「存草稿」靠右。
+     旧版本这里给右侧加 width:100% 把它顶到第二行，正是这次要改掉的。
+     现在两侧都按内容宽收缩（flex: 0 1 auto），中间的空隙由 space-between 吃掉，
+     360px 屏上四个按钮加起来仍有富余；overflow:hidden 是兜底：
      万一某台设备字体特别宽，也只裁掉自己的字，绝不压到隔壁按钮上。 */
-  .composer-bar { gap: var(--sp-2); }
+  .composer-bar { gap: 6px; flex-wrap: nowrap; }
   .composer-ops-left {
     flex-wrap: nowrap;
-    width: 100%;
+    width: auto;
+    min-width: 0;
     gap: 5px;
-    /* 整宽 + 按内容宽分配 + 剩余空间均分到间隙：四个按钮自然铺满一行，
-       既不会把字压扁，也不会在最右边留一道突兀的空白。 */
-    justify-content: space-between;
   }
   .composer-ops-left .btn-sm {
     flex: 0 1 auto;
@@ -3508,6 +3516,18 @@ body.kb-active .main { padding-bottom: calc(var(--kb, 0px) + 40px); }
     gap: 3px;
     overflow: hidden;
   }
+  .composer-ops-right {
+    width: auto;
+    flex: 0 0 auto;
+    gap: 5px;
+    margin-left: auto;
+    justify-content: flex-end;
+  }
+  .composer-ops-right .btn-sm { padding: 0 8px; font-size: var(--fs-2xs); }
+  /* 草稿提示在窄屏很占位：存草稿时才有内容，没内容时本来就被 .hidden 收起 */
+  .composer-foot { gap: 6px; margin-top: var(--sp-2); }
+  .composer-foot > .btn { padding: 0 12px; font-size: var(--fs-2xs); }
+  .composer-tags { font-size: var(--fs-2xs); padding: 0 9px; }
   .stat-grid { grid-template-columns: 1fr; gap: 7px; }
   .stat-box { padding: 9px 11px; }
   .sb-rows { flex-direction: row; justify-content: space-between; gap: 6px; margin-top: 5px; }

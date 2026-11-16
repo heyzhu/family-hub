@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS users (
   record_lock_enabled INTEGER NOT NULL DEFAULT 0,
   record_lock_hash    TEXT    NOT NULL DEFAULT '',
   notify_email        TEXT    NOT NULL DEFAULT '',             -- 提醒/通知收件邮箱，空表示不接收
-  push_channel        TEXT    NOT NULL DEFAULT 'auto',         -- v4.7.0 主动提醒走哪条；v4.8.0 默认 auto = 优先企业微信、邮件兜底（另可 mail / both）
+  push_channel        TEXT    NOT NULL DEFAULT 'wecom',        -- v4.28.3：**首选**推送方式（wecom / mail / feishu / dingtalk 之一）
+  push_fallback       TEXT    NOT NULL DEFAULT '',             -- v4.28.3：**兜底**推送方式；首选发不出去才走它，空 = 不设兜底
   avatar              TEXT    NOT NULL DEFAULT '',             -- 自定义头像路径，空表示用首字色块
   theme               TEXT    NOT NULL DEFAULT '',             -- v4.11.0 界面主题：'forest' / 'paper' / 'ocean'，空表示用默认主题
   created_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))

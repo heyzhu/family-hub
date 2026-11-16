@@ -230,13 +230,15 @@ function recipientsExcept(actorIds) {
   if (!ids.length) return [];
   const marks = ids.map(() => '?').join(',');
   const rows = db.all(
-    `SELECT id, display_name, username, notify_email, push_channel FROM users WHERE id NOT IN (${marks})`,
+    `SELECT id, display_name, username, notify_email, push_channel, push_fallback FROM users WHERE id NOT IN (${marks})`,
     ids,
   );
   return rows.filter((u) => {
-    // v4.8.0：默认通道是 'auto'（优先企业微信），只有明确选「只用邮件」的人才必须有邮箱
-    const ch = push.normalizeChannel(u.push_channel);
-    return !!u.notify_email || ch !== 'mail';
+    /* v4.28.3：首选或兜底只要有一条不依赖邮箱，这个人就还在收件范围里。
+       旧判据只看首选是不是「邮件」，会把「首选邮件、兜底企微但没留邮箱」的人误杀。 */
+    const mode = push.modeFor(u.id, 'notify');
+    const reachable = (ch) => !!ch && (ch !== 'mail' || !!u.notify_email);
+    return reachable(mode.primary) || reachable(mode.fallback);
   });
 }
 

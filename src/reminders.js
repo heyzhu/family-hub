@@ -646,13 +646,14 @@ async function sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, advIn) 
   for (const name of participants) {
     const u = byName.get(String(name).trim());
     if (!u) continue;
-    /* v4.7.0 需求 2：原来的门槛是「有收件邮箱」，现在放宽成「有邮箱 **或** 走企业微信」。
-       否则只填了企业微信的家庭成员永远收不到提醒。 */
-    const channel = push.normalizeChannel(u.push_channel);
-    /* v4.8.0：默认值变成 'auto'（优先企业微信），所以判据从「等于 wecom」改成
-       「不是纯邮件」—— 否则默认通道的人会被这条门槛挡在外面。 */
-    const viaWecom = channel !== 'mail';
-    if (!u.notify_email && !viaWecom) continue;
+    /* v4.28.3：按「首选 + 兜底」判断这个人到底能不能收到 ——
+       只要有一条不是邮件、或者他是邮件且留了地址，就还有戏。
+       ★ 不要在这里把 channel 传给 push.deliver：那会把
+         「待办提醒单独指定首选」（channel_todo）顶掉，三类自定义就失效了。
+         路由交给 deliver 里的 modeFor(kind='remind'|'record') 算。 */
+    const mode = push.modeFor(u.id, 'remind', prefsMap);
+    const reachable = (ch) => !!ch && (ch !== 'mail' || !!u.notify_email);
+    if (!reachable(mode.primary) && !reachable(mode.fallback)) continue;
     /* ★ v4.28.2：这条待办对他就不可见 → 不发。
        需求原文：「该条信息的推送逻辑以此设置为准，对不可见成员不推送」。
        放在渠道判断之后、偏好判断之前都对；这里紧跟渠道判断，读起来是
@@ -662,7 +663,7 @@ async function sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, advIn) 
     if (targets.some((x) => x.id === Number(u.id))) continue;           // 同一个人被两个昵称匹配到
     targets.push({
       id: Number(u.id), email: u.notify_email, username: u.username,
-      name: u.display_name || u.username, channel,
+      name: u.display_name || u.username,
     });
   }
   if (!targets.length) return 'waiting';

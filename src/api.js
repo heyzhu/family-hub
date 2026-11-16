@@ -1364,7 +1364,8 @@ function putHiddenCategories(list) {
  *   ② 打开或改了时间/天数 → 重算 remind_at，并清空 reminded_at（改完能重新提醒一次）；
  *   ③ 只改标题/正文 → 不动提醒（否则每次编辑都会把已经提醒过的又翻出来）。
  */
-const RECORD_REMIND_CHANNELS = new Set(['', 'mail', 'wecom', 'both']);
+/* v4.28.3：记录本提醒的通道只接受「具体通道」或空（跟随）。'both' 这种组合值已下线。 */
+const RECORD_REMIND_CHANNELS = new Set(['', 'mail', 'wecom', 'feishu', 'dingtalk']);
 function recordRemindPatch(b, row) {
   const src = row || {};
   const has = (k) => b[k] != null;
@@ -3421,11 +3422,15 @@ async function handle({ method, pathname, query, body, me, token, recordsKey, ip
       const user = auth.setNotifyEmail(me.id, (body || {}).email);
       return { status: 200, json: { user: withPushInfo(user) } };
     }
-    /* v4.7.0 需求 2：本人主动提醒走哪条通道（auto / mail / both）。
-       v4.8.0 起三个值 = 智能（优先企业微信，发不出去回退邮件）/ 只用邮件 / 两条都发。
+    /* v4.28.3：本人的「首选 / 兜底推送方式」。
+       两个字段一起提交（都传 = 一次改完）；只传 channel 也兼容，兜底保持原值。
        放在 me 命名空间下：这是个人偏好，不是家庭设置，普通成员就能改自己的。 */
     if (is('POST') && second === 'push-channel') {
-      const user = auth.setPushChannel(me.id, (body || {}).channel);
+      const b = body || {};
+      let user = auth.setPushChannel(me.id, b.channel);
+      if (Object.prototype.hasOwnProperty.call(b, 'fallback')) {
+        user = auth.setPushFallback(me.id, b.fallback);
+      }
       return { status: 200, json: { user: withPushInfo(user) } };
     }
     /* v4.11.0：界面主题（forest / paper / ocean）。
@@ -3580,7 +3585,9 @@ async function handle({ method, pathname, query, body, me, token, recordsKey, ip
       const prefs = userprefs.load(id);
       const g = notifyGlobalSnapshot();
       const prefsMap = new Map([[id, prefs]]);
+      /* v4.28.3：三类各自的**首选**；兜底只有全局一个，单独放 pushFallback */
       const chOf = (kind) => push.channelFor(id, kind, prefsMap);
+      const fbOf = () => push.fallbackOf(id);
       return {
         status: 200,
         json: {
@@ -3601,6 +3608,8 @@ async function handle({ method, pathname, query, body, me, token, recordsKey, ip
               ? String(prefs.notify_kinds).split(',').filter(Boolean)
               : g.notifyKinds,
             channels: { todo: chOf('remind'), notify: chOf('notify'), bill: chOf('bill') },
+            pushFallback: fbOf(),
+            pushPrimary: push.channelOf(id),
           },
           global: g,
           /* 通道就绪状态：配了没配、这个人的企微有没有绑定，一眼可见 */

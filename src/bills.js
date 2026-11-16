@@ -1317,19 +1317,24 @@ function todoPreviewFor(userId, todayKey) {
  * @param {{heading:string, badge:string, sections:Array<{label:string,stats:object}>, todos:Array}} m
  */
 /**
- * v4.5.0 需求 5：企业微信推送用的纯文本版报表。
+/**
+ * 群发版（企业微信 / 飞书 / 钉钉）的正文。
  *
- * 为什么不直接复用 mergeReportText：那一版是邮件正文，尾部写着
- * 「本邮件由系统自动发送，请勿回复」—— 放在企业微信会话里既多余又误导
- * （企业微信本来就是可以回复来记账的）。这里只保留「标题 + 数字」。
- * v4.21.0 需求 1：这句话本身也进了模板（bill_push），想改照样能改。
+ * ★ v4.28.3 需求 3：**所有渠道统一用同一套模板**。
+ *   以前这里走 `bill_push`、邮件走 `bill_report`，等于让用户在两处分别维护
+ *   「同一份日报」的两种写法，改了一处另一处还是旧的。
+ *   现在两条都读 `bill_report`，只是变量不同：
+ *     · 邮件：范围=个人 + 家庭，带待办预告；
+ *     · 群发：范围=全家，不带待办（待办是个人视角，群发等于把某人的日程推给全家）。
  */
 function reportPushText(m) {
-  const text = msgTpl.render('bill_push', {
+  const text = msgTpl.render('bill_report', {
     站名: config.siteName,
     报表标题: String(m.heading || ''),
+    范围: '全家',
     副标题: String(m.badge || ''),
     明细: reportSectionLines(m.sections),
+    待办: '',
   }).text;
   return text.replace(/\n{3,}/g, '\n\n').trim();
 }
@@ -1493,45 +1498,61 @@ async function sendReports(opts) {
     const key = String(uname || '').trim();
     if (key && !wxOf.has(key)) wxOf.set(key, wx);
   }
-  const people = [];                          // 每人一条：{ u, ch, name, wx }
-  /* v4.25.0 需求 4：报表属于「记账」类，走各自的 channel_bill；没配就沿用 push_channel。
-     一次取全部个人偏好，避免逐人查库。 */
+  /* v4.28.3：每人两条通道 —— 首选（ch）与兜底（fbk）。
+     三类内容里「记账」可以单独指定首选（channel_bill），兜底永远取全局那一个。 */
+  const people = [];
   const prefsMap = userprefs.loadAll();
-  for (const u of db.all('SELECT id, username, display_name, notify_email, push_channel FROM users ORDER BY id')) {
-    const ch = push.channelFor(u.id, 'bill', prefsMap);
-    const name = u.display_name || u.username || `用户${u.id}`;
-    const wx = wxOf.get(String(u.username || '').trim()) || '';
-    people.push({ u, ch, name, wx });
+  for (const u of db.all('SELECT id, username, display_name, notify_email, push_channel, push_fallback FROM users ORDER BY id')) {
+    people.push({
+      u,
+      name: u.display_name || u.username || `用户${u.id}`,
+      wx: wxOf.get(String(u.username || '').trim()) || '',
+      ch: push.channelFor(u.id, 'bill', prefsMap),
+      fbk: push.fallbackOf(u.id),
+      ok: false,
+      usedFbk: false,
+      failWhy: '',
+    });
   }
-  /* v4.24.0 需求 2：企微腿只收「auto / wecom / both」的人 —— 选了飞书 / 钉钉的人
-     不再因为「账号映射里有他」而被并进企微收件人（那是 v4.24.0 之前不会发生的组合）。 */
-  const wantWxOf = (p) => !!(viaWecom && p.wx
-    && (p.ch === 'auto' || p.ch === 'wecom' || p.ch === 'both'));
-  const wantMailOf = (p) => !!(viaMail && p.u.notify_email
-    && (p.ch === 'mail' || p.ch === 'both' || (p.ch === 'auto' && !wantWxOf(p))));
-  const wxTos = [];                           // 企微腿：合并成一次 API 调用
-  const hookTos = { feishu: [], dingtalk: [] };  // 群机器人腿：按通道去重，各发一条
+
+  const LABEL = { wecom: '企业微信', feishu: '飞书群', dingtalk: '钉钉群', mail: '邮件' };
+  const avail = { wecom: viaWecom, feishu: viaFeishu, dingtalk: viaDingtalk, mail: viaMail };
+  /** 这条通道对**这个人**能不能落（企微要绑定、邮件要地址，群机器人是全家共用一个群） */
+  const usableFor = (ch, p) => {
+    if (!ch || !avail[ch]) return false;
+    if (ch === 'wecom') return !!p.wx;
+    if (ch === 'mail') return !!p.u.notify_email;
+    return true;
+  };
+  const whyNot = (ch, p) => {
+    const who = `${p.name}：`;
+    if (ch === 'wecom') {
+      return viaWecom
+        ? `${who}首选「企业微信」，但还没在「账号映射」里对应，收不到报表`
+        : `${who}首选「企业微信」，但企业微信推送没开，收不到报表`;
+    }
+    if (ch === 'feishu') return `${who}首选「飞书群」，但飞书推送没开或还没配置群机器人的 Webhook`;
+    if (ch === 'dingtalk') return `${who}首选「钉钉群」，但钉钉推送没开或还没配置群机器人的 Webhook`;
+    return `${who}首选「邮件」，但没留收件邮箱或没配发件邮箱`;
+  };
+  /* ★ v4.28.3：首选那条通道**整个家庭都没配**时（不是「这个人没绑定」），
+     落到兜底；连兜底都没配就落到任意一条能用的通道 ——
+     与 push.deliver 同一口径。「绝不静默丢弃」是这个项目从 v4.7.0 起的硬承诺：
+     新装用户默认首选是企业微信，家里只配了发件邮箱时，不该因此一封报表都收不到。
+     ★ 降级目标必须对**这个人**可用（企微要映射、邮件要地址），
+       否则就会写出「已改发邮件」却什么都没发出去的假日志。 */
   for (const p of people) {
-    if (p.ch === 'wecom' && !wantWxOf(p)) {
-      /* 「仅企业微信」却发不了：必须说清楚为什么，否则用户只会觉得「报表坏了」。 */
-      out.errors.push(viaWecom
-        ? `${p.name}：推送方式是「仅企业微信」，但还没在「账号映射」里对应，收不到报表`
-        : `${p.name}：推送方式是「仅企业微信」，但企业微信推送没开，收不到报表`);
-    }
-    if (p.ch === 'feishu' && !viaFeishu) {
-      out.errors.push(`${p.name}：推送方式是「飞书群」，但飞书推送没开或还没配置群机器人的 Webhook，收不到报表`);
-    }
-    if (p.ch === 'dingtalk' && !viaDingtalk) {
-      out.errors.push(`${p.name}：推送方式是「钉钉群」，但钉钉推送没开或还没配置群机器人的 Webhook，收不到报表`);
-    }
-    if (wantWxOf(p) && wxTos.indexOf(p.wx) < 0) wxTos.push(p.wx);
-    if (p.ch === 'feishu' && viaFeishu && hookTos.feishu.length === 0) hookTos.feishu.push(p);
-    if (p.ch === 'dingtalk' && viaDingtalk && hookTos.dingtalk.length === 0) hookTos.dingtalk.push(p);
+    if (avail[p.ch]) continue;
+    const alt = [p.fbk, 'mail', 'wecom', 'feishu', 'dingtalk']
+      .find((c) => c && c !== p.ch && avail[c] && usableFor(c, p));
+    if (!alt) continue;
+    p.degradeWhy = `首选「${LABEL[p.ch] || p.ch}」全家都没配置，已改发「${LABEL[alt] || alt}」`;
+    if (alt === p.fbk) { p.ch = alt; p.fbk = ''; } else { p.ch = alt; }
   }
-  if (!people.some(wantMailOf) && !wxTos.length && !hookTos.feishu.length && !hookTos.dingtalk.length) {
-    // 按各自的推送方式算下来一个人都投不出去：明确记账，别静默消失。
+  if (!people.some((p) => usableFor(p.ch, p) || usableFor(p.fbk, p))) {
+    // 按每个人的首选+兜底算下来一个人都投不出去：明确记账，别静默消失。
     out.skipped = viaWecom || viaFeishu || viaDingtalk
-      ? '按每个人的推送方式算下来，还没有能收报表的家人（收件邮箱 / 账号映射 / 群机器人 Webhook / 推送开关都查一下）'
+      ? '按每个人的首选/兜底推送方式算下来，还没有能收报表的家人（收件邮箱 / 账号映射 / 群机器人 Webhook / 推送开关都查一下）'
       : '家里还没有人配置收件邮箱';
     setLastSend('skipped:no-recipient', [out.skipped]);
     return out;
@@ -1558,32 +1579,6 @@ async function sendReports(opts) {
     } catch (err) {
       out.errors.push(`${u.notify_email}：${err && err.message ? err.message : err}`);
       log(u, 'mail', false, msg.subject, (err && err.message) || String(err));
-      return false;
-    }
-  };
-
-  /* v4.5.0 需求 5：同一份报表再推一条到企业微信。
-     ★ v4.16.0 需求 1：收件人就是上面算好的 wxTos（按账号映射 + 各自推送方式），
-       一次 API 调用用 '|' 合并（企业微信按人分别投递，不会互相看到）。
-     ★ 不带「今日待办预告」：待办是个人视角，群发会把某人的日程推给全家。
-     ★ v4.23.0 需求 4：返回值改为「这一批企微到底成没成」——
-       之前失败只记 errors，选「智能」的人那天就彻底收不到（邮件腿因为
-       wantMail 被算成 false 而没发）。现在失败时由调用方按人补邮件。 */
-  const pushWecom = async (mail) => {
-    if (!viaWecom || !wxTos.length) return false;
-    let subject = '';
-    try {
-      const content = reportPushText(mail);
-      subject = String((mail && mail.heading) || '');
-      const r = await wecom.sendText(wxCfg, { toUser: wxTos.join('|'), content });
-      if (!r || r.ok === false) throw new Error((r && (r.errorText || r.error)) || '企业微信发送失败');
-      out.wecom = (out.wecom || 0) + 1;
-      for (const p of people) if (wantWxOf(p)) log(p.u, 'wecom', true, subject, '');
-      return true;
-    } catch (err) {
-      const why = (err && err.message) || String(err);
-      out.errors.push(`企业微信：${why}`);
-      for (const p of people) if (wantWxOf(p)) log(p.u, 'wecom', false, subject, why);
       return false;
     }
   };
@@ -1621,74 +1616,117 @@ async function sendReports(opts) {
     });
   };
 
-  /* v4.23.0 需求 4：邮件腿的收件人 = 按每个人自己的推送方式算出来的那份。
-     auto 的人如果企微发失败，这里会多补一封邮件（见下方 fallback）。 */
-  const sendMails = async (r, suffix, wxOk) => {
-    for (const p of people) {
-      const wantMail = wantMailOf(p);
-      /* 「智能」且本轮走企微、但企微整批失败 → 回退邮件。
-         ★ 只在 viaMail 有发件能力时才补；没配 SMTP 时补也补不出去，
-           错误已经由 pushWecom 记在 errors 里，界面看得见。 */
-      const fallback = !wantMail && p.ch === 'auto' && wantWxOf(p) && !wxOk && viaMail;
-      if (!wantMail && !fallback) continue;
-      if (!p.u.notify_email) continue;
+  /**
+   * 一轮投递。which='primary' 用首选通道，'fallback' 用兜底通道。
+   *
+   * ★ v4.28.3：渠道不再用 if/else 各写一遍 —— 上一版「智能」的人要先发企微、
+   *   等它整批失败再回头补邮件，代码里靠 wxOk 一个布尔值传下去，加一条通道就得改三处。
+   *   现在是同一段逻辑跑两遍：第一遍发首选，第二遍只处理「第一遍没成、且设了兜底」的人。
+   */
+  const dispatch = async (r, suffix, which, familyMail) => {
+    const pick = (p) => (which === 'primary' ? p.ch : p.fbk);
+    const batch = people.filter((p) => !p.ok && pick(p));
+    if (!batch.length) return;
+    const mine = (ch) => batch.filter((p) => pick(p) === ch);
+
+    /* ① 群机器人：一趟只发一条，结果回填给同通道的所有人 */
+    for (const chName of ['feishu', 'dingtalk']) {
+      const list = mine(chName);
+      if (!list.length) continue;
+      const mod = chName === 'feishu' ? feishu : dingtalk;
+      const hcfg = chName === 'feishu' ? fsCfg : dtCfg;
+      const label = LABEL[chName];
+      if (!avail[chName]) {
+        for (const p of list) p.failWhy = whyNot(chName, p);
+        continue;
+      }
+      let subject = String((familyMail && familyMail.heading) || '');
+      try {
+        const content = reportPushText(familyMail);
+        const res = await mod.sendText(hcfg, { content });
+        if (!res || res.ok === false) throw new Error((res && (res.errorText || res.error)) || `${label}发送失败`);
+        out[chName] = (out[chName] || 0) + 1;
+        for (const p of list) { p.ok = true; log(p.u, chName, true, subject, p.degradeWhy || ''); }
+      } catch (err) {
+        const why = (err && err.message) || String(err);
+        out.errors.push(`${label}：${why}`);
+        for (const p of list) { p.failWhy = `${p.name}：${label}发送失败（${why}）`; log(p.u, chName, false, subject, why); }
+      }
+    }
+
+    /* ② 企业微信：一次 API 调用用 '|' 合并（企微按人分别投递，不会互相看到） */
+    const wxList = mine('wecom');
+    if (wxList.length) {
+      if (!viaWecom) {
+        for (const p of wxList) p.failWhy = whyNot('wecom', p);
+      } else {
+        const tos = wxList.filter((p) => p.wx).map((p) => p.wx);
+        for (const p of wxList) if (!p.wx) p.failWhy = whyNot('wecom', p);
+        if (tos.length) {
+          let subject = String((familyMail && familyMail.heading) || '');
+          try {
+            const content = reportPushText(familyMail);
+            const res = await wecom.sendText(wxCfg, { toUser: tos.join('|'), content });
+            if (!res || res.ok === false) throw new Error((res && (res.errorText || res.error)) || '企业微信发送失败');
+            out.wecom = (out.wecom || 0) + 1;
+            for (const p of wxList) if (p.wx) { p.ok = true; log(p.u, 'wecom', true, subject, p.degradeWhy || ''); }
+          } catch (err) {
+            const why = (err && err.message) || String(err);
+            out.errors.push(`企业微信：${why}`);
+            for (const p of wxList) {
+              if (!p.wx) continue;
+              p.failWhy = `${p.name}：企业微信发送失败（${why}）`;
+              log(p.u, 'wecom', false, subject, why);
+            }
+          }
+        }
+      }
+    }
+
+    /* ③ 邮件：报表是个人视角（个人 + 家庭 + 待办预告），只能一人一封 */
+    for (const p of mine('mail')) {
+      if (!usableFor('mail', p)) { p.failWhy = whyNot('mail', p); continue; }
       const msg = userMail(p.u, r, suffix);
-      await sendMailOne(p.u, msg, fallback ? '企业微信发送失败，已自动改用邮件送达' : '');
+      /* 兜底邮件与「首选那条通道全家都没配」的降级都要留下原因，
+         否则收件人只会看到一封莫名从邮件来的报表（v4.28.3）。 */
+      const note = which === 'fallback'
+        ? '首选没发出去，已改用兜底邮件送达'
+        : (p.degradeWhy || '');
+      const ok = await sendMailOne(p.u, msg, note);
+      if (ok) p.ok = true;
+      else p.failWhy = `${p.name}：邮件发送失败`;
     }
   };
 
-  /* v4.24.0 需求 2：报表同样能推到飞书 / 钉钉群机器人。
-     群 Webhook 没有个人视图，所以推的是「全家版」内容（与企微腿同一份 reportPushText）；
-     同一条通道无论几个人选都只发一条，按人选逐条写日志（同一结果回填每个人）。 */
-  const pushHook = async (mod, hcfg, chName, mail) => {
-    const plist = hookTos[chName];
-    if (!plist.length) return false;
-    const label = chName === 'feishu' ? '飞书' : '钉钉';
-    let subject = '';
-    try {
-      const content = reportPushText(mail);
-      subject = String((mail && mail.heading) || '');
-      const r = await mod.sendText(hcfg, { content });
-      if (!r || r.ok === false) throw new Error((r && (r.errorText || r.error)) || `${label}发送失败`);
-      out[chName] = (out[chName] || 0) + 1;
-      for (const p of plist) log(p.u, chName, true, subject, '');
-      return true;
-    } catch (err) {
-      const why = (err && err.message) || String(err);
-      out.errors.push(`${label}：${why}`);
-      for (const p of plist) log(p.u, chName, false, subject, why);
-      return false;
-    }
-  };
-
-  if (o.dateKey) {
-    const r = buildDailyReport(o.dateKey);
+  /** 一份报表的完整投递：首选 → 兜底 → 逐人交代结果 */
+  const runReport = async (r, suffix) => {
     const familyMail = {
-      heading: `${r.title} 支出日报`,
+      heading: `${r.title} ${suffix}`,
       badge: `全家 · ${config.siteName}`,
       sections: [{ label: `全家 ${r.title}`, stats: r.family }],
       todos: null,
     };
-    // 企微先发：它的成败决定「智能」的人要不要补邮件
-    const wxOk = await pushWecom(familyMail);
-    await pushHook(feishu, fsCfg, 'feishu', familyMail);
-    await pushHook(dingtalk, dtCfg, 'dingtalk', familyMail);
-    await sendMails(r, '支出日报', wxOk);
-  }
+    await dispatch(r, suffix, 'primary', familyMail);
+    const needFbk = people.filter((p) => !p.ok && p.fbk && p.fbk !== p.ch);
+    if (needFbk.length) {
+      await dispatch(r, suffix, 'fallback', familyMail);
+      for (const p of needFbk) {
+        if (!p.ok) continue;
+        p.usedFbk = true;
+        out.fallback = (out.fallback || 0) + 1;
+      }
+    }
+    /* 收尾：一个都不许沉默。首选 / 兜底都没成的人，必须留下一条看得懂的原因。 */
+    for (const p of people) {
+      if (p.ok) continue;
+      const why = p.failWhy
+        || `${p.name}：首选「${LABEL[p.ch] || p.ch}」没发出去，且没有设置兜底方式`;
+      if (!out.errors.includes(why)) out.errors.push(why);
+    }
+  };
 
-  if (o.month) {
-    const r = buildMonthlyReport(o.month);
-    const familyMail = {
-      heading: `${r.title} 支出月报`,
-      badge: `全家 · ${config.siteName}`,
-      sections: [{ label: `全家 ${r.title}`, stats: r.family }],
-      todos: null,
-    };
-    const wxOk = await pushWecom(familyMail);
-    await pushHook(feishu, fsCfg, 'feishu', familyMail);
-    await pushHook(dingtalk, dtCfg, 'dingtalk', familyMail);
-    await sendMails(r, '支出月报', wxOk);
-  }
+  if (o.dateKey) await runReport(buildDailyReport(o.dateKey), '支出日报');
+  if (o.month) await runReport(buildMonthlyReport(o.month), '支出月报');
 
   setLastSend(out.errors.length ? `errors:${out.errors.length}` : 'ok', out.errors);
   return out;

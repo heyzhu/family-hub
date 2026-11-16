@@ -234,13 +234,21 @@ function migrate() {
     engine.exec("ALTER TABLE users ADD COLUMN avatar TEXT NOT NULL DEFAULT ''");
     done.push('users.avatar');
   }
-  /* v4.7.0 需求 2 / v4.8.0 需求 4：主动提醒走哪条通道。
-     'auto'（默认）= 优先企业微信、发不出去回退邮件；'mail' 只发邮件；'both' 两条都发。
-     v4.7.0 的 'wecom' 是旧值，读取时由 push.normalizeChannel 归一成 'auto'。
+  /* v4.7.0 需求 2 / v4.8.0 需求 4 / v4.28.3 重构：主动提醒走哪条通道。
+     v4.28.3 起它只表示**首选**（一条具体通道），不再是「智能 / 双渠道」那种模式值；
+     『兜底』另外加一列 push_fallback。老值 auto / both 由下面的一次性迁移落成
+     wecom + mail，读取侧 push.normalizeChannel 也留了同样的映射兜底。
      ★ users 表不参与 todos 那种重建，所以这条 ALTER 的先后无所谓；仍放在一起便于查阅。 */
   if (!columnExists('users', 'push_channel')) {
-    engine.exec("ALTER TABLE users ADD COLUMN push_channel TEXT NOT NULL DEFAULT 'auto'");
+    engine.exec("ALTER TABLE users ADD COLUMN push_channel TEXT NOT NULL DEFAULT 'wecom'");
     done.push('users.push_channel');
+  }
+  /* v4.28.3：兜底推送方式。首选（push_channel）发不出去时才走它，'' = 不设兜底。
+     ★ 只加列不加索引（理由同上）。默认值刻意留空：新装用户先只有首选，
+       等他自己在「推送方式」里选了兜底才写入 —— 不替用户决定「失败了要不要换通道」。 */
+  if (!columnExists('users', 'push_fallback')) {
+    engine.exec("ALTER TABLE users ADD COLUMN push_fallback TEXT NOT NULL DEFAULT ''");
+    done.push('users.push_fallback');
   }
   /* v4.11.0：界面主题，跟着人走（不是跟着浏览器走）。
      三套色板见 public/styles.css 的 [data-theme=...]；空串 = 还没选过，
@@ -258,6 +266,30 @@ function migrate() {
     engine.run("INSERT INTO settings (key, value) VALUES ('push_channel_auto_switched', '1') "
       + 'ON CONFLICT(key) DO UPDATE SET value = excluded.value', []);
     done.push('推送通道默认改为「智能优先企业微信」');
+  }
+  /* v4.28.3：把已下线的『智能』『双渠道』落到「首选 + 兜底」上。
+     语义对照：auto = 企微优先、失败回退邮件 → wecom + mail；
+              both = 邮件和企微都发 → 也落 wecom + mail（用户仍会收到一封，
+              只是不再各发一遍；双渠道这个模式本身已被删除）。
+     其余取值（mail / wecom / feishu / dingtalk）原样保留，兜底留空。
+     ★ 一次性标记：用户之后把兜底清空，重启不能再被写回来。 */
+  if (!engine.all("SELECT value FROM settings WHERE key = 'push_mode_split_4283'", []).length) {
+    engine.run("UPDATE users SET push_fallback = 'mail' "
+      + "WHERE push_channel IN ('auto', 'both') AND push_fallback = ''", []);
+    engine.run("UPDATE users SET push_channel = 'wecom' WHERE push_channel IN ('auto', 'both')", []);
+    engine.run("INSERT INTO settings (key, value) VALUES ('push_mode_split_4283', '1') "
+      + 'ON CONFLICT(key) DO UPDATE SET value = excluded.value', []);
+    done.push('推送方式拆为「首选 + 兜底」');
+  }
+  /* v4.28.3：user_prefs 里三类内容的通道值同步收口 ——
+     auto / both 已不是合法取值，留着会让 modeFor 多一层判断；这里直接清成「沿用全局」。 */
+  if (!engine.all("SELECT value FROM settings WHERE key = 'prefs_channel_split_4283'", []).length) {
+    engine.run("UPDATE user_prefs SET value = '' "
+      + "WHERE key IN ('channel_todo','channel_notify','channel_bill') "
+      + "AND value IN ('auto','both','inherit')", []);
+    engine.run("INSERT INTO settings (key, value) VALUES ('prefs_channel_split_4283', '1') "
+      + 'ON CONFLICT(key) DO UPDATE SET value = excluded.value', []);
+    done.push('三类内容的推送渠道改为「首选方式」');
   }
   /* 旧版 todos.todo_date 是 NOT NULL，SQLite 不支持直接改列约束，需重建表。
      ★ W-8：重建的具体动作（DDL / 搬数据 / 事务 / 建索引）统一在 rebuildTodos() 里，
@@ -577,7 +609,10 @@ const COLUMN_DEFAULTS = {
   record_lock_enabled: 0, record_lock_hash: '',
   remind: 1, notify_email: '', remind_key: '', avatar: '',
   // v4.7.0：旧备份文件里没有这个字段，恢复时兜底成默认值（否则 NOT NULL 约束会炸）
-  push_channel: 'auto',
+  /* v4.28.3：改存「首选」通道；老备份里的 'auto' / 'both' 由 importAll 之后的清洗
+     交给 push.normalizeChannel 兜住（读的时候归一，不写脏值回去）。 */
+  push_channel: 'wecom',
+  push_fallback: '',
   // v4.11.0：主题同样可能是旧备份里没有的字段
   theme: '',
   // v1.9.0
@@ -820,7 +855,11 @@ function importAll(payload) {
 
       insertRows('users', ['id', 'username', 'display_name', 'password_hash', 'is_admin',
         'record_lock_enabled', 'record_lock_hash', 'notify_email', 'avatar', 'created_at',
-        'push_channel', 'theme'], t.users);
+        'push_channel', 'push_fallback', 'theme'], t.users);
+      /* v4.28.3：老备份里的 push_channel 可能还是 'auto' / 'both'，
+         恢复后当场落成「首选 wecom + 兜底 mail」——否则界面会显示一个不存在的模式名。 */
+      engine.run("UPDATE users SET push_fallback = 'mail' WHERE push_channel IN ('auto','both') AND push_fallback = ''", []);
+      engine.run("UPDATE users SET push_channel = 'wecom' WHERE push_channel IN ('auto','both')", []);
       insertRows('todos', ['id', 'user_id', 'owner_name', 'title', 'note', 'todo_date', 'start_time', 'end_time',
         'location', 'participants', 'priority', 'repeat', 'done', 'remind', 'reminded_at', 'remind_key',
         'visibility', 'visible_to', 'created_at', 'updated_at'], t.todos);
