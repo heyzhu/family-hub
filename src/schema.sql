@@ -449,7 +449,8 @@ CREATE TABLE IF NOT EXISTS todo_nag_logs (
   todo_id    INTEGER NOT NULL,
   user_id    INTEGER NOT NULL,
   nag_seq    INTEGER NOT NULL,                        -- = 本次发送前 todos.urge_count 的值
-  channel    TEXT    NOT NULL CHECK (channel IN ('wecom','email')),
+  -- v4.28.5：催促按用户所选渠道发，飞书 / 钉钉群机器人也要能在流水里记真实通道
+  channel    TEXT    NOT NULL CHECK (channel IN ('wecom','email','feishu','dingtalk')),
   msg_type   TEXT    NOT NULL DEFAULT '',
   sent_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   -- ★ 默认 'pending'：先占位再发送，发完更新成 success/fail（dedup 保留给将来）

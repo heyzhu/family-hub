@@ -683,6 +683,15 @@ button:disabled:hover { background: var(--surface); }
 .tag-filter.composing .tf-label { color: var(--primary-ink); font-weight: 600; }
 .tag-pick { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); }
 .tag-pick .tf-label { font-size: var(--fs-xs); color: var(--muted); margin-right: 2px; }
+/* v4.28.5：发帖面板里、「添加标签」输入框正下方那排可点选标签 ——
+   淡主色底 + 主色说明，和上面的「筛动态」那排一眼分得开 */
+.composer .tag-pick {
+  margin-top: var(--sp-2);
+  padding: 8px 10px;
+  background: var(--primary-soft);
+  border-radius: var(--r-s);
+}
+.composer .tag-pick .tf-label { color: var(--primary-ink); font-weight: 600; }
 .cats-row { margin-top: var(--sp-4); }
 .cats-hint { margin-top: var(--sp-2); font-size: var(--fs-2xs); color: var(--muted); }
 

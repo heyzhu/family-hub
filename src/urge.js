@@ -29,6 +29,12 @@
  *   现在按人算：能用企业微信就用企业微信（能回「已完成」），用不上就发邮件。
  *   邮件没有交互能力，所以正文必须写清楚**怎么让它停下来**：
  *   打开应用把这条待办标记完成，之后就不再催。
+ *
+ * ★ v4.28.5 需求 3：**四条推送渠道一视同仁**。
+ *   旧版按 `ch !== 'mail'` 判企微、按 `ch !== 'wecom'` 判邮件，于是选了飞书 / 钉钉的人
+ *   实际收到的是企微或邮件 —— 通道选了等于没选。现在把投递整段交给 push.deliver
+ *   （它统一处理四条通道的总开关、配置状态、首选失败走兜底），催促只负责：
+ *   ① 算出这个人的首选 / 兜底；② 占位防重；③ 按实际送达的通道记流水；④ 推进状态机。
  */
 
 const { db } = require('./db');
@@ -40,6 +46,8 @@ const wecom = require('./wecom');
 const push = require('./push');
 const reminders = require('./reminders');
 const mailer = require('./mailer');
+/* v4.28.5：催促按「待办类」的通道偏好走，kind 必须与 push.KIND_CHANNEL_KEY 对齐 */
+const userprefs = require('./userprefs');
 
 /** 到点之后最多催这么久就自动停 —— 防失控的硬顶（不可配），与 urge_max_count 是主备两层 */
 const MAX_URGE_HOURS = 24;
@@ -258,12 +266,13 @@ async function tickUrge(opts) {
   const smtp = smtpOf();
   const out = {
     sent: 0, nags: 0, errors: [], skipped: '', tried: 0, stopped: 0, paused: 0,
-    viaMail: 0, viaWecom: 0,
+    viaMail: 0, viaWecom: 0, viaFeishu: 0, viaDingtalk: 0,
   };
-  /* v4.16.0 需求 2：两条通道**任意一条**能用就继续。
-     旧版这里只要企业微信不 ready 就整轮 return —— 只配邮件的家庭因此永远催不起来。 */
-  if (!wxReady && !smtp.ready) {
-    out.skipped = '企业微信未配置完整，也没配发件邮箱';
+  /* v4.28.5：四条通道任意一条能用就继续。旧版只认企微 + 邮件，
+     只配飞书 / 钉钉的家庭被整轮跳过；现在直接问 push 的「已启用且已配置」清单。 */
+  const avail = push.configuredChannels();
+  if (!avail.length) {
+    out.skipped = '没有已启用且已配置的推送渠道（企业微信 / 邮件 / 飞书 / 钉钉）';
     return out;
   }
 
@@ -273,7 +282,7 @@ async function tickUrge(opts) {
     `SELECT t.id, t.user_id, t.title, t.todo_date, t.end_date, t.end_time, t.start_time,
             t.urge_minutes, t.urge_last_at, t.urge_status, t.urge_count,
             t.urge_max_count, t.urge_window_start, t.urge_window_end, t.urge_start_at,
-            u.username, u.push_channel, u.notify_email
+            u.username, u.push_channel, u.push_fallback, u.notify_email
        FROM todos t JOIN users u ON u.id = t.user_id
       WHERE t.done = 0 AND t.urge_minutes > 0
         AND t.urge_status IN ('pending','active','paused')
@@ -335,27 +344,26 @@ async function tickUrge(opts) {
     byUser.get(t.username).push(t);
   }
 
+  /* 一次 tick 只查一遍所有人的类别偏好，和 push.deliver 内部同源 */
+  const prefsMap = userprefs.loadAll();
+
   for (const [username, items] of byUser) {
-    /* v4.16.0 需求 2：按人算通道。
-       · 企业微信：绑定过（映射表里有他）+ 应用就绪 + 他没选「仅邮件」→ 优先用它（能回「已完成」）；
-       · 邮件：企业微信这条路走不通、他自己配了收件邮箱、且没选「仅企业微信」→ 发邮件。
-       · 两边都不行就跳过，并说明原因（不静默消失）。
-       ★ 绝不因为找不到人而群发到 @all —— 催促是私事，
-         把某个人的日程和拖延公开给全家是最不能接受的失败模式。 */
+    /* v4.28.5：路由交给 push.deliver —— 四条通道的总开关、配置状态、
+       这个人有没有绑定企微 / 留邮箱、首选失败走兜底，全部由它一处裁决。
+       ★ 绝不因为找不到人而群发到 @all —— 催促是私事：target 永远是具体某个人。 */
     const head = items[0] || {};
-    const ch = push.normalizeChannel(head.push_channel);
+    const uid = Number(head.user_id) || userIdOf(username);
+    const mode = push.modeFor(uid, 'remind', prefsMap);
+    const primary = push.normalizeChannel(mode.primary);
+    /* ★ 两套枚举名不同：push 用 'mail'，todo_nag_logs 的 CHECK 用 'email'。
+       直接拿 'mail' 去占位会被 CHECK 静默 IGNORE，于是「一条都没发、也不报错」。 */
+    const channel = primary === 'mail' ? 'email' : primary;
+    const email = String(head.notify_email || '').trim();
     const wxId = wxReady ? wecomIdOf(cfg, username) : '';
-    const useWx = wxReady && !!wxId && ch !== 'mail';
-    const useMail = !useWx && smtp.ready && !!String(head.notify_email || '').trim() && ch !== 'wecom';
-    if (!useWx && !useMail) {
-      out.skipped = ch === 'wecom'
-        ? '有待办的主人还没绑定企业微信账号（他选了「仅企业微信」）'
-        : (ch === 'mail'
-          ? '有待办的主人没配收件邮箱（他选了「仅邮件」）'
-          : '有待办的主人既没绑定企业微信账号，也没配收件邮箱');
-      continue;
-    }
-    const channel = useWx ? 'wecom' : 'email';   // todo_nag_logs.channel 的取值只有这两个
+    const target = {
+      id: uid, username, name: head.owner_name || username,
+      email, wecomUser: wxId, channel: primary,
+    };
 
     // 发送前先占位（5.10.8 幂等）：四元组唯一索引，占位失败 = 别的进程刚发过 → 跳过该条
     const claimed = [];
@@ -364,56 +372,61 @@ async function tickUrge(opts) {
       const r = db.run(
         `INSERT OR IGNORE INTO todo_nag_logs (todo_id, user_id, nag_seq, channel, msg_type, delivered)
          VALUES (?,?,?,?,'urge','pending')`,
-        [t.id, t.user_id == null ? userIdOf(username) : t.user_id, seq, channel],
+        [t.id, uid, seq, channel],
       );
       if (r && r.changes > 0) claimed.push({ todo: t, seq });
     }
     if (!claimed.length) continue;
 
     out.tried++;
-    let nags = 0;
-    if (useWx) {
-      /* eslint-disable no-await-in-loop */
-      const text = claimed.length === 1
-        ? urgeText(claimed[0].todo, now, tz)
-        : mergedUrgeText(claimed.map((c) => c.todo), now, tz);
-      const r = await wecom.sendText(cfg, { toUser: wxId, content: text });
-      if (r && r.ok) {
-        out.sent++;
-        out.viaWecom = (out.viaWecom || 0) + 1;
-        nags = commitUrge(claimed, channel, now, out);
-      } else {
-        // v4.10.0：优先用人话提示（81013/60020/45009 等），日志里仍保留原始 errcode
-        const err = (r && (r.errorText || r.error)) || '发送失败';
-        out.errors.push(`「${claimed[0].todo.title}」${err}`);
-        failUrge(claimed, channel, err, now, out);
+    const todos = claimed.map((c) => c.todo);
+    const subject = claimed.length === 1
+      ? `【待办催促】${claimed[0].todo.title}`
+      : `【待办催促】${claimed.length} 件事到点了`;
+    /* 邮件 / 群机器人看不到「回已完成」的入口，用 mailUrgeText 写清「去应用里勾一下」；
+       企业微信单独给一份可回执的文案（deliver 的 wecomMsg 只作用于企微）。 */
+    const wxText = claimed.length === 1
+      ? urgeText(claimed[0].todo, now, tz)
+      : mergedUrgeText(todos, now, tz);
+    const msg = { subject, text: mailUrgeText(todos, now, tz), html: mailUrgeHtml(todos, now, tz) };
+
+    /* eslint-disable no-await-in-loop */
+    const res = await push.deliver([target], msg, {
+      kind: 'urge',
+      now,
+      deferQuiet: false,          // 催促本身就是「到点没做完」，不能再沉进免打扰队列
+      smtpReady: smtp.ready,
+      wecomMsg: { subject: '', text: wxText },
+      sendMail: ({ to, subject: s, text: t, html: h }) => mailer.sendMail({
+        host: smtp.host, port: smtp.port, user: smtp.user, pass: smtp.pass,
+        fromName: config.siteName, to, subject: s, text: t, html: h,
+      }),
+    });
+    /* eslint-enable no-await-in-loop */
+
+    const used = res.wecom ? 'wecom' : res.mail ? 'email'
+      : res.feishu ? 'feishu' : res.dingtalk ? 'dingtalk' : '';
+    if (used) {
+      out.sent++;
+      const counter = { wecom: 'viaWecom', email: 'viaMail', feishu: 'viaFeishu', dingtalk: 'viaDingtalk' }[used];
+      if (counter) out[counter] = (out[counter] || 0) + 1;
+      /* 首选不可用而走了兜底时，流水要记**实际**通道，不能留占位时的首选值 */
+      if (used !== channel) {
+        for (const c of claimed) {
+          db.run('UPDATE todo_nag_logs SET channel = ? WHERE todo_id = ? AND user_id = ? AND nag_seq = ? AND channel = ?',
+            [used, c.todo.id, uid, c.seq, channel]);
+        }
       }
+      out.nags += commitUrge(claimed, used, now, out);
     } else {
-      /* v4.16.0 需求 2：邮件催办。正文写清「怎么让它停下来」（去应用里勾一下），
-         因为邮件没法回一句「已完成」。 */
-      const subject = claimed.length === 1
-        ? `【待办催促】${claimed[0].todo.title}`
-        : `【待办催促】${claimed.length} 件事到点了`;
-      const todos = claimed.map((c) => c.todo);
-      try {
-        await mailer.sendMail({
-          host: smtp.host, port: smtp.port, user: smtp.user, pass: smtp.pass,
-          fromName: config.siteName,
-          to: [String(head.notify_email).trim()],
-          subject,
-          text: mailUrgeText(todos, now, tz),
-          html: mailUrgeHtml(todos, now, tz),
-        });
-        out.sent++;
-        out.viaMail = (out.viaMail || 0) + 1;
-        nags = commitUrge(claimed, channel, now, out);
-      } catch (err) {
-        const msg = (err && err.message) || '发信失败';
-        out.errors.push(`「${claimed[0].todo.title}」邮件：${msg}`);
-        failUrge(claimed, channel, msg, now, out);
-      }
+      const why = (res.errors && res.errors.length ? res.errors.join('；') : '')
+        || (primary === 'wecom' ? '还没绑定企业微信账号'
+          : primary === 'mail' ? '没配收件邮箱'
+            : `首选「${push.labelOf(primary)}」不可用，也没设可用的兜底方式`);
+      out.errors.push(`「${head.title || username}」${why}`);
+      out.skipped = `有待办的主人${why}`;
+      failUrge(claimed, channel, why, now, out);
     }
-    if (nags) out.nags += nags;
   }
   return out;
 }

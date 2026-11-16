@@ -421,10 +421,12 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        v4.15.0 需求 2：分区扩到 9 个，新增 ai（AI 参数）/ cat（分类与预算）——
        它们原来在「记账设置」页签里。 */
     meOpen: { profile: false, members: false, notify: false, push: false, ai: false, cat: false, backup: false, system: false },
-    /* v4.16.0 需求 4：推送渠道设置里「邮件 / 企业微信」两块配置的折叠状态。
-       ★ v4.28.3 需求 4：默认**收起** —— 展开「推送渠道设置」时先看到四条通道的总览，
-         想改哪一条再点开，不用先滚过两大段配置。undefined 仍当作展开。 */
-    pushOpen: { mail: false, wecom: false },
+    /* v4.16.0 需求 4：推送渠道设置里各渠道配置的折叠状态。
+       ★ v4.28.5 需求 2：四条通道**全部默认收起**，且各自独立。
+         之前只写了 mail / wecom 两个键，飞书和钉钉因为「undefined 当作展开」默认就是开的；
+         折叠处理器又把非 wecom 一律当成 mail，点钉钉会去开邮件。现在四个键写全，
+         读取一律 `!!state.pushOpen[ch]`，不再有 undefined 的第三种含义。 */
+    pushOpen: { mail: false, wecom: false, feishu: false, dingtalk: false },
     // v2.0.0 家庭记账
     bills: [],
     billChat: [],
@@ -1311,7 +1313,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     if (t.remind && t.date && !t.repeat && !t.repeatRule) meta.push('<span class="badge repeat">🔔 提醒</span>');
     // v4.6.0 需求 3：开了「催促完成」的待办要一眼看得出来（催多少次都可能，用户得知道它在响）
     if (t.urgeMinutes > 0) {
-      meta.push(`<span class="badge urge" title="到点后每 ${t.urgeMinutes} 分钟催一次：企业微信里回「已完成」就停；只配了邮件时，到待办里勾一下这条就停">⏰ 每 ${t.urgeMinutes} 分钟催</span>`);
+      meta.push(`<span class="badge urge" title="到点后每 ${t.urgeMinutes} 分钟催一次，按你选的推送渠道发：企业微信里回「已完成」就停；邮件 / 群机器人请到待办里勾一下这条">⏰ 每 ${t.urgeMinutes} 分钟催</span>`);
     }
     if (t.priority === 'high') meta.push('<span class="badge p-high">重要</span>');
     if (t.priority === 'low') meta.push('<span class="badge p-low">稍后</span>');
@@ -1647,26 +1649,27 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       : '';
 
     const tags = allPostTags();
-    /* ★ v4.15.0 需求 6：搜索框下面这排标签**同时承担发帖时的选标签**——
-       原来发帖面板里另有一排「点选已有标签」（pickChips），两排长得一样、
-       位置却隔了半屏，用户要来回找。现在只有一排：
-         · 发帖面板收起时：点标签 = 筛选动态（原行为）；
-         · 发帖面板展开时：点标签 = 加进这次发布（点第二次取消）；
-       标签栏左侧的说明文字随之切换，点下去会发生什么不用猜。 */
-    const composing = state.composeOpen;
-    const composeTagList = composing
-      ? String(state.compose.tags || '').split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean)
-      : [];
+    /* v4.28.5：两排标签各管各的 —— 搜索框下面这排**只筛动态**，
+       发帖面板里「添加标签」输入框下面那排**只加进这次发布**。
+       v4.15.0 曾把它们合成一排靠文案切换语义，结果发帖时要点的地方离输入框半屏远，
+       用户根本没发现那排能加标签。现在按动作分家，按钮的 data-act 也不同：
+       post-tag = 筛选，compose-tag-add = 加入这次发布。 */
     const tagChips = tags.length
-      ? `<div class="tag-filter${composing ? ' composing' : ''}">` +
-        `<span class="tf-label">${composing ? '点标签加入这次发布' : '标签'}</span>` +
-        (composing ? '' : `<button type="button" class="chip${state.postTag === '' ? ' on' : ''}" data-act="post-tag" data-tag="">全部</button>`) +
-        tags.map((t) => {
-          const on = composing ? composeTagList.includes(t) : state.postTag === t;
-          return `<button type="button" class="chip${on ? ' on' : ''}" data-act="post-tag" data-tag="${esc(t)}">#${esc(t)}</button>`;
-        }).join('') +
+      ? `<div class="tag-filter">` +
+        `<span class="tf-label">标签</span>` +
+        `<button type="button" class="chip${state.postTag === '' ? ' on' : ''}" data-act="post-tag" data-tag="">全部</button>` +
+        tags.map((t) =>
+          `<button type="button" class="chip${state.postTag === t ? ' on' : ''}" data-act="post-tag" data-tag="${esc(t)}">#${esc(t)}</button>`).join('') +
         `</div>`
       : '';
+    const composeTagList = String(state.compose.tags || '').split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+    const composerTagChips = tags.length ? `
+        <div class="tag-pick">
+          <span class="tf-label">点标签加入这次发布</span>
+          ${tags.map((t) =>
+            `<button type="button" class="chip${composeTagList.includes(t) ? ' on' : ''}"
+                     data-act="compose-tag-add" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}
+        </div>` : '';
     const q = state.postQuery.trim().toLowerCase();
     const all = state.posts;
     const list = all
@@ -1758,8 +1761,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             ? `<div class="search-hint">找到 ${list.length} 条动态${state.postTag ? `（标签 #${esc(state.postTag)}）` : ''}${
               all.length > list.length ? ` · 共 ${all.length} 条` : ''}</div>`
             : ''}`
-          /* 发帖面板展开、但当前是「按日历看」时，标签栏也要在（否则发帖没法选标签） */
-          : (composerOpen ? tagChips : '')}
+          /* 按日历看时不显示动态筛选标签栏；发帖要用的那排在下面的发布器里 */
+          : ''}
       </div>`;
 
     const composer = composerOpen ? `
@@ -1809,6 +1812,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
                  data-preserve="compose-tags" data-act="compose-tags" value="${esc(draftTags)}">
           <button type="button" class="btn-primary btn-sm" data-act="compose-publish">发布</button>
         </div>
+        <!-- v4.28.5：可点选的已有标签紧跟在「添加标签」输入框下面，点一下就加进去 -->
+        ${composerTagChips}
         <input type="file" accept="image/*" multiple class="hidden" id="compose-file">
         <input type="file" accept="video/*" multiple class="hidden" id="compose-video-file">
       </div>` : '';
@@ -4741,15 +4746,17 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        · 标题本身是按钮（不是整行）：勾选框和标题挨在一起时，点哪儿会开关掉通道的歧义太大；
        · 开关仍然只有勾选框那一个 —— 折叠只影响**看不看得到配置**，不影响开没开；
        · 关掉的通道不必展开（配置留着，重新勾上就回来）。 */
-    /* 默认展开（和旧版一致：第一次来就能看到要填什么），点标题才收起来。
-       通道关着的时候不展开 —— 关掉的配置留着但没必要占屏幕。 */
-    const mailOpen = mailOn && (!state.pushOpen || state.pushOpen.mail !== false);
-    const wecomOpen = wecomOn && (!state.pushOpen || state.pushOpen.wecom !== false);
+    /* v4.28.5 需求 2：四条通道一律默认收起，点哪条只开哪条。
+       ★ 读取只认「显式 true」：老写法 `!== false` 会把 undefined 当展开，
+         于是没写进 state 的飞书 / 钉钉一进页面就是展开的。 */
+    const isOpen = (ch) => !!(state.pushOpen && state.pushOpen[ch]);
+    const mailOpen = mailOn && isOpen('mail');
+    const wecomOpen = wecomOn && isOpen('wecom');
     /* v4.24.0 需求 2：飞书 / 钉钉群机器人 —— 与邮件 / 企微同一套「勾选框 + 折叠配置」交互 */
     const fsOn = s ? s.pushFeishuEnabled !== false : true;
     const dtOn = s ? s.pushDingtalkEnabled !== false : true;
-    const fsOpen = fsOn && (!state.pushOpen || state.pushOpen.feishu !== false);
-    const dtOpen = dtOn && (!state.pushOpen || state.pushOpen.dingtalk !== false);
+    const fsOpen = fsOn && isOpen('feishu');
+    const dtOpen = dtOn && isOpen('dingtalk');
     const fsSt = (s && s.feishuStatus) || {};
     const dtSt = (s && s.dingtalkStatus) || {};
     /* 一块群机器人通道的配置区（飞书 / 钉钉同构，只有文案与接口名不同） */
@@ -6523,8 +6530,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
                      title="0 = 不限次数；催够自动停"></label>
           </div>
           <small class="field-hint">从待办的开始时间起催；没填开始时间就按「我的」默认提醒时间
-            ${esc(myRemindTime())} 起催。<b>企业微信</b>里回一句「已完成」就停；
-            只配了邮件时照样能催，正文会告诉你去「待办」里勾一下这条，勾完就不再提醒。</small>
+            ${esc(myRemindTime())} 起催。催促按你选的「首选 + 兜底」渠道发（企业微信 / 邮件 / 飞书 / 钉钉）。
+            <b>企业微信</b>里回一句「已完成」就停；邮件和群机器人没有回执入口，正文会告诉你去「待办」里勾一下这条。</small>
         </div>`,
       foot: `
         ${isEdit ? `<button type="button" class="btn-danger btn-sm" data-act="todo-delete" data-id="${t.id}">删除</button>` : ''}
@@ -6613,7 +6620,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     /* v4.12.0：提醒方式三档是一个下拉，但要落成库里的两列（remind 布尔 + urge_minutes 数字）。
        三档对应的组合是固定的，别在这里做「智能推断」：
          system → remind=1, urge=0（到点发一次，走系统配置的通道）
-         urge   → remind=1, urge=N（到点发一次 + 反复催：企业微信优先，只配邮件时走邮件）
+         urge   → remind=1, urge=N（到点发一次 + 反复催：按首选 + 兜底渠道发，四条通道都支持）
          none   → remind=0, urge=0（什么都不发；此时催促字段即使有值也一并清零，
                   否则以后把 remind 打开会突然开始催，用户根本不知道哪来的） */
     const remindMode = modalValue('remindMode') || 'system';
@@ -7793,14 +7800,18 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       case 'compose-tag-add': {
         const inp = document.querySelector('[data-act="compose-tags"]');
         if (!inp) break;
-        const cur = inp.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+        let cur = inp.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
         const t = el.dataset.tag || '';
-        if (t && !cur.includes(t)) { cur.push(t); inp.value = cur.join(' '); }
-        inp.focus();
+        /* v4.28.5：点一下加进去，再点一下去掉 —— 按钮上有 .on 选中态，行为必须对得上 */
+        if (t) cur = cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t];
+        inp.value = cur.join(' ');
         /* v4.3.3 需求 6：点选标签也是内容变更，同步进 state 再排一次自动存草稿
            （否则「只点了标签」这种最容易被刷掉的半成品会丢） */
         state.compose.tags = inp.value;
         schedulePostDraft();
+        render();   // 标签按钮的选中态要靠重绘刷新（input 的 value 不在 outerHTML 里）
+        const again = document.querySelector('[data-act="compose-tags"]');
+        if (again) again.focus();
         break;
       }
       /* v4.3.3 需求 6：手动存草稿 / 丢弃草稿 */
@@ -8059,23 +8070,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         }
         break;
       }
-      /* ★ v4.15.0 需求 6：搜索框下面那排标签在**发帖状态下**是「选标签」而不是「筛动态」。
-         点一下加进这次发布、再点一下取消；标签栏左侧的说明文字会同步变，
-         所以同一个按钮两种含义不会让人猜。 */
+      /* v4.28.5：搜索框下面这排标签**永远只筛动态**，发帖时也不改含义。
+         加进这次发布用的是发布器里那排 `compose-tag-add`，两个动作彻底分家。 */
       case 'post-tag': {
-        const t = el.dataset.tag || '';
-        if (state.composeOpen) {
-          const inp = document.querySelector('[data-act="compose-tags"]');
-          const cur = String(state.compose.tags || '').split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
-          const i = cur.indexOf(t);
-          if (i >= 0) cur.splice(i, 1); else if (t) cur.push(t);
-          state.compose.tags = cur.join(' ');
-          if (inp) inp.value = state.compose.tags;   // <input> 的 value 不在 outerHTML 里，必须显式写回
-          schedulePostDraft();
-          render();
-          break;
-        }
-        state.postTag = t;
+        state.postTag = el.dataset.tag || '';
         render();
         break;
       }
@@ -11583,12 +11581,15 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         render();
         break;
       }
-      /* v4.16.0 需求 4：点「邮件推送 / 企业微信推送」标题折叠对应的配置区。
-         注意只切**显示**，不动开关 —— 开关仍是右边那个勾选框，两者别混在一起。 */
+      /* v4.28.5 需求 2：点哪条推送渠道的标题，只切那一条的**显示**，互不影响。
+         ★ 旧代码 `el.dataset.which === 'wecom' ? 'wecom' : 'mail'` 是串台的根源：
+           飞书 / 钉钉传进来的 which 被强制改成了 mail，点钉钉反而展开邮件。
+         开关仍在右边的勾选框上，折叠绝不动 pushXxxEnabled。 */
       case 'push-fold': {
-        const which = el.dataset.which === 'wecom' ? 'wecom' : 'mail';
-        const prev = !state.pushOpen || state.pushOpen[which] !== false;
-        state.pushOpen = Object.assign({}, state.pushOpen, { [which]: !prev });
+        const which = String(el.dataset.which || '');
+        if (!['mail', 'wecom', 'feishu', 'dingtalk'].includes(which)) break;
+        state.pushOpen = Object.assign({}, state.pushOpen,
+          { [which]: !(state.pushOpen && state.pushOpen[which]) });
         render();
         break;
       }

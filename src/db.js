@@ -183,6 +183,40 @@ function rebuildTodos(opts) {
   }
 }
 
+/**
+ * v4.28.5：催促流水要记真实通道（飞书 / 钉钉），而老表的 CHECK 只允许 wecom / email。
+ * SQLite 不能直接改 CHECK，只能建新表搬数据。列、默认值、唯一索引、普通索引
+ * 必须与 schema.sql 完全一致，老流水一行都不能丢。
+ */
+function rebuildNagLogs() {
+  engine.exec('BEGIN IMMEDIATE');
+  try {
+    engine.exec(`CREATE TABLE todo_nag_logs_mig (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  todo_id    INTEGER NOT NULL,
+  user_id    INTEGER NOT NULL,
+  nag_seq    INTEGER NOT NULL,
+  channel    TEXT    NOT NULL CHECK (channel IN ('wecom','email','feishu','dingtalk')),
+  msg_type   TEXT    NOT NULL DEFAULT '',
+  sent_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  delivered  TEXT    NOT NULL DEFAULT 'pending' CHECK (delivered IN ('pending','success','fail','dedup')),
+  error_code TEXT    NOT NULL DEFAULT '',
+  UNIQUE (todo_id, user_id, nag_seq, channel)
+)`);
+    engine.exec(`INSERT INTO todo_nag_logs_mig
+      (id, todo_id, user_id, nag_seq, channel, msg_type, sent_at, delivered, error_code)
+      SELECT id, todo_id, user_id, nag_seq, channel, msg_type, sent_at, delivered, error_code
+        FROM todo_nag_logs`);
+    engine.exec('DROP TABLE todo_nag_logs');
+    engine.exec('ALTER TABLE todo_nag_logs_mig RENAME TO todo_nag_logs');
+    engine.exec('CREATE INDEX IF NOT EXISTS idx_nag_logs_at ON todo_nag_logs (sent_at)');
+    engine.exec('COMMIT');
+  } catch (err) {
+    try { engine.exec('ROLLBACK'); } catch { /* 忽略 */ }
+    throw err;
+  }
+}
+
 function migrate() {
   // 记录本次实际做了什么。升级是「静默行为」，必须留痕：不然出问题无从下手，
   // 也看不出来「到底有没有跑过迁移」。启动时打一行 [migrate] 输出即可。
@@ -290,6 +324,17 @@ function migrate() {
     engine.run("INSERT INTO settings (key, value) VALUES ('prefs_channel_split_4283', '1') "
       + 'ON CONFLICT(key) DO UPDATE SET value = excluded.value', []);
     done.push('三类内容的推送渠道改为「首选方式」');
+  }
+  /* v4.28.5：催促现在按用户选的渠道发（含飞书 / 钉钉群机器人），流水表 CHECK 得放行。
+     用 settings 的一次性标记而不是只判表结构：重建一次就够了，别每次启动都搬表。 */
+  if (!engine.all("SELECT value FROM settings WHERE key = 'nag_channel_split_4285'", []).length) {
+    const row = engine.all("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'todo_nag_logs'", []);
+    if (row.length && !/'feishu'/.test(String(row[0].sql || ''))) {
+      rebuildNagLogs();
+      done.push('催促流水支持飞书 / 钉钉渠道');
+    }
+    engine.run("INSERT INTO settings (key, value) VALUES ('nag_channel_split_4285', '1') "
+      + 'ON CONFLICT(key) DO UPDATE SET value = excluded.value', []);
   }
   /* 旧版 todos.todo_date 是 NOT NULL，SQLite 不支持直接改列约束，需重建表。
      ★ W-8：重建的具体动作（DDL / 搬数据 / 事务 / 建索引）统一在 rebuildTodos() 里，
