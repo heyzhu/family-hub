@@ -1,0 +1,357 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   我们一家 · 设计令牌（tokens.css）
+   ---------------------------------------------------------------------
+   ★ 必须比 styles.css **先**加载：index.html 里两条 link 的顺序不能换。
+     组件层只写 var(--x)，从不写裸色值 —— 改这里的令牌，全站跟着变。
+
+   结构（沿用原 styles.css 的编号，便于对照老提交）：
+     §0.1 共用尺度：圆角 / 间距 / 字号 / 行高 / 阴影 / 动效 / 结构尺寸 / 控件高
+     §0.2 青野（绿）  §0.3 米白（奶油）  §0.4 澄蓝  §0.5 暖夜（暗色）
+     §0.6 兼容别名：--bg / --card / --soft 等历史名字，只作老样式不崩的保险
+
+   ★ 新增一套主题要动 5 处，缺一处就会「切过去没反应」或「切过去一片糊」：
+       theme-boot.js 的 THEMES + BAR（地址栏配色，手机端必须同步）
+       app.js 的 THEMES + THEME_META（设置页的主题卡片）
+       src/auth.js 的 THEMES（登录页要能认这个值）
+       styles.css 的 .theme-swatch.f-*（三格预览色）
+       本文件的色板块（真正生效的那份）
+     _verify/_token-lint.js 会比对四套色板的令牌名集合是否一致。
+
+   ★ 校验：node _verify/_token-lint.js
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   §0 设计令牌
+   ---------------------------------------------------------------------
+   0.1 是「三套主题共用的尺度」，0.2~0.4 是「每套主题各自的颜色」。
+   颜色块里的顺序固定为：底色 → 表面 → 线 → 文字 → 品牌 → 语义 → 特殊。
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── 0.1 共用尺度（与主题无关）───────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  /* 圆角：四档够用 —— 控件 12、卡片 16、浮层 22、胶囊 999。
+     图片/缩略图统一 14，避免 8/9/10/11 混排。 */
+  --r-xs: 8px;
+  --r-s: 12px;
+  --r-m: 16px;
+  --r-l: 22px;
+  --r-pill: 999px;
+  --r-media: 14px;
+
+  /* 间距（4px 基数）：页面内边距 14、卡片内边距 10/16、组件间距 6/8/12、分组 20/28 */
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 10px;
+  --sp-5: 12px;
+  --sp-6: 14px;
+  --sp-7: 16px;
+  --sp-8: 20px;
+  --sp-9: 24px;
+  --sp-10: 32px;
+
+  /* 字号：11 辅助 / 12 元信息 / 13 次要正文 / 14 正文 / 15 强调正文 / 17 卡片标题 / 20 页面标题 / 26 登录标题 */
+  --fs-2xs: 11px;
+  --fs-xs: 12px;
+  --fs-s: 13px;
+  --fs-m: 14px;
+  --fs-l: 15px;
+  --fs-xl: 17px;
+  --fs-2xl: 20px;
+  --fs-3xl: 26px;
+
+  --lh-body: 1.6;
+  --lh-title: 1.32;
+
+  /* 阴影：v2 的原则是「能不用就不用」—— 层次主要靠 1px 线和大圆角，
+     阴影只在浮层（弹窗 / 灯箱 / 菜单）上出现，且非常轻。 */
+  --shadow-s: 0 1px 2px rgba(24, 20, 14, .05);
+  --shadow-m: 0 10px 28px -14px rgba(24, 20, 14, .20);
+  --shadow-l: 0 28px 64px -22px rgba(24, 20, 14, .32);
+
+  /* 动效：只用于 hover / 焦点 / 入场，一律 ≤ 220ms */
+  --ease: cubic-bezier(.33, .72, .30, 1);
+  --t-fast: .14s;
+  --t-mid: .22s;
+
+  /* 结构尺寸：★ 下面几个数值同时被「5 条待办一屏」的高度预算引用（见 e2e 校验），
+     调之前先算一遍账：可用高度 = 视口高 − 顶栏 − 底部导航。 */
+  --nav-h: 60px;
+  --rail-w: 240px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+
+  /* 控件高度：小 30（行内）/ 标准 38 / 大 46 */
+  --h-sm: 30px;
+  --h-md: 38px;
+  --h-lg: 46px;
+
+  /* ── v4.28.12：三组「不随主题翻转」的颜色 ──────────────────────────
+     --on-solid         压在与主题无关的深色实底上的文字（toast / 图片浮层按钮）
+     --on-primary-wash  主色实底上的"浅水"叠色：浅色主题叠白，暗色主题叠黑
+     --glass / --glass-ink  灯箱上的浮动圆钮（永远白底深图标，因为灯箱底色恒为黑）
+     前两套浅色主题不写，直接继承这里的默认值；night 只覆盖 --on-primary-wash。 */
+  --on-solid: #fff;
+  --on-primary-wash: rgba(255, 255, 255, .26);
+  --glass: rgba(255, 255, 255, .92);
+  --glass-ink: #3b332b;
+}
+
+/* ── 0.2 主题一：青野（绿）────────────────────────────────────────────
+   取 Tailwind green / emerald 家族的中段作为品牌色（#0B7A57 ≈ 介于
+   emerald-700 #047857 与 green-700 #15803D 之间，往暖侧偏了一点，
+   在暖白底上不刺眼）；底子用带绿调的冷白，避免和米白主题撞脸。
+   辅色是陶土橘 #C97B4A —— 绿配陶土是家居配色里最稳的一组，
+   只用于「未读 / 强调标签」这类小面积。 */
+:root[data-theme="forest"] {
+  --paper: #f4f8f5;
+  --paper-2: #eaf2ed;
+  --paper-3: #e1ebe5;
+
+  --surface: #ffffff;
+  --surface-2: #f8fbf9;
+  --surface-3: #eef4f0;
+
+  --line: #dde8e2;
+  --line-strong: #c6d6cd;
+  --line-soft: #e9f1ec;
+
+  --ink: #1e2a24;
+  --ink-inverse: #ffffff;
+  --text: #1e2a24;
+  --text-2: #4f5f56;
+  --muted: #7f9187;
+
+  --primary: #0b7a57;
+  --primary-dark: #086848;
+  --primary-soft: #e3f3ec;
+  --primary-line: #b9decd;
+  --primary-ink: #075640;
+
+  --accent: #c97b4a;
+  --accent-dark: #a9602f;
+  --accent-soft: #fbede2;
+  --accent-line: #f0d5bf;
+
+  --warn: #b0761f;
+  --warn-soft: #fbf1de;
+  --warn-line: #eedcb6;
+  --warn-ink: #7a5213;
+
+  --danger: #c0503d;
+  --danger-soft: #fbeae6;
+  --danger-line: #f0cec5;
+  --danger-ink: #98392a;
+
+  --dot: #e2593f;
+  --glow-1: rgba(11, 122, 87, .12);
+  --glow-2: rgba(201, 123, 74, .12);
+  --bar-bg: rgba(244, 248, 245, .88);
+  --scrim: rgba(22, 34, 27, .40);
+  --media: #101a15;
+}
+
+/* ── 0.3 主题二：米白（奶油）──────────────────────────────────────────
+   参考中文设计圈「奶油风」的明度阶梯：基底 #FAF7F2 → 辅助 #EDE4D8
+   → 主体 #D9C7B0 → 强调 #C9B49A → 文字 #6B5644。
+   但按钮要能承载白字，所以把「可点击的主色」压深到奶咖 #8F6539
+   （#D9C7B0 那类浅驼只做分区底色，不做主色）。 */
+:root,
+:root[data-theme="paper"] {
+  --paper: #faf7f2;
+  --paper-2: #f3ece1;
+  --paper-3: #ebe2d4;
+
+  --surface: #ffffff;
+  --surface-2: #fdfaf5;
+  --surface-3: #f5efe6;
+
+  --line: #ebe2d5;
+  --line-strong: #d9cbb8;
+  --line-soft: #f2eadf;
+
+  --ink: #3b332b;
+  --ink-inverse: #fffdfa;
+  --text: #3b332b;
+  --text-2: #6b5f52;
+  --muted: #9b8e7e;
+
+  --primary: #8f6539;
+  --primary-dark: #744e28;
+  --primary-soft: #f7efe4;
+  --primary-line: #e8d8c2;
+  --primary-ink: #553a1c;
+
+  --accent: #7c9082;
+  --accent-dark: #5f7568;
+  --accent-soft: #edf2ee;
+  --accent-line: #d3e0d7;
+
+  --warn: #b0742f;
+  --warn-soft: #fbf2e2;
+  --warn-line: #eeddbc;
+  --warn-ink: #7c5115;
+
+  --danger: #b34a38;
+  --danger-soft: #fbeae5;
+  --danger-line: #f0cec4;
+  --danger-ink: #8f3626;
+
+  --dot: #d9553c;
+  --glow-1: rgba(143, 101, 57, .12);
+  --glow-2: rgba(124, 144, 130, .12);
+  --bar-bg: rgba(250, 247, 242, .9);
+  --scrim: rgba(48, 38, 28, .42);
+  --media: #17120e;
+}
+
+/* ── 0.4 主题三：澄蓝 ──────────────────────────────────────────────────
+   蓝的冷感容易「像后台管理系统」，所以：底色带一点点暖灰（#F5F8FD
+   里那点灰紫），辅色用暖杏 #E08A5B 把温度拉回来，成功态用 teal
+   #0F9C8E 与主蓝拉开色相，免得「成功/主色一片蓝」分不清。 */
+:root[data-theme="ocean"] {
+  --paper: #f5f8fd;
+  --paper-2: #e9f0fa;
+  --paper-3: #dee8f6;
+
+  --surface: #ffffff;
+  --surface-2: #f9fbff;
+  --surface-3: #eff4fc;
+
+  --line: #dfe7f3;
+  --line-strong: #c6d3e8;
+  --line-soft: #ebf1fa;
+
+  --ink: #1b2430;
+  --ink-inverse: #ffffff;
+  --text: #1b2430;
+  --text-2: #4e5c6e;
+  --muted: #8492a5;
+
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --primary-soft: #eaf1fe;
+  --primary-line: #c3d6fb;
+  --primary-ink: #1e40af;
+
+  --accent: #e08a5b;
+  --accent-dark: #c06e42;
+  --accent-soft: #fdf0e8;
+  --accent-line: #f3d8c6;
+
+  --warn: #b45309;
+  --warn-soft: #fdf3e3;
+  --warn-line: #f0ddbd;
+  --warn-ink: #7c3d06;
+
+  --danger: #d2453a;
+  --danger-soft: #fcebe9;
+  --danger-line: #f3cfcb;
+  --danger-ink: #a13128;
+
+  --dot: #e2593f;
+  --glow-1: rgba(37, 99, 235, .12);
+  --glow-2: rgba(224, 138, 91, .12);
+  --bar-bg: rgba(245, 248, 253, .9);
+  --scrim: rgba(25, 34, 48, .42);
+  --media: #0f1622;
+}
+
+/* ── 0.5 主题四：暖夜（暗色）────────────────────────────────────────────
+   底色是「米白主题的夜里版」：明度阶梯整体翻到暗部，但**不翻到纯黑**。
+   #2A2220（底）→ #372D2A（卡片）→ #453C39（浮起）。
+
+   ★ 为什么底不是更暗的 #171310（v4.28.12 的首版）：
+     那版底色 CIE 明度 L* 只有 6.2，接近纯黑（纯黑 0 / 纯白 100），
+     与卡片的对比 13.9:1 读长文时过硬 —— 这就是用户反馈的「过暗」。
+     现在这套 L* 14.1，落在主流暗色主题的 11–16 区间；正文对卡片 11.8:1，
+     仍是 WCAG AAA（7:1）的 1.7 倍，但不再刺眼。
+
+   主色不是「把奶咖提亮」那么简单，而是换成能在深底上承载深字的亮奶咖
+   #DCA36C —— 暗色主题里按钮是「亮底深字」，所以 --ink-inverse 也跟着翻成
+   深棕，四套主题共用同一套组件规则，不需要给按钮写暗色特例。
+
+   ★ 派生令牌的取值规则（改色时别拍脑袋，按这两档走）：
+     · 深色背景块 / 描边（*-soft、*-line、line-*）＝ 原暖夜色抬 +9 L*；
+     · 前景色（primary/accent/warn/danger/*-ink）＝ 抬 +5~6 L*。
+     前景不抬满是因为底已经亮了，对比度会自动降；抬满会顶到通道 255 发白。
+   ★ 三处必须一起写，否则暗色下会「看不见」或「一片糊」：
+     1. --shadow-*：浅色的 rgba(24,20,14,.2) 在深底上等于没有，换成纯黑；
+     2. color-scheme: dark：原生下拉 / 日期框 / 滚动条才会跟着变暗；
+     3. --on-primary-wash：日历选中格上那层"白色浅水"，这里要反过来用黑色。
+   ★ toast 的底色是固定的深色（与主题无关），所以它的字色用 --on-solid
+     （恒定白），不能跟着 --ink-inverse 一起翻。 */
+:root[data-theme="night"] {
+  color-scheme: dark;
+
+  --paper: #2a2220;
+  --paper-2: #322926;
+  --paper-3: #3b3230;
+
+  --surface: #372d2a;
+  --surface-2: #3e332f;
+  --surface-3: #453c39;
+
+  --line: #4e423c;
+  --line-strong: #5e5452;
+  --line-soft: #403836;
+
+  --ink: #fcf6f1;
+  --ink-inverse: #1c1512;
+  --text: #f7efe7;
+  --text-2: #d5c4b7;
+  --muted: #ae9a8d;
+
+  --primary: #dca36c;
+  --primary-dark: #ebb97f;
+  --primary-soft: #4a3729;
+  --primary-line: #715a40;
+  --primary-ink: #f5d3ac;
+
+  --accent: #96b49d;
+  --accent-dark: #abcab1;
+  --accent-soft: #364038;
+  --accent-line: #4f5f53;
+
+  --warn: #e7b269;
+  --warn-soft: #483a29;
+  --warn-line: #655234;
+  --warn-ink: #f9d394;
+
+  --danger: #da7e68;
+  --danger-soft: #4d342f;
+  --danger-line: #6e453d;
+  --danger-ink: #f9baab;
+
+  --dot: #fb8069;
+  --glow-1: rgba(220, 163, 108, .16);
+  --glow-2: rgba(150, 180, 157, .12);
+  --bar-bg: rgba(42, 34, 32, .88);
+  --scrim: rgba(0, 0, 0, .64);
+  --media: #120d0b;
+
+  --on-primary-wash: rgba(0, 0, 0, .14);
+
+  --shadow-s: 0 1px 2px rgba(0, 0, 0, .28);
+  --shadow-m: 0 10px 28px -14px rgba(0, 0, 0, .52);
+  --shadow-l: 0 28px 64px -22px rgba(0, 0, 0, .70);
+}
+
+/* ── 0.6 兼容别名 ─────────────────────────────────────────────────────
+   历史规则里出现过这些名字（--bg / --card / --soft / --warn-bg / --expense），
+   统一指到上面的语义色。新代码只写语义名，别名只作「老样式不崩」的保险。 */
+:root,
+:root[data-theme="forest"],
+:root[data-theme="paper"],
+:root[data-theme="ocean"],
+:root[data-theme="night"] {
+  --bg: var(--paper);
+  --bg-soft: var(--paper-2);
+  --card: var(--surface);
+  --soft: var(--surface-3);
+  --warn-bg: var(--warn-soft);
+  --expense: var(--danger);
+  --income: var(--accent);
+  --ring: 0 0 0 3px var(--primary-soft);
+}

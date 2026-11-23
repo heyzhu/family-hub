@@ -30,7 +30,13 @@
     function list(group) {
       const all = d.getTemplates();
       if (!all) return [];
-      return Object.keys(all).map((k) => all[k]).filter((t) => t && t.group === group);
+      /* v4.28.11 需求 6：「记录本提醒」模板从界面下线 ——
+         记录本的提醒文案与待办提醒是同一套语气，留着两个可编辑模板只会让人
+         不知道该改哪个。服务端定义仍在（reminders.js 还在用），只是这里不展示。
+         ★ 用户已经自定义过的那份也一并隐藏，不删库里的值：真需要时把它加回这个过滤条件即可。 */
+      const HIDDEN = ['record_remind'];
+      return Object.keys(all).map((k) => all[k])
+        .filter((t) => t && t.group === group && !HIDDEN.includes(t.key));
     }
 
     function cardHtml(t) {
@@ -42,15 +48,18 @@
             <button type="button" class="btn-ghost btn-sm" data-act="msg-tpl-reset"
                     data-key="${esc(t.key)}">恢复默认</button>
           </div>
-          <div class="tpl-desc">${esc(t.desc)}</div>
-          <label class="field"><span>标题</span>
-            <input type="text" data-tpl="subject" data-key="${esc(t.key)}" maxlength="120"
-                   value="${esc(t.subject)}"></label>
-          <label class="field"><span>正文</span>
-            <textarea data-tpl="body" data-key="${esc(t.key)}" rows="8" data-min-h="0"
-                      autocomplete="off">${esc(t.body)}</textarea></label>
-          <div class="tpl-vars">可用变量：
-            ${t.vars.map((v) => `<code>{{${esc(v.key)}}}</code><i>${esc(v.desc)}</i>`).join('')}
+          <!-- v4.28.11 需求 6：删掉模板下方那行 desc（「待办到点时发出的提醒（邮件正文与企业微信消息同一份内容）」）。
+               卡片标题「待办提醒」+ 两个输入框已经说清楚这是在改什么。 -->
+          <label class="field fld"><input class="fld-inp" type="text" data-tpl="subject" data-key="${esc(t.key)}"
+                 maxlength="120" value="${esc(t.subject)}" placeholder="标题"><span class="flab">标题</span></label>
+          <label class="field fld"><textarea class="fld-inp" data-tpl="body" data-key="${esc(t.key)}" rows="8"
+                 data-min-h="0" autocomplete="off" placeholder="正文">${esc(t.body)}</textarea><span class="flab">正文</span></label>
+          <!-- v4.28.11（图 10）：变量说明从「一排 code + 一段解释」改成「只有 code，
+               解释挂在 title 里」—— 原来那句「{{提前提醒}}「提醒：提前 N 天（…）」整行，
+               没开提前提醒时为空」在手机上会折成三行灰字，比模板本身还长。
+               变量名本身已经说明白了，要细节就悬停（移动端长按）看。 -->
+          <div class="tpl-vars">可用变量
+            ${t.vars.map((v) => `<code title="${esc(v.desc)}">{{${esc(v.key)}}}</code>`).join('')}
           </div>
           <div class="status-ops">
             <button type="button" class="btn-soft btn-sm" data-act="msg-tpl-save"
@@ -66,8 +75,6 @@
       if (!items.length) return '';
       return `
         <div class="sub-head">消息模板</div>
-        <div class="note-box tpl-note">想改措辞就在下面直接改，用 <code>{{变量}}</code> 插入会变化的内容
-          （点「保存这条模板」立即生效，全家适用）。改坏了点「恢复默认」即可还原系统文案。</div>
         ${items.map(cardHtml).join('')}`;
     }
 

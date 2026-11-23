@@ -25,13 +25,14 @@
      只读本地缓存（服务端主题在 /api/me 回来后校正），同步、零请求。
      ★ 必须是**外链**：server.js 的 CSP 是 script-src 'self'，内联脚本会被浏览器直接拒绝执行。 -->
 <script src="theme-boot.js"></script>
+<link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
 <!-- ═══ 启动骨架屏：先验会话再决定去哪，避免登录页闪一下 ═══ -->
 <div id="boot-screen" class="boot">
-  <div class="boot-logo">🏠</div>
+  <div class="boot-logo"><img src="icons/icon-192.png" alt="" width="52" height="52"></div>
   <div class="boot-name" id="boot-name">我们一家</div>
   <div class="boot-bar"><i></i></div>
 </div>
@@ -40,7 +41,7 @@
 <div id="auth-screen" class="auth hidden">
   <div class="auth-card">
     <div class="auth-brand">
-      <div class="auth-logo">🏠</div>
+      <div class="auth-logo"><img src="icons/icon-192.png" alt="" width="64" height="64"></div>
       <h1 id="auth-title">我们一家</h1>
       <p class="auth-sub">一个网址，一家人的日程、相册与重要记录</p>
     </div>
@@ -52,14 +53,8 @@
 
     <!-- 登录 -->
     <form id="form-login" class="auth-form" autocomplete="on">
-      <label class="field">
-        <span>用户名</span>
-        <input type="text" name="username" autocomplete="username" required placeholder="你的登录名">
-      </label>
-      <label class="field">
-        <span>密码</span>
-        <input type="password" name="password" autocomplete="current-password" required placeholder="密码">
-      </label>
+      <label class="field fld"><input class="fld-inp" type="text" name="username" autocomplete="username" required placeholder="你的登录名"><span class="flab">用户名</span></label>
+      <label class="field fld"><input class="fld-inp" type="password" name="password" autocomplete="current-password" required placeholder="密码"><span class="flab">密码</span></label>
       <button type="submit" class="btn-primary btn-block">登录</button>
       <p class="auth-hint">登录后 <b>1 天内</b>再次打开本页面无需重新登录。</p>
       <!-- v4.26.0：忘记密码入口。用 button 而不是 <a href="#">，避免误触锚点跳转/把地址栏改成 /#。 -->
@@ -71,22 +66,10 @@
 
     <!-- 注册 -->
     <form id="form-register" class="auth-form hidden" autocomplete="on">
-      <label class="field">
-        <span>用户名</span>
-        <input type="text" name="username" autocomplete="username" required placeholder="2-20 位中英文、数字或下划线">
-      </label>
-      <label class="field">
-        <span>昵称</span>
-        <input type="text" name="display_name" autocomplete="nickname" required placeholder="家人看到的名字，如「妈妈」">
-      </label>
-      <label class="field">
-        <span>密码</span>
-        <input type="password" name="password" autocomplete="new-password" required placeholder="至少 6 位">
-      </label>
-      <label class="field">
-        <span>确认密码</span>
-        <input type="password" name="password2" autocomplete="new-password" required placeholder="再输一次">
-      </label>
+      <label class="field fld"><input class="fld-inp" type="text" name="username" autocomplete="username" required placeholder="2-20 位中英文、数字或下划线"><span class="flab">用户名</span></label>
+      <label class="field fld"><input class="fld-inp" type="text" name="display_name" autocomplete="nickname" required placeholder="家人看到的名字，如「妈妈」"><span class="flab">昵称</span></label>
+      <label class="field fld"><input class="fld-inp" type="password" name="password" autocomplete="new-password" required placeholder="至少 6 位"><span class="flab">密码</span></label>
+      <label class="field fld"><input class="fld-inp" type="password" name="password2" autocomplete="new-password" required placeholder="再输一次"><span class="flab">确认密码</span></label>
       <button type="submit" class="btn-primary btn-block">创建账号</button>
       <p class="auth-hint" id="register-hint">第一位注册的家庭成员将自动成为管理员。</p>
     </form>
@@ -99,7 +82,7 @@
 <div id="app-screen" class="app hidden">
   <header class="topbar">
     <div class="topbar-left">
-      <span class="topbar-logo">🏠</span>
+      <span class="topbar-logo"><img src="icons/icon-192.png" alt="" width="28" height="28"></span>
       <span class="topbar-title" id="topbar-title">我们一家</span>
     </div>
     <div class="topbar-right">
@@ -119,7 +102,7 @@
   <nav class="tabbar" id="tabbar">
     <!-- v4.11.0：桌面端侧栏顶部的品牌区（手机端由 CSS 隐藏） -->
     <div class="rail-brand">
-      <span class="rb-logo">🏠</span>
+      <span class="rb-logo"><img src="icons/icon-192.png" alt="" width="40" height="40"></span>
       <span class="rb-name" id="rail-name">我们一家</span>
     </div>
     <button type="button" data-tab="calendar" class="on"><span class="ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18"/><path d="M8.5 15.5l2 2 4-4"/></svg></span><span>待办</span></button>

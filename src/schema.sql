@@ -82,16 +82,37 @@ CREATE TABLE IF NOT EXISTS todos (
   -- v4.10.0：跨天待办。''= 单日（结束日就是 todo_date）。
   -- 规则：end_date 非空时必须 >= todo_date；todo_date 为空时 end_date 强制为空；与重复互斥。
   end_date     TEXT    NOT NULL DEFAULT '',
+  -- v4.28.7：「结束重复」的终止条件（只对重复事项有意义，与上面的 end_date 是两回事：
+  --   end_date 是「跨天待办的结束日」，repeat_end_* 是「这个重复规则什么时候不再重复」）。
+  --   never = 永不结束；date = 到 repeat_end_date 为止；count = 累计成功推送 repeat_end_count 次后结束。
+  repeat_end_mode   TEXT    NOT NULL DEFAULT 'never' CHECK (repeat_end_mode IN ('never','date','count')),
+  repeat_end_date   TEXT    NOT NULL DEFAULT '',
+  repeat_end_count  INTEGER NOT NULL DEFAULT 0,
+  -- 已成功推送的提醒次数（只在「真的发出去」时 +1，失败不算 —— 否则失败多了会提前结束）。
+  repeat_sent_count INTEGER NOT NULL DEFAULT 0,
+  -- 自动结束的时刻；留痕而不清 repeat 规则，历史落点仍能在日历上看到，也能显示「已结束重复」。
+  repeat_ended_at   TEXT    NOT NULL DEFAULT '',
   done         INTEGER NOT NULL DEFAULT 0,
   remind       INTEGER NOT NULL DEFAULT 1,
   -- v4.22.0 需求 1：每条待办自己的「提前几天提醒」。
   --   -1 = 跟随家庭设置（默认，老数据行为不变）；0–5 = 这条待办自己指定，并**覆盖**全局值。
+  -- ★ v4.28.7 起它只作为「家庭默认按天」的兼容列保留；单条待办的真实提前量走下面两列，
+  --   两者都写了时以 value/unit 为准（value=-1 才回落到这一列）。
   remind_advance_days INTEGER NOT NULL DEFAULT -1,
+  -- v4.28.7：提前提醒的「数值 + 单位」。value = -1 表示跟随家庭设置（按天）。
+  --   单位 minute/hour/day 统一在 reminders.advanceMsOf() 换算成毫秒偏移，
+  --   localRemindMoment() 直接减毫秒 —— 所以「提前 30 分钟」是真的 30 分钟后提醒，
+  --   不是「按天四舍五入」。
+  remind_advance_value INTEGER NOT NULL DEFAULT -1,
+  remind_advance_unit  TEXT    NOT NULL DEFAULT 'day',
   -- v4.22.0 需求 2：是否由「一句话添加」（网页 / 微信）创建。1 = 是。
   --   这类待办每天重复、只进「待办列表」，不占「周期提醒」卡；
   --   ★ v4.28.0 起与所有重复事项同口径：勾选只表示「今天不再提醒」，
   --     从待办列表移除、**不进「已完成」**（明天照常回来）。
   quick        INTEGER NOT NULL DEFAULT 0,
+  -- v4.28.11 需求 3：这条待办是从记录本哪条记录带进来的（0 = 不是）。
+  --   只用于卡片角标与推送里标一句来源，不参与任何调度判断。
+  record_id    INTEGER NOT NULL DEFAULT 0,
   -- v4.6.0：催促完成。0 = 不催；1–60 = 到点后每隔这么多分钟用企业微信催一次
   urge_minutes INTEGER NOT NULL DEFAULT 0,
   urge_last_at TEXT    NOT NULL DEFAULT '',
@@ -104,6 +125,10 @@ CREATE TABLE IF NOT EXISTS todos (
   urge_window_start TEXT NOT NULL DEFAULT '08:00',      -- 静默时段（本地时刻 HH:MM）
   urge_window_end   TEXT NOT NULL DEFAULT '22:00',
   urge_start_at     TEXT NOT NULL DEFAULT '',           -- 催促开始时刻 HH:MM，''= 首次提醒时刻
+  -- v4.28.6：重复事项的催促计数属于「哪一天的落点」。跨天时必须把 urge_count 清零重来，
+  --   否则每天的事项第二天会直接卡在 stopped_by_max_count / stopped_by_deadline 上。
+  --   一次性待办始终为 ''。
+  urge_occ_date     TEXT NOT NULL DEFAULT '',
   reminded_at  TEXT,
   remind_key   TEXT    NOT NULL DEFAULT '',
   visibility   TEXT    NOT NULL DEFAULT 'family' CHECK (visibility IN ('family','private')),
@@ -451,12 +476,15 @@ CREATE TABLE IF NOT EXISTS todo_nag_logs (
   nag_seq    INTEGER NOT NULL,                        -- = 本次发送前 todos.urge_count 的值
   -- v4.28.5：催促按用户所选渠道发，飞书 / 钉钉群机器人也要能在流水里记真实通道
   channel    TEXT    NOT NULL CHECK (channel IN ('wecom','email','feishu','dingtalk')),
+  -- v4.28.6：这条催促属于哪个落点（一次性待办为空串）。
+  -- 重复事项每天把 urge_count 清零、nag_seq 从 0 重数，唯一键必须带上它，否则第二天被误判成重复。
+  occ_date   TEXT    NOT NULL DEFAULT '',
   msg_type   TEXT    NOT NULL DEFAULT '',
   sent_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   -- ★ 默认 'pending'：先占位再发送，发完更新成 success/fail（dedup 保留给将来）
   delivered  TEXT    NOT NULL DEFAULT 'pending' CHECK (delivered IN ('pending','success','fail','dedup')),
   error_code TEXT    NOT NULL DEFAULT '',
-  UNIQUE (todo_id, user_id, nag_seq, channel)
+  UNIQUE (todo_id, user_id, nag_seq, channel, occ_date)
 );
 CREATE INDEX IF NOT EXISTS idx_nag_logs_at ON todo_nag_logs (sent_at);
 

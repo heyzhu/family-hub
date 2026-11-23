@@ -19,9 +19,9 @@
 (function () {
   'use strict';
 
-  var THEMES = ['forest', 'paper', 'ocean'];
+  var THEMES = ['forest', 'paper', 'ocean', 'night'];
   // 与 styles.css 里各主题的 --paper 保持一致：手机地址栏跟着底色走，才不会「奶油页面 + 白地址栏」
-  var BAR = { forest: '#f4f8f5', paper: '#faf7f2', ocean: '#f5f8fd' };
+  var BAR = { forest: '#f4f8f5', paper: '#faf7f2', ocean: '#f5f8fd', night: '#2a2220' };
 
   var picked = null;
   try {

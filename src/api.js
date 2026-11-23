@@ -288,6 +288,13 @@ const nowIso = () => new Date().toISOString();
  *   避免逐行查库（N 次 settings 读）。要的是「前端显示的时间」与「服务端真正发信的时间」同源，
  *   所以这里复用 reminders 的同一套计算，不另写一份。
  */
+/** v4.28.7：把 UTC 瞬时还原成某个时区下的 HH:MM（列表展示「下次提醒几点」用） */
+const clockOfMoment = (d, tzOffsetMinutes) => {
+  const t = new Date(d.getTime() + Number(tzOffsetMinutes || 0) * 60000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(t.getUTCHours())}:${p(t.getUTCMinutes())}`;
+};
+
 const shapeTodo = (r, me, ctx) => {
   /* v4.10.0（A4=①）：规则读取统一走「repeat_rule 优先、repeat 翻译回落」。
      repeat 字段继续回显旧枚举值（老前端兼容），repeatRule 是唯一真相（新枚举）。 */
@@ -311,10 +318,12 @@ const shapeTodo = (r, me, ctx) => {
     remind: !!r.remind,
     /* v4.22.0 需求 1：这条待办自己设的提前天数（-1 = 跟随家庭设置）。
        下面的 advanceDays 是**实际生效值**（自己设了就是自己，否则取全局）。 */
-    remindAdvanceDays: Number(r.remind_advance_days) >= 0 && Number(r.remind_advance_days) <= 5
+    remindAdvanceDays: Number(r.remind_advance_days) >= 0 && Number(r.remind_advance_days) <= 29
       ? Number(r.remind_advance_days) : -1,
     /* v4.22.0 需求 2：一句话添加（网页 / 微信）的待办。只进待办列表，不占「周期提醒」卡。 */
     quick: !!r.quick,
+    /* v4.28.11 需求 3：来源记录 id（0 = 不是从记录本带进来的）。前端据此打「记录本」角标。 */
+    recordId: Number(r.record_id) || 0,
     // v4.6.0 需求 3：催促完成（0 = 不催；1–60 分钟一催）
     urgeMinutes: Number(r.urge_minutes) || 0,
     urgeLastAt: r.urge_last_at || '',
@@ -337,6 +346,24 @@ const shapeTodo = (r, me, ctx) => {
     nextRemindKey: '',
     nextRemindTime: '',
     advanceDays: 0,
+    /* v4.28.7：提前量的原始值 / 单位 / 中文文案。
+       编辑表单要回填「5 + 分钟」，列表要显示「提前 5 分钟」——
+       都不是「几天」能表达的，所以单列出来，advanceDays 只留给按天的落点判断。 */
+    advanceValue: -1,
+    advanceUnit: 'day',
+    advanceText: '',
+    /* v4.28.7：结束重复（never / date / count） */
+    repeatEndMode: 'never',
+    repeatEndDate: '',
+    repeatEndCount: 0,
+    repeatSentCount: 0,
+    repeatEndedAt: '',
+    /* v4.28.8：系列是否已收口（按时间 / 按次数 / 手动结束）。
+       前端据此把「下次提醒」换成「已结束」，日历也不再画它的落点。 */
+    repeatEnded: false,
+    /* v4.28.7：一次性事项「已过期」= 过了提醒时刻仍未完成。
+       ★ 重复事项恒为 false —— 它们每天重置，标「已过期」只会每天闪一次。 */
+    expired: false,
     // v4.19.0 需求 2-1：列表要把「几点提醒、这个点从哪来」讲清楚（仅重复事项填充）
     remindTime: '',
     remindTimeIsDefault: false,
@@ -350,12 +377,56 @@ const shapeTodo = (r, me, ctx) => {
        前端勾选时把这一列回传，服务端才能标到正确的落点上（提前提醒时落点在将来）。 */
     rowOccDate: '',
   };
-  /* 实际生效的提前天数：这条待办自己设了 0–5 就用它，否则跟随家庭设置。
-     ★ 与 reminders 扫描器共用 advanceOf()，保证「列表显示的下次提醒」= 「真正发信的时间」。 */
-  const effAdv = reminders.advanceOf(r, ctx ? ctx.advanceDays : 0);
-  out.advanceDays = effAdv;
+  /* 实际生效的提前量：这条待办自己设了就用它（分钟/小时/天），否则跟随家庭设置。
+     ★ 与 reminders 扫描器共用 advanceSpecOf()/advanceMsOf()，保证
+       「列表显示的下次提醒」= 「真正发信的时间」。分钟级提前量不能用「几天」表达，
+       所以 effAdvDays 只用于「今天这一行代表哪个落点」这种按天的判断。 */
+  const advSpec = reminders.advanceSpecOf(r, ctx ? ctx.advanceDays : 0);
+  const advMs = reminders.advanceMsOf(advSpec);
+  const effAdvDays = Math.floor(advMs / 86400000);
+  /* ★ v4.28.9：advanceValue / advanceUnit 下发的是**这条待办自己设的值**
+     （-1 = 没设、跟随家庭默认），不是「实际生效值」。
+     下发生效值会让家庭默认设了提前天数时，每一条待办在编辑页里都显示成「提前提醒」，
+     用户一保存就把家庭默认写死成这条待办自己的设置 —— 这就是
+     「现有待办（含重复事项）全变成提前提醒」的根因。
+     要「实际会提前多久」看 advanceText / advanceDays（下面两个仍是生效值）。 */
+  const ownV = Number(r.remind_advance_value);
+  const ownD = Number(r.remind_advance_days);
+  const ownAdvValue = Number.isInteger(ownV) && ownV > 0 ? ownV
+    : (Number.isInteger(ownD) && ownD > 0 && ownD <= 29 ? ownD : -1);
+  out.advanceValue = ownAdvValue;
+  out.advanceUnit = ownAdvValue > 0 && ['minute', 'hour', 'day'].includes(String(r.remind_advance_unit))
+    ? String(r.remind_advance_unit) : 'day';
+  out.advanceText = reminders.advanceLabelOf(advSpec);
+  out.advanceDays = effAdvDays;
+  /* v4.28.7：结束重复的状态透传（前端要显示「已结束」并回填编辑表单） */
+  out.repeatEndMode = String(r.repeat_end_mode || 'never');
+  out.repeatEndDate = String(r.repeat_end_date || '');
+  out.repeatEndCount = Number(r.repeat_end_count) || 0;
+  out.repeatSentCount = Number(r.repeat_sent_count) || 0;
+  out.repeatEndedAt = String(r.repeat_ended_at || '');
+  /* v4.28.8：这条重复系列是否已经收口（按时间到期 / 按次数发够 / 手动结束）。
+     ★ 与 reminders.repeatEnded() 同一实现 —— 列表显示、日历落点、发信调度
+       必须都认这一个判断，否则会出现「列表说已结束、后台还在发」。 */
+  out.repeatEnded = !!ruleName && reminders.repeatEnded(r, ctx ? ctx.todayKey : '');
+  /* v4.28.7：过期判定 —— 只针对一次性事项。
+     截止点 = (end_date || todo_date) + (end_time || start_time || 默认提醒时间)。
+     用服务端算而不是前端算：时区口径必须跟发信一致，否则「已过期」和「还会提醒」会打架。 */
+  if (!ruleName && !out.done && out.date) {
+    const endKey = (out.endDate && out.endDate > out.date) ? out.endDate : out.date;
+    const due = reminders.localRemindMomentMs(
+      { todo_date: endKey, start_time: out.endTime || out.startTime },
+      ctx ? ctx.defaultTime : '08:00',
+      ctx ? ctx.tzOffsetMinutes : 0,
+      0,
+    );
+    out.expired = !!due && Date.now() > due.getTime();
+  }
   if (ctx && ruleName && out.date) {
-    const src = { date: out.date, repeat: r.repeat || '', repeat_rule: r.repeat_rule || '' };
+    /* ★ 把整行（含 repeat_end_* / repeat_sent_count / repeat_ended_at）交给 repeat.js：
+       它的 isOccurrence() 现在会自己排掉「已经结束」的落点，
+       不必在这里再写一遍结束条件（两处判断迟早会走偏）。 */
+    const src = Object.assign({}, r, { date: out.date });
     const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(out.startTime || ''))
       ? out.startTime : ctx.defaultTime;
     /* v4.28.0：今天这一行到底代表**哪一个落点**。
@@ -363,7 +434,7 @@ const shapeTodo = (r, me, ctx) => {
        ② 否则今天本身就是落点（提前 0 天时与 ① 等价；提前 > 0 且提醒日没勾掉时
           仍然让它当天出现在列表里，作为「今天就是这件事」的兜底）。
        两处都用 repeat.js 判落点，绝不自己拼日期比较。 */
-    const remindDayOcc = shiftDateKey(ctx.todayKey, effAdv);
+    const remindDayOcc = shiftDateKey(ctx.todayKey, effAdvDays);
     if (Repeat.isOccurrence(src, remindDayOcc)) out.rowOccDate = remindDayOcc;
     else if (Repeat.isOccurrence(src, ctx.todayKey)) out.rowOccDate = ctx.todayKey;
     /* 「今天这一行」是否已完成 —— 标记按落点日存，所以用 rowOccDate 取，
@@ -377,21 +448,30 @@ const shapeTodo = (r, me, ctx) => {
          · 没开提前提醒：今天 08:00 过了 → 下一次就是明天 08:00；
          · 开了提前 N 天：提醒时刻按 occurrences - N 天算（与 reminders 同一套），
            所以最多要走 提前天数 + 1 步。
-       循环上限 14 次：提前最多 5 天，留足余量，同时防住任何意外的死循环。 */
+       循环上限 14 次：提前最多 7 天（168 小时），留足余量，同时防住任何意外的死循环。 */
     let occ = Repeat.nextOccurrence(src, ctx.todayKey);
     for (let i = 0; occ && i < 14; i++) {
-      const moment = reminders.localRemindMoment(
+      /* v4.28.8：落点被「结束重复」挡住 → 系列到此为止，不再往后找。
+         旧版没有这一步，于是一条已经结束的每周提醒还会一直显示
+         「下次提醒 下周三」，用户只能靠点进编辑框才知道它早停了。 */
+      if (reminders.repeatEnded(r, occ)) { occ = ''; break; }
+      const moment = reminders.localRemindMomentMs(
         { todo_date: occ, start_time: out.startTime },
-        ctx.defaultTime, ctx.tzOffsetMinutes, effAdv,
+        ctx.defaultTime, ctx.tzOffsetMinutes, advMs,
       );
       if (!moment || moment.getTime() > Date.now()) break;
       occ = Repeat.nextOccurrence(src, shiftDateKey(occ, 1));
     }
     if (occ) {
+      const m = reminders.localRemindMomentMs(
+        { todo_date: occ, start_time: out.startTime }, ctx.defaultTime, ctx.tzOffsetMinutes, advMs);
       out.nextOccurrence = occ;
-      out.nextRemindKey = reminders.remindWallKey(occ, effAdv);
-      out.nextRemindTime = time;
-      out.advanceDays = effAdv;
+      /* v4.28.7：分钟级提前量可能把提醒挪到前一天，所以「下次提醒是哪一天」
+         不能再按「落点 - 天数」推，直接用真实的提醒瞬时反推墙上日期与时刻。 */
+      out.nextRemindKey = m
+        ? reminders.wallDateKey(m, ctx.tzOffsetMinutes)
+        : reminders.remindWallKey(occ, effAdvDays);
+      out.nextRemindTime = m ? clockOfMoment(m, ctx.tzOffsetMinutes) : time;
       out.remindTime = time;
       out.remindTimeIsDefault = time === ctx.defaultTime && String(out.startTime || '') !== time;
     }
@@ -602,10 +682,63 @@ function doneMarksSet(dayKey) {
 function pickAdvanceDays(v, fallback = -1) {
   if (v == null || v === '') return fallback;
   const n = Math.round(Number(v));
-  if (!Number.isFinite(n) || n < -1 || n > 5) {
-    throw fail('提前提醒天数需为 0-5 天（-1 表示跟随家庭设置）');
+  if (!Number.isFinite(n) || n < -1 || n > 29) {
+    throw fail('提前提醒天数需为 0-29 天（-1 表示跟随家庭设置）');
   }
   return n;
+}
+
+/* ── v4.28.7：提前提醒的「值 + 单位」与「结束重复」 ─────────────────────
+   ★ 校验上限与 reminders.ADVANCE_UNIT_MAX 保持一致：
+     分钟 1-59、小时 1-23、天 0-29（0 天 = 到点；v4.28.11 由 59 / 23 / 29 封顶）。
+     value 传 -1 表示跟随家庭设置；此时单位没有意义，统一落成 'day'。 */
+const ADVANCE_UNIT_CAP = { minute: 59, hour: 23, day: 29 };
+
+function pickAdvanceSpec(rawValue, rawUnit, fallback = { value: -1, unit: 'day' }) {
+  const v = rawValue == null || rawValue === '' ? fallback.value : Math.round(Number(rawValue));
+  const unit0 = String(rawUnit || fallback.unit || 'day');
+  const unit = ADVANCE_UNIT_CAP[unit0] ? unit0 : 'day';
+  if (!Number.isFinite(v) || v < -1) throw fail('提前提醒的数值不合法');
+  if (v === -1) return { value: -1, unit: 'day' };
+  const max = ADVANCE_UNIT_CAP[unit];
+  if (v > max) throw fail(`提前提醒不能超过 ${max} ${unit === 'minute' ? '分钟' : unit === 'hour' ? '小时' : '天'}`);
+  return { value: v, unit };
+}
+
+const REPEAT_END_MODES = new Set(['never', 'date', 'count']);
+
+/**
+ * v4.28.11 需求 5：提前量 × 重复规则的语义约束。
+ *
+ * 前端已经把不可选的单位置灰了，这里再拦一道 —— 依据是「界面之外还有别的入口」
+ * （微信一句话、以后可能的批量导入）。放过去的结果不是报错，而是**提醒在错误的时刻响**：
+ *   · 每天重复 + 提前 1 天 = 提醒落在「昨天的那个落点」上，等于永远提醒昨天的事；
+ *   · 每周重复 + 提前 7 天 = 正好压到上一次那天，同理。
+ */
+function checkAdvanceWithRepeat(spec, repeat) {
+  if (!spec || !Number.isFinite(spec.value) || spec.value <= 0) return;
+  if (spec.unit !== 'day') return;
+  if (repeat === 'daily') throw fail('每天重复的事项不能按天提前，请把单位换成小时');
+  if (repeat === 'weekly' && spec.value > 6) {
+    throw fail('每周重复的事项按天最多提前 6 天（再多就压到上一次了）');
+  }
+}
+
+/** 结束重复：never / date / count。三者的附加字段互相排斥，这里一次清干净。 */
+function pickRepeatEnd(modeIn, dateIn, countIn, date) {
+  const mode = REPEAT_END_MODES.has(String(modeIn || '')) ? String(modeIn) : 'never';
+  if (mode === 'date') {
+    const d = optDate(dateIn, '结束重复日期');
+    if (!d) throw fail('选择「按时间结束」时请填写结束日期');
+    if (date && d < date) throw fail('结束重复的日期不能早于开始日期');
+    return { mode, date: d, count: 0 };
+  }
+  if (mode === 'count') {
+    const n = Math.round(Number(countIn));
+    if (!Number.isFinite(n) || n < 1 || n > 99) throw fail('结束重复的次数需在 1-99 之间');
+    return { mode, date: '', count: n };
+  }
+  return { mode: 'never', date: '', count: 0 };
 }
 
 /* 列表一次最多返回多少条。★ v4.20.0（审查 W-9）：**这个上限不再是静默的** ——
@@ -696,9 +829,16 @@ const todos = {
     if (!row) throw fail('事项不存在或无权访问', 404);
     if (row.user_id !== me.id) throw fail('只有创建者可以结束这条重复提醒', 403);
     if (!String(row.repeat_rule || '') && !pickRepeat(row.repeat)) throw fail('这条待办不是重复事项');
+    /* v4.28.8：手动结束与「按时间 / 按次数」自动结束走**同一条路** —— 只记终点，不清规则。
+       ★ 旧实现把 repeat/repeat_rule 清空并 done=1：这条事项会从日历、周期提醒里彻底消失，
+         用户哪天想「重新打开」时连入口都找不回来；而且它与自动结束的表现完全不同
+         （一个变成一次性已完成、一个留在列表里显示已结束），很难让人相信是同一件事。
+       现在：保留规则 + 记终点 → 周期卡里显示「已结束」，点开编辑把结束条件改回「永不」即可恢复。 */
+    const now = nowIso();
     db.run(
-      "UPDATE todos SET repeat = '', repeat_rule = '', done = 1, reminded_at = '', remind_key = '', updated_at = ? WHERE id = ?",
-      [nowIso(), id],
+      "UPDATE todos SET repeat_ended_at = ?, urge_status = 'idle',"
+      + " reminded_at = '', remind_key = '', updated_at = ? WHERE id = ?",
+      [now, now, id],
     );
     return shapeTodo(db.get('SELECT * FROM todos WHERE id = ?', [id]), me, remindCtx());
   },
@@ -730,13 +870,18 @@ const todos = {
     const rs = reminders.loadRemindSettings();
     let day = optDate((b || {}).date, '日期')
       || reminders.wallDateKey(new Date(), rs.tzOffsetMinutes);
-    const occOf = (k) => Repeat.isOccurrence({ date: row.todo_date, repeat_rule: rule }, k);
+    /* ★ v4.28.8：传整行，让 repeat.js 顺便判「系列是否已结束」——
+       结束之后不该再能勾某一天（它已经没有落点了）。 */
+    const occOf = (k) => Repeat.isOccurrence(Object.assign({}, row, { date: row.todo_date }), k);
     if (!occOf(day)) {
       /* v4.28.0：提前提醒的那一天，前端手里只有「今天」，而今天并不是落点。
          这里把「今天」翻译成它对应的落点（今天 + 提前天数）—— 只在前端传的就是
          墙上今天时兜底，避免旧页面（缓存里的 app.js）点一下直接 400。 */
       const todayKey = reminders.wallDateKey(new Date(), rs.tzOffsetMinutes);
-      const adv = reminders.advanceOf(row, rs.remindAdvanceDays);
+      /* v4.28.7：提前量可能是分钟级，落点映射只按「跨了几天」算（向下取整），
+         精确时刻由扫描器用毫秒算，这里只负责把「今天」翻成对应的落点日。 */
+      const advMs = reminders.advanceMsOf(reminders.advanceSpecOf(row, rs.remindAdvanceDays));
+      const adv = Math.floor(advMs / 86400000);
       const mapped = reminders.shiftDateKey(todayKey, adv);
       if (day === todayKey && occOf(mapped)) day = mapped;
       else throw fail('这一天不是这条重复事项的日期');
@@ -770,16 +915,35 @@ const todos = {
     /* 催促状态机（文档 5.10.1-4）：开催促 → pending（urge_count=0）；不开 → idle。
        urge_start_at 缺省走「首次提醒时刻」，只有显式传了才存。 */
     const urgeStatus = urgeMinutes > 0 ? 'pending' : 'idle';
-    /* v4.22.0 需求 1 / 2：提前天数（-1 跟随家庭设置）+ 是否一句话创建 */
-    const remindAdvance = pickAdvanceDays(b.remindAdvanceDays, -1);
+    /* v4.22.0 需求 1 / v4.28.7：提前量（值 + 单位）+ 是否一句话创建。
+       ★ 兼容列 remind_advance_days 只在「单位是天」时同步写 —— 老前端 / 老库读到它
+         仍然是「提前几天」；分钟/小时级时它落成 -1（= 跟随），真相在 value/unit 两列。 */
+    const advSpec = pickAdvanceSpec(b.remindAdvanceValue, b.remindAdvanceUnit, {
+      value: (b.remindAdvanceDays == null || b.remindAdvanceDays === '')
+        ? -1 : pickAdvanceDays(b.remindAdvanceDays, -1),
+      unit: 'day',
+    });
+    const remindAdvance = advSpec.unit === 'day' ? advSpec.value : -1;
+    checkAdvanceWithRepeat(advSpec, repeat);     // v4.28.11：每天 / 每周的按天提前上限
+    /* v4.28.7：结束重复只在重复事项上有意义 —— 非重复事项一律落成 never，
+       免得「取消重复」之后库里还留着一条结束日期，下次再开重复就带着旧条件。 */
+    const repEnd = repeat
+      ? pickRepeatEnd(b.repeatEndMode, b.repeatEndDate, b.repeatEndCount, date)
+      : { mode: 'never', date: '', count: 0 };
     const quick = b.quick ? 1 : 0;
+    /* v4.28.11 需求 3：来源记录（0 = 不是从记录本带进来的）。只做标记，不做任何校验联动 ——
+       记录后来被删了，这条待办照样按自己的日期提醒。 */
+    const recordId = Number.isInteger(Number(b.recordId)) && Number(b.recordId) > 0
+      ? Number(b.recordId) : 0;
     const res = db.run(
       `INSERT INTO todos (user_id, owner_name, title, note, todo_date, end_date, start_time, end_time,
                           location, participants, priority, repeat, repeat_rule, done, remind,
-                          remind_advance_days, quick, urge_minutes,
+                          remind_advance_days, remind_advance_value, remind_advance_unit,
+                          repeat_end_mode, repeat_end_date, repeat_end_count, repeat_sent_count, repeat_ended_at,
+                          quick, record_id, urge_minutes,
                           urge_status, urge_max_count, urge_window_start, urge_window_end, urge_start_at,
                           visibility, visible_to, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         me.id, me.display_name, title, str(b.note, 2000, '备注'),
         date, endDate, timeOnly(b.startTime, '开始时间'), timeOnly(b.endTime, '结束时间'),
@@ -792,7 +956,15 @@ const todos = {
         repeat ? 0 : (b.done ? 1 : 0),
         b.remind == null ? 1 : (b.remind ? 1 : 0),   // 默认开启提醒
         remindAdvance,
+        advSpec.value,
+        advSpec.unit,
+        repEnd.mode,
+        repEnd.date,
+        repEnd.count,
+        0,
+        '',
         quick,
+        recordId,
         urgeMinutes,
         urgeStatus,
         pickUrgeMaxCount(b.urgeMaxCount),
@@ -852,10 +1024,44 @@ const todos = {
 
     const startTime = b.startTime == null ? row.start_time : timeOnly(b.startTime, '开始时间');
     const remind = b.remind == null ? (row.remind ? 1 : 0) : (b.remind ? 1 : 0);
-    /* v4.22.0 需求 1：提前天数。不传 = 保持原值；-1 = 跟随家庭设置。 */
-    const remindAdvance = b.remindAdvanceDays == null
-      ? (Number(row.remind_advance_days) >= 0 ? Number(row.remind_advance_days) : -1)
-      : pickAdvanceDays(b.remindAdvanceDays, -1);
+    /* v4.22.0 需求 1 / v4.28.7：提前量。不传 = 保持原值；-1 = 跟随家庭设置。
+       新客户端传 value/unit；只传 remindAdvanceDays 的老客户端仍然按天处理。 */
+    const curAdv = Number(row.remind_advance_value) >= 0
+      ? { value: Number(row.remind_advance_value), unit: String(row.remind_advance_unit || 'day') }
+      : {
+        value: Number(row.remind_advance_days) >= 0 ? Number(row.remind_advance_days) : -1,
+        unit: 'day',
+      };
+    const advSpec = pickAdvanceSpec(b.remindAdvanceValue, b.remindAdvanceUnit,
+      b.remindAdvanceDays == null ? curAdv : { value: pickAdvanceDays(b.remindAdvanceDays, -1), unit: 'day' });
+    const remindAdvance = advSpec.unit === 'day' ? advSpec.value : -1;
+    checkAdvanceWithRepeat(advSpec, repeat);     // v4.28.11：每天 / 每周的按天提前上限
+    /* v4.28.7：结束重复。改重复规则时把「已推送次数」与「终点」一起清零 ——
+       把「每天」改成「每周」之后还沿用旧计数，会让新的规则一上来就快到期。 */
+    const oldRepeat = String(row.repeat_rule || '') || pickRepeat(row.repeat);
+    const repeatChanged = !!repeat !== !!oldRepeat || repeat !== oldRepeat;
+    const repEnd = repeat
+      ? pickRepeatEnd(
+        b.repeatEndMode == null ? String(row.repeat_end_mode || 'never') : b.repeatEndMode,
+        b.repeatEndDate == null ? String(row.repeat_end_date || '') : b.repeatEndDate,
+        b.repeatEndCount == null ? (Number(row.repeat_end_count) || 0) : b.repeatEndCount,
+        date,
+      )
+      : { mode: 'never', date: '', count: 0 };
+    const repeatSentCount = (repeat && !repeatChanged) ? (Number(row.repeat_sent_count) || 0) : 0;
+    /* v4.28.8：结束条件本身变了（永不 → 按次数、次数改大、日期推后…）也要把
+       「已推送次数 / 收口时刻」清零。
+       ★ 这是旧版最隐蔽的一个坑：只改了结束条件、没改重复规则时，repeatChanged=false，
+         repeat_ended_at 被原样留着 —— 用户明明把「10 次」改成「20 次」或干脆改回「永不」，
+         系列却依然被判为已结束，一次都不会再发。 */
+    const oldEndMode = String(row.repeat_end_mode || 'never');
+    const oldEndDate = String(row.repeat_end_date || '');
+    const oldEndCount = Number(row.repeat_end_count) || 0;
+    const repEndChanged = repeat && (oldEndMode !== repEnd.mode
+      || oldEndDate !== repEnd.date || oldEndCount !== repEnd.count);
+    const finalSentCount = repEndChanged ? 0 : repeatSentCount;
+    const repeatEndedAt = (repeat && !repeatChanged && !repEndChanged)
+      ? String(row.repeat_ended_at || '') : '';
     // 年度重复事项不参与完成状态，始终保持未完成
     const done = repeat ? 0 : (b.done == null ? row.done : (b.done ? 1 : 0));
     // 提醒时点被改到将来的话，允许重新提醒一次（remind_key 也要一起清掉，
@@ -863,12 +1069,12 @@ const todos = {
     // ★ 必须带上「提前天数」：管理员设了提前 3 天提醒时，判定「是否还来得及再发一次」
     //   用的必须是提前之后的时刻，否则改完时间会出现「该提醒却没提醒」。
     const ctx = remindCtx();
-    /* ★ v4.22.0：判断「是否还来得及再发一次」必须用这条待办**实际生效**的提前天数，
-       不能只用全局 —— 单条设了提前 2 天、全局 0 天时，用全局会误判成「已过期」。 */
-    const effAdv = remindAdvance >= 0 ? remindAdvance : ctx.advanceDays;
-    const newMoment = reminders.localRemindMoment(
+    /* ★ v4.22.0 / v4.28.7：判断「是否还来得及再发一次」必须用这条待办**实际生效**的提前量，
+       不能只用全局 —— 单条设了提前 30 分钟、全局 0 天时，用全局会误判成「已过期」。 */
+    const effSpec = advSpec.value >= 0 ? advSpec : { value: ctx.advanceDays, unit: 'day' };
+    const newMoment = reminders.localRemindMomentMs(
       { todo_date: date, start_time: startTime },
-      ctx.defaultTime, ctx.tzOffsetMinutes, effAdv,
+      ctx.defaultTime, ctx.tzOffsetMinutes, reminders.advanceMsOf(effSpec),
     );
     const canRemindAgain = !!(newMoment && newMoment.getTime() > Date.now());
     const remindedAt = canRemindAgain ? null : row.reminded_at;
@@ -899,7 +1105,11 @@ const todos = {
     db.run(
       `UPDATE todos SET title = ?, note = ?, todo_date = ?, end_date = ?, start_time = ?, end_time = ?,
                         location = ?, participants = ?, priority = ?, repeat = ?, repeat_rule = ?, done = ?,
-                        remind = ?, remind_advance_days = ?, urge_minutes = ?, urge_status = ?, urge_count = ?,
+                        remind = ?, remind_advance_days = ?, remind_advance_value = ?, remind_advance_unit = ?,
+                        repeat_end_mode = ?, repeat_end_date = ?, repeat_end_count = ?,
+                        repeat_sent_count = ?, repeat_ended_at = ?,
+                        record_id = ?,
+                        urge_minutes = ?, urge_status = ?, urge_count = ?,
                         urge_max_count = ?, urge_window_start = ?, urge_window_end = ?, urge_start_at = ?,
                         reminded_at = ?, remind_key = ?,
                         visibility = ?, visible_to = ?, updated_at = ?
@@ -919,6 +1129,15 @@ const todos = {
         done,
         remind,
         remindAdvance,
+        advSpec.value,
+        advSpec.unit,
+        repEnd.mode,
+        repEnd.date,
+        repEnd.count,
+        finalSentCount,
+        repeatEndedAt,
+        /* v4.28.11：不传就保留原来源（改标题不该把「来自记录本」抹掉） */
+        b.recordId == null ? row.record_id : (Number(b.recordId) > 0 ? Number(b.recordId) : 0),
         urgeMinutes,
         urgeStatus,
         urgeCount,
@@ -1374,8 +1593,8 @@ function recordRemindPatch(b, row) {
   if (time && !TIME_RE.test(time)) throw fail('提醒时间需为 HH:MM 格式（留空表示跟随家庭设置）');
   let adv = has('remindAdvanceDays') ? Math.round(Number(b.remindAdvanceDays)) : Number(src.remind_advance_days);
   if (!Number.isFinite(adv)) adv = -1;
-  if (has('remindAdvanceDays') && adv !== -1 && (adv < 0 || adv > 5)) {
-    throw fail('提前提醒天数需为 0-5（-1 表示跟随家庭设置）');
+  if (has('remindAdvanceDays') && adv !== -1 && (adv < 0 || adv > 29)) {
+    throw fail('提前提醒天数需为 0-29（-1 表示跟随家庭设置）');
   }
   const channel = has('remindChannel') ? String(b.remindChannel).trim() : String(src.remind_channel || '');
   if (!RECORD_REMIND_CHANNELS.has(channel)) {
@@ -1388,7 +1607,13 @@ function recordRemindPatch(b, row) {
     || (has('remindAdvanceDays') && adv !== (Number.isFinite(Number(src.remind_advance_days)) ? Number(src.remind_advance_days) : -1))
     || (has('remindChannel') && channel !== String(src.remind_channel || ''))
     || (has('remind') && on !== !!src.remind);
-  const at = on ? reminders.recordRemindMoment(time, adv) : '';
+  /* ★ v4.28.6：记录本侧不再自己定时发信 —— 日期 / 时间改由「待办」承担。
+     新界面只提交 remind 一个布尔（没有那三个子项），此时 at 保持原值（新记录就是空），
+     于是 runRecordScan 不会凭空按「默认提醒时间」发一封；记录只作为「想被提醒」的标记，
+     出现在「待办 → 添加 → 记录本提醒」的候选里。
+     老页面 / 老客户端仍带子项时，继续按老逻辑算 remind_at（平滑兼容，不静默丢掉已排定的提醒）。 */
+  const legacySchedule = has('remindTime') || has('remindAdvanceDays') || has('remindChannel');
+  const at = !on ? '' : (legacySchedule ? reminders.recordRemindMoment(time, adv) : String(src.remind_at || ''));
   return {
     remind: on ? 1 : 0,
     time,
@@ -1396,7 +1621,7 @@ function recordRemindPatch(b, row) {
     channel,
     at,
     // 打开提醒、或改过时间/天数时才重新计时；单纯编辑正文不动它
-    resetReminded: !!(on && (touched || !src.remind_at)),
+    resetReminded: !!(on && legacySchedule && (touched || !src.remind_at)),
   };
 }
 
@@ -2053,11 +2278,12 @@ function saveSettings(b) {
     if (!TIME_RE.test(t)) throw fail('默认提醒时间需为 HH:MM 格式');
     put('remind_default_time', t);
   }
-  // 提前几天提醒：0-5。只接受整数，超范围直接拒绝而不是静默忽略 ——
-  // 「保存成功了但没生效」是上一版最让人困惑的问题，这里宁可报错也不假装成功。
+  /* 提前几天提醒：0-29（v4.28.11 收紧）。只接受整数，超范围直接拒绝而不是静默忽略 ——
+     「保存成功了但没生效」是上一版最让人困惑的问题，这里宁可报错也不假装成功。
+     ★ 界面上的「提前提醒天数」已下线，这条校验留给老客户端与接口直调。 */
   if (b.remindAdvanceDays != null) {
     const n = Math.round(Number(b.remindAdvanceDays));
-    if (!Number.isInteger(n) || n < 0 || n > 5) throw fail('提前提醒天数需为 0-5 之间的整数');
+    if (!Number.isInteger(n) || n < 0 || n > 29) throw fail('提前提醒天数需为 0-29 之间的整数');
     put('remind_advance_days', String(n));
   }
   /* v4.21.0 需求 1：消息模板。
@@ -2533,9 +2759,14 @@ function wecomParseTodo(raw, todayKey) {
 /** 企业微信「已完成」：把这个人最近一条未完成待办标记完成，并停止催促 */
 function wecomCompleteTodo(me) {
   const hit = urge.pickToComplete(me.username);
-  if (!hit) return '没有找到未完成的待办（重复事项不需要标记完成，它不会结束）。';
+  if (!hit) return '没有找到未完成的待办（今天没有到点的事项，重复事项也只认今天这一落点）。';
   urge.markDone(hit.id, { via: 'wecom' });
-  return `✅ 已把「${hit.title}」标记为完成，催促到此为止。`;
+  /* v4.28.6：重复事项回「已完成」= 勾掉今天这一落点，整条规则明天照常 —— 文案必须说清，
+     否则用户会以为「每天的事被我永久关掉了」。 */
+  const isRepeat = !!String(hit.repeat_rule || hit.repeat || '');
+  return isRepeat
+    ? `✅ 已把今天的「${hit.title}」标记为完成，明天到点会照常提醒。`
+    : `✅ 已把「${hit.title}」标记为完成，催促到此为止。`;
 }
 
 /* ── v4.8.0 需求 3：关键词查「今日待办」 ─────────────────────
@@ -2586,7 +2817,9 @@ function wecomTodayTodos(me) {
       /* 与待办列表 / 日报预告同一口径（v4.28.0）：今天这一行代表的是
          「今天 + 本条提前天数」那个落点（提前 0 天时就是今天本身），
          用 rowOccDate 取完成标记，勾过的当天不再列出。 */
-      const remindDayOcc = reminders.shiftDateKey(todayKey, reminders.advanceOf(r, gAdv));
+      /* v4.28.7：提前量支持分钟级，落点映射只按「跨了几天」算 */
+      const advMs = reminders.advanceMsOf(reminders.advanceSpecOf(r, gAdv));
+      const remindDayOcc = reminders.shiftDateKey(todayKey, Math.floor(advMs / 86400000));
       const occKey = Repeat.isOccurrence(r, remindDayOcc) ? remindDayOcc
         : (Repeat.isOccurrence(r, todayKey) ? todayKey : '');
       if (!occKey) return false;
@@ -3918,12 +4151,16 @@ async function handle({ method, pathname, query, body, me, token, recordsKey, ip
       if (!me.is_admin) throw fail('只有管理员可以触发报表发送', 403);
       const rs = bills.loadSettings();
       const today = bills.todayKey();
+      /* ★ v4.28.6：试发必须与「到点自动发」同一口径。
+         旧版写死 `shiftDateKey(today, -1)`（永远发昨天），于是选了「当天发当天」的人
+         点试发看到的是昨天的账 —— 报告日期与口径对不上。
+         现在：same_day → 今天；next_day → 昨天。body.dateKey 仍可显式指定。 */
+      const when = rs.reportWhen === 'same_day' ? today : reminders.shiftDateKey(today, -1);
       const out = await bills.sendReports({
-        // 默认发「昨天」的日报；月初顺手带上上个月的月报。也可以用 body 指定。
-        dateKey: String((body || {}).dateKey || reminders.shiftDateKey(today, -1)).slice(0, 10),
+        dateKey: String((body || {}).dateKey || when).slice(0, 10),
         month: String((body || {}).month || '').slice(0, 7) || undefined,
       });
-      return { status: 200, json: { ok: true, ...out, status: bills.getStatus(), dailyTime: rs.dailyTime } };
+      return { status: 200, json: { ok: true, ...out, reportWhen: rs.reportWhen, status: bills.getStatus(), dailyTime: rs.dailyTime } };
     }
 
     /* — 账单增删改查 — */

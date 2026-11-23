@@ -58,13 +58,14 @@
        只留服务端 → 每次打开都先按默认色画一帧，再跳成用户主题（肉眼可见的闪）。
        只留本地   → 换设备就丢了，与「跟着人走」的要求冲突。
        两份并存时**以服务端为准**：/api/me 回来后无条件按它校正一次。 */
-  const THEMES = ['forest', 'paper', 'ocean'];
+  const THEMES = ['forest', 'paper', 'ocean', 'night'];
   const DEFAULT_THEME = 'paper';
   const THEME_KEY = 'fh_theme';
   const THEME_META = {
     forest: { name: '青野', desc: '清新竹绿', paper: '#f4f8f5' },
     paper: { name: '米白', desc: '温柔奶油', paper: '#faf7f2' },
     ocean: { name: '澄蓝', desc: '澄澈海蓝', paper: '#f5f8fd' },
+    night: { name: '暖夜', desc: '奶咖夜读', paper: '#2a2220' },
   };
 
   /** 脏值一律回落到默认主题：宁可显示默认色，也不要整页没有变量可用 */
@@ -365,8 +366,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     selected: todayKey(),
     todoFilter: 'pending',          // 默认只看未完成，打开就是「还要做什么」
     todoQuery: '',
-    todoPageSize: loadPageSize(),   // 每页显示条数（可设置，默认 5）
-    todoShown: loadPageSize(),      // 当前已展开的条数（点「加载更多」递增）
+    todoPageSize: 5,                // v4.28.7：每页条数不再可调，固定 5 条
+    todoShown: 5,                   // 当前已展开的条数（点「加载更多」每次 +5）
+    todoSearchOpen: false,          // v4.28.7：搜索框默认收起，点放大镜才展开
     /* v4.20.0（审查 W-9）：服务端总数与「是否被截断」。
        列表 API 一次最多回 2000 条，超了就是静默丢 —— 这两个字段让界面能明说。 */
     todoTotal: 0,
@@ -375,9 +377,15 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     repeatOpen: false,
     recQuery: '',
     recCategory: '全部',
+    /* v4.28.9 需求 8：记录本搜索默认收起，点分类行最右的放大镜才展开。
+       ★ 必须进 DATA_SIG.records —— 它是界面状态，不进指纹那次 render 会被早退，
+         表现就是「点放大镜完全没反应」（v4.28.7 待办页已经踩过同一个坑）。 */
+    recSearchOpen: false,
     recShowArchived: false,         // 记录本：是否切到「已归档」列表（v1.9.0）
     recHidden: [],                  // 已删除（隐藏）的分类（v1.6.0，随 /api/records 下发）
     postQuery: '',                  // 动态搜索关键词（v1.5.0）
+    /* v4.28.9 需求 6：动态搜索收进标签行的放大镜里，默认收起。同样必须进 DATA_SIG。 */
+    postSearchOpen: false,
     postTag: '',
     // v1.9.0：动态页双视图 —— feed（动态流，默认）/ calendar（按日历看，带当天条数）
     postView: 'feed',
@@ -436,6 +444,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     billKind: '',                   // '' | income | expense
     billCategory: '全部',
     billQuery: '',
+    /* v4.28.10 需求 6：明细页的搜索框收进分类行最右侧的放大镜，点开才出现。
+       这个开合状态必须进 DATA_SIG，否则点放大镜时指纹没变、render 直接早退。 */
+    billSearchOpen: false,
     billFrom: '',                   // CSV 导出用：起始日期（空 = 不限）
     billTo: '',
     billExportScope: 'all',
@@ -652,7 +663,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
      （见 patchNode 的 holdsFocus 分支），于是 state 里已经空了、屏幕上还写着旧关键词。
      浏览器里点按钮会把焦点移到按钮上，恰好躲过去；键盘 / 触屏 / 自动化就躲不过去。 */
   const QUERY_ACT_KEY = {
-    'post-query': 'post-q', 'todo-query': 'todo-q', 'rec-query': 'rec-q', 'bill-query': 'bill-q',
+    'post-query': 'post-q', 'todo-search': 'todo-q', 'rec-query': 'rec-q', 'bill-query': 'bill-q',
   };
 
   function clearSearchInput(act) {
@@ -839,9 +850,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       /* v4.20.0（审查 W-9）：截断提示条是否出现也是屏幕内容，不进指纹那次 render 会早退 */
       state.todoTotal, state.todoTruncated,
       /* v4.9.0 需求 3：列表 / 日历双视图切换也是界面状态，变了要重绘 */
-      state.todoView]),
+      state.todoView,
+      /* v4.28.7：搜索框展开/收起也是屏幕内容 —— 不进指纹那次 render 会被早退掉，
+         点放大镜就完全没反应（这正是本轮 e2e 抓到的问题）。 */
+      state.todoSearchOpen]),
     moments: () => JSON.stringify([state.posts, state.postQuery, state.postTag, state.postView,
       state.postCalCursor, state.postCalDay, state.compose, state.composeOpen,
+      /* v4.28.9 需求 6：搜索框展开 / 收起同样是屏幕内容 */
+      state.postSearchOpen,
       /* v4.3.3 需求 6：草稿恢复提示条的出现/消失同样是界面状态 */
       state.draftNotice,
       /* v4.13.0（问题 4）：表情面板开合也是界面状态，不进指纹的话点「表情」不会展开 */
@@ -850,6 +866,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
          不进指纹的话「点⋯」那次 render 会因为数据没变被早退 */
       state.postMenu, state.postOpen]),
     records: () => JSON.stringify([state.records, state.recQuery, state.recCategory,
+      /* v4.28.9 需求 8：记录本搜索框的展开 / 收起 */
+      state.recSearchOpen,
       state.recShowArchived, state.recHidden]),
     /* v4.11.0：state.theme 必须进指纹 —— 换主题是「界面状态」变化，
        不进的话那次 render 会因为「数据没变」被早退，卡片上的选中态不会动。 */
@@ -866,6 +884,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       state.pushOpen]),
     bills: () => JSON.stringify([state.bills, state.billChat, state.billStats, state.billMeta,
       state.billScope, state.billQuery, state.billView, state.billExport,
+      /* v4.28.10 需求 6：明细页放大镜的开合（漏了这一步就是「点放大镜没反应」） */
+      state.billSearchOpen,
       /* v4.0.0：快捷短语与统计范围也是「屏幕内容」，变了要重绘 */
       state.billQuick, state.billStatFrom, state.billStatTo, state.billAiLogs,
       /* v4.1.0：识别草稿箱的条数变化（存草稿 / 入账 / 删除）都要立刻反映到卡片 */
@@ -914,7 +934,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   /* ═══ 草稿自动保存的进度指示（v4.13.0 问题 4）════════════════════
      「存草稿」按钮旁要能看出「刚才那几行字到底存没存」。
      三个状态：pending（输入中、0.8 秒计时还没到）/ saved（已落盘）/ 空（没有草稿）。
-     ★ 动态与记录本各一份（kind = 'post' | 'rec'），否则两边会互相刷成对方的状态。
+     ★ 动态 / 记录本 / 待办各一份（kind = 'post' | 'rec' | 'todo'），
+       否则几边会互相刷成对方的状态。
      ★ 只改这两个节点的文字，不走 render —— 打字时整页重绘会打断输入法。 */
   function draftHintText(kind) {
     const d = ((state.draftState || {})[kind]) || {};
@@ -924,10 +945,12 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     if (Number.isNaN(t.getTime())) return '草稿已保存';
     return `草稿已保存 · ${pad(t.getHours())}:${pad(t.getMinutes())}`;
   }
+  const DRAFT_HINT_SEL = { rec: '#rec-draft-hint', post: '#post-draft-hint', todo: '#todo-draft-hint' };
   function paintDraftHint(kind) {
-    const selector = kind === 'rec' ? '#rec-draft-hint' : '#post-draft-hint';
-    const text = draftHintText(kind);
-    const pending = !!(((state.draftState || {})[kind]) || {}).pending;
+    const k = kind === 'rec' ? 'rec' : (kind === 'todo' ? 'todo' : 'post');
+    const selector = DRAFT_HINT_SEL[k];
+    const text = draftHintText(k);
+    const pending = !!(((state.draftState || {})[k]) || {}).pending;
     $$(selector).forEach((el) => {
       el.textContent = text;
       el.classList.toggle('hidden', !text);
@@ -935,8 +958,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     });
   }
   /** 输入中：先把「正在保存」点亮，落盘后再变成具体时间 */
+  const draftKeyOf = (kind) => (kind === 'rec' ? 'rec' : (kind === 'todo' ? 'todo' : 'post'));
   function markDraftPending(kind) {
-    const k = kind === 'rec' ? 'rec' : 'post';
+    const k = draftKeyOf(kind);
     const cur = state.draftState || {};
     state.draftState = Object.assign({}, cur, {
       [k]: { pending: true, at: (cur[k] || {}).at || '' },
@@ -944,7 +968,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     paintDraftHint(k);
   }
   function markDraftSaved(kind) {
-    const k = kind === 'rec' ? 'rec' : 'post';
+    const k = draftKeyOf(kind);
     const cur = state.draftState || {};
     state.draftState = Object.assign({}, cur, {
       [k]: { pending: false, at: new Date().toISOString() },
@@ -994,6 +1018,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     // 页签显隐与底栏高亮：即使内容没变也必须做（切页签本来就是「只换显隐」）
     $$('#main .view').forEach((v) => v.classList.toggle('hidden', v !== el));
     $$('#tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === state.tab));
+    /* v4.28.8：把当前页签写到 body 上 —— 待办页在桌面宽屏要「撑满整行」，
+       其他页保持阅读宽度。用属性而不是 :has()，老浏览器也不会失效。 */
+    document.body.dataset.tab = state.tab;
 
     // 月份切换动画是一次性的：在这里消费掉，免得早退分支把它吃掉
     const anim = state.calAnim;
@@ -1217,7 +1244,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             ${!lunar || !lunar.festival ? (term ? `<span class="tag-fest">${esc(term)}</span>` : '') : ''}
             ${isToday ? '<span class="badge date">今天</span>' : ''}
           </div>
-          <button type="button" class="btn-soft btn-sm" data-act="todo-new" data-date="${key}">＋ 添加待办</button>
+          <button type="button" class="btn-primary btn-sm" data-act="todo-new" data-date="${key}">✍️ 待办</button>
         </div>
         ${list.length
           ? list.map((t) => todoHtml(t, { showDate: false, dayKey: key })).join('')
@@ -1262,6 +1289,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       : !!t.done;
     const noTick = o.noTick != null ? o.noTick : (isRepeat && !repeatTickable);
     const meta = [];
+    /* v4.28.7：一次性事项过了提醒时刻还没勾 → 标「已过期」。
+       判定在服务端做（与发信同一套时区口径），前端只负责显示；
+       重复事项恒为 false —— 它们每天重置，标「已过期」只会每天闪一次。 */
+    if (t.expired) meta.push('<span class="badge expired" title="已过提醒时间且还没有完成">已过期</span>');
     if (t.repeat || t.repeatRule) {
       // ★ 重复事项显示「下一次提醒」而不是当初建这条时填的日期。
       //   基准日可能是好几年前（比如 2020 年建的结婚纪念日），显示出来只会让人困惑；
@@ -1270,10 +1301,16 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       const key = t.nextRemindKey || t.nextOccurrence || '';
       const text = nextRemindText(key, t.nextRemindTime);
       const advance = Number(t.advanceDays) || 0;
-      meta.push(`<span class="next-remind" title="${esc(advance > 0
-        ? `提前 ${advance} 天提醒（事项本身在 ${t.nextOccurrence || key}）`
-        : '到点当天提醒')}">⏰ 下次提醒 ${esc(text || '—')}` +
-        `${advance > 0 ? `<i class="adv-tag">提前${advance}天</i>` : ''}</span>`);
+      /* v4.28.8：系列已收口（按时间到期 / 按次数发够 / 手动结束）→ 不再显示「下次提醒」。
+         否则一条结束了的每周提醒还会写着「下次提醒 下周三」，而它永远不会再响。 */
+      if (t.repeatEnded) {
+        /* v4.28.11：这个状态也搬到右上角角标（✅）了，这里不再重复一遍 */
+      } else {
+        meta.push(`<span class="next-remind" title="${esc(advance > 0
+          ? `提前 ${advance} 天提醒（事项本身在 ${t.nextOccurrence || key}）`
+          : '到点当天提醒')}">⏰ 下次提醒 ${esc(text || '—')}` +
+          `${advance > 0 ? `<i class="adv-tag">提前${advance}天</i>` : ''}</span>`);
+      }
       /* v4.19.0 需求 2-1：重复事项的关键信息补全 —— 旧版只有一个短徽标（「每天」）
          和「下次提醒」，看不出「几点提醒、这个点是哪来的」。
          现在把三件事拆开讲清楚：
@@ -1315,9 +1352,48 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     if (t.urgeMinutes > 0) {
       meta.push(`<span class="badge urge" title="到点后每 ${t.urgeMinutes} 分钟催一次，按你选的推送渠道发：企业微信里回「已完成」就停；邮件 / 群机器人请到待办里勾一下这条">⏰ 每 ${t.urgeMinutes} 分钟催</span>`);
     }
-    if (t.priority === 'high') meta.push('<span class="badge p-high">重要</span>');
-    if (t.priority === 'low') meta.push('<span class="badge p-low">稍后</span>');
-    if (t.visibility === 'private') meta.push(`<span class="badge priv">${visBadgeText(t)}</span>`);
+    /* v4.28.11 需求 4：「重要 / 稍后 / 仅自己」这三个纯标签搬到右上角角标了 ——
+       它们和日期、参与人挤在同一行时，一屏五条待办全是小色块，反而看不出重点。
+       角标是不占布局的，挪上去腾出这一行只放「什么时候、谁」。 */
+
+    /* ── v4.28.11 需求 4：右上角角标 = 这条待办的「属性一览」 ──────────────
+       用户的原话是「用右上角角标区分催促、重复、提前、记录本、重要、仅自己等类型」。
+       所以：① 纯标签型的信息（重要 / 稍后 / 仅自己）从下面那行 meta 里搬上来，
+                不再和日期、参与人挤在一行；
+             ② 角标只放图标 + title，具体数值（每几分钟催、提前几天、下次哪天）
+                仍留在 meta —— 角标是索引，不是清单；
+             ③ 手机上最多显示 3 个，多出来的折成 +N（悬浮能看到全部），
+                否则六个角标会把标题挤成一条缝；
+             ④ v4.28.13：PC 端（≥1024px）角标全部铺开、不再折 +N ——
+                桌面一行有 800px 宽，5 个角标只占 105px，没必要藏。
+                ★ 这里**一律渲染全部**，谁显示谁隐藏交给 CSS 的断点决定：
+                  用 JS 按窗口宽度切片会在缩放/转屏后失效（还要监听 resize），
+                  而且 .tcg-extra / .tcg-more 的显隐本来就是纯样式问题。 */
+    const corners = [];
+    if (t.urgeMinutes > 0) corners.push(['urge', '⏰', `到点后每 ${t.urgeMinutes} 分钟催一次`]);
+    if (t.repeatRule || t.repeat) {
+      corners.push(['repeat', '🔁',
+        `重复：${repeatRuleLabel(t) || Repeat.RULE_LABEL[t.repeatRule || t.repeat] || '重复'}`]);
+    }
+    if (Number(t.advanceDays) > 0 || String(t.advanceText || '').trim()) {
+      corners.push(['adv', '⏳', `提前提醒：${t.advanceText || `提前 ${t.advanceDays} 天`}`]);
+    }
+    if (Number(t.recordId) > 0) corners.push(['rec', '📖', '从记录本带进来的事项']);
+    /* ★ v4.28.11：这里挑图标的标准是「在 18px 的小方块里也认得出来」。
+       ❗（U+2757）在 Windows 上会渲染成一根细红杠（字形本身就是竖条），
+       放进角标像一根红棍子，所以「重要」改用 🚩 —— 同样是红，但形状清楚。 */
+    if (t.priority === 'high') corners.push(['high', '🚩', '重要']);
+    /* 💤 在 18px 里会糊成一块深蓝，「稍后再说」改用 😴（同义，形状清楚） */
+    if (t.priority === 'low') corners.push(['low', '😴', '稍后再说']);
+    if (t.visibility === 'private') corners.push(['priv', '🔒', visBadgeText(t)]);
+    if (t.repeatEnded) corners.push(['ended', '✅', '这串重复已经结束，不会再提醒']);
+    /* 手机：前 3 个常显、其余折叠；PC：全部常显（靠 .tcg-extra 的断点显隐）。
+       +N 只在「确实被折起来」时渲染，PC 上由 CSS 隐藏。 */
+    const cornerShown = corners.slice(0, 3);
+    const cornerMore = corners.slice(3);
+    const cornerHtml = corners.length ? `<div class="todo-corner">${
+      corners.map(([k, ico, tip], i) => `<span class="tcg tcg-${k}${i >= 3 ? ' tcg-extra' : ''}" title="${esc(tip)}">${ico}</span>`).join('')
+    }${cornerMore.length ? `<span class="tcg tcg-more" title="${esc(cornerMore.map((c) => c[2]).join('；'))}">+${cornerMore.length}</span>` : ''}</div>` : '';
 
     const tick = noTick
       ? '<span class="tick tick-static" title="重复事项：只有它到点的那一天才能勾选完成">🔁</span>'
@@ -1329,9 +1405,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     /* 三行固定结构（标题 / 元信息 / 备注）：备注为空也占位，这样每条待办高度完全一致，
        默认 5 条能稳稳落在一屏内。超出部分由 CSS 单行省略。 */
     return `
-      <div class="todo${doneNow ? ' done' : ''}${isRepeat ? ' todo-repeat' : ''}">
+      <div class="todo${doneNow ? ' done' : ''}${isRepeat ? ' todo-repeat' : ''}${corners.length ? ' has-corner' : ''}">
         ${tick}
-        <div class="t-body" data-act="todo-edit" data-id="${t.id}" style="cursor:pointer">
+        <div class="t-body" data-act="todo-edit" data-id="${t.id}" style="cursor:pointer;--cn:${cornerShown.length + (cornerMore.length ? 1 : 0)};--cn-all:${corners.length}">
+          ${cornerHtml}
           <div class="t-title">${esc(t.title)}</div>
           <div class="t-meta">${meta.join('')}</div>
           <div class="t-note">${t.note ? esc(t.note) : ''}</div>
@@ -1399,9 +1476,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <div class="list-tools">
           <div class="segmented seg-mini" data-act="todo-view">
             <button type="button" data-view="list" class="${state.todoView !== 'calendar' ? 'on' : ''}">待办列表</button>
-            <button type="button" data-view="calendar" class="${state.todoView === 'calendar' ? 'on' : ''}">日历</button>
+            <button type="button" data-view="calendar" class="${state.todoView === 'calendar' ? 'on' : ''}">日历查看</button>
           </div>
-          <button type="button" class="btn-soft btn-sm" data-act="todo-new">＋ 添加待办</button>
+          <button type="button" class="btn-primary btn-sm" data-act="todo-new">✍️ 待办</button>
         </div>
       </div>`;
   }
@@ -1410,41 +1487,32 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const list = filteredTodos();
     const shown = list.slice(0, state.todoShown);
     const rest = list.length - shown.length;
-    /* v4.21.0 需求 2：计数口径跟着主列表走（一次性 + 今天到点的重复事项）——
-       重复事项第二天自动回到未完成，所以「未完成」每天都会重新把它算进去，
-       这正是「每天要做的事」该有的样子。 */
+    /* v4.28.8：计数回到筛选条右侧，但换成一句小字。
+       口径是「列表里的全部条目」（= 一次性待办 + 今天该处理的重复事项），
+       与当前筛选 / 搜索**无关** —— 切到「已完成」时它还写着「未完成 3 / 共 8」，
+       才说明这三个页签各自还有多少，而不是「这一页有几条」。 */
     const all = mainTodos();
-    const total = all.length;
-    const pending = all.filter((t) => !todoDoneOf(t)).length;
+    const undone = all.filter((t) => !todoDoneOf(t)).length;
+    /* v4.28.7：搜索改成「点放大镜才展开」——
+       列表头部原来同时塞着计数、每页条数、快捷添加、筛选、搜索，手机上挤成一团，
+       真正要用的「筛选」反而不显眼。现在只留筛选 + 计数小字 + 放大镜。 */
+    const searchOpen = !!state.todoSearchOpen || !!state.todoQuery.trim();
     return `
       <div class="card card-pad todo-list-card list-only">
-        <div class="section-head">
-          <div class="section-title">待办列表<span class="count-pill">未完成 ${pending} / 共 ${total}</span></div>
-          <!-- v4.12.0 需求：首页去掉「详细添加」按钮（顶部工具条里已经有一个 ＋添加待办），
-               这个位置改放「每页条数」—— 它是列表自身的显示设置，放在列表标题旁最合手。 -->
-          <select class="page-size" data-act="todo-page-size" title="每页显示条数">
-            ${PAGE_SIZES.map((n) => `<option value="${n}"${state.todoPageSize === n ? ' selected' : ''}>每页 ${n} 条</option>`).join('')}
-          </select>
-        </div>
-        <div class="quick-add">
-          <input class="grow" type="text" maxlength="100" placeholder="一句话加待办：默认今天起、每天提醒" data-preserve="todo-quick"
-                 data-act="todo-quick-input">
-          <button type="button" class="btn-primary btn-sm" data-act="todo-quick-add">添加</button>
-        </div>
-        <div class="list-tools">
+        <div class="list-tools todo-filter-row">
           <div class="segmented" data-act="todo-filter">
             <button type="button" data-filter="all" class="${state.todoFilter === 'all' ? 'on' : ''}">全部</button>
             <button type="button" data-filter="pending" class="${state.todoFilter === 'pending' ? 'on' : ''}">未完成</button>
             <button type="button" data-filter="done" class="${state.todoFilter === 'done' ? 'on' : ''}">已完成</button>
           </div>
-          <!-- v4.12.0：搜索框挪到原「每页条数」的位置（工具条右端），跟其它列表页保持一致 -->
-          ${searchBarHtml({
-            act: 'todo-query', clearAct: 'todo-q-clear', preserve: 'todo-q',
-            /* v4.28.1 需求 3：搜索框挪到分段按钮右侧同一行后，手机上只剩 ~170px ——
-               「搜索标题 / 备注 / 参与人」会被截成「搜索标题 / 备注 / 参…」，这里收成四个字。 */
-            placeholder: '搜索待办', value: state.todoQuery,
-          })}
+          <span class="todo-count-mini" title="全部 ${all.length} 条，其中 ${undone} 条还没完成">未完成 ${undone} / 共 ${all.length}</span>
+          <button type="button" class="btn-icon todo-search-toggle${searchOpen ? ' on' : ''}"
+                  data-act="todo-search-toggle" title="搜索待办" aria-label="搜索待办">🔍</button>
         </div>
+        ${searchOpen ? `<div class="todo-search-row">${searchBarHtml({
+          act: 'todo-search', clearAct: 'todo-q-clear', preserve: 'todo-q',
+          placeholder: '搜索待办', value: state.todoQuery,
+        })}</div>` : ''}
         ${shown.length
           ? shown.map((t) => todoHtml(t)).join('')
           : '<div class="empty"><span class="em">📝</span>没有符合条件的待办</div>'}
@@ -1467,19 +1535,19 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
    */
   function repeatListHtml() {
     /* v4.10.0：周期判定改走 repeat.js 的统一读取（repeat_rule 优先、repeat 回落），
-       「每天」这种只存在于 repeat_rule 的规则也能进周期区块 */
+       「每天」这种只存在于 repeat_rule 的规则也能进周期区块。
+       v4.28.8：**已结束的也留在这里**，但带「已结束」徽标 ——
+       它是用户找回一条停掉的重复提醒的唯一入口（主列表按落点走，结束后就没有它了）。 */
     const all = state.todos.filter((t) => !!Repeat.rule(t) && !t.quick);
     if (!all.length) return '';
     const open = state.repeatOpen;
     const list = repeatTodos();
+    /* v4.28.9 需求 1：删掉展开后那段说明（「这些事项按周期到时间就会自动提醒…」）。
+       这张卡里就是一份清单，点开是为了看 / 改 / 结束重复，不是为了读一段解释。 */
     const body = open
-      ? `<div class="note-box" style="margin-bottom:10px">这些事项按周期到时间就会自动提醒。
-          <b>今天轮到的那一次已经在上面「待办列表」里</b>，勾一下表示今天不再提醒：
-          它会从列表里消失，但不会进「已完成」（这是周期事项，明天 / 下个周期照常回来）；
-          这张卡里留着的是全部重复规则的清单，方便随时改或「结束重复」。</div>`
-        + (list.length
-          ? list.map((t) => todoHtml(t, { noTick: true })).join('')
-          : '<div class="empty" style="padding:14px"><span class="em">🔍</span>没有匹配的周期提醒事项</div>')
+      ? (list.length
+        ? list.map((t) => todoHtml(t, { noTick: true })).join('')
+        : '<div class="empty" style="padding:14px"><span class="em">🔍</span>没有匹配的周期提醒事项</div>')
       : '';
     return `
       <div class="card card-pad repeat-list-card list-only${open ? ' open' : ''}">
@@ -1640,36 +1708,27 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        现在给 img 挂上 img-view（与正文里的图片同一个动作），并让外层容器带 data-gal，
        于是灯箱进去之后还能左右翻看这一组，和发完帖之后的体验完全一致。
        `×` 删除按钮是 img 的兄弟节点、自己带 data-act，不会被 img-view 抢走点击。 */
-    const composePaths = state.compose.images.map((im) => im.path);
-    const imgs = state.compose.images.map((im, i) =>
-      `<div class="thumb"><img src="${esc(assetUrl(im.path))}" alt="" data-act="img-view" data-src="${esc(im.path)}"><button type="button" data-act="compose-del" data-i="${i}">×</button></div>`).join('');
-    // v1.9.0：已选视频（用 <video> 做首帧预览，不自动播放，免得一进页面就开始响）
-    const vids = state.compose.videos.length
-      ? `<div class="composer-videos">${videoChipHtml(state.compose.videos.map((v) => v.path), 'compose-vdel', '', coverMapOf(state.compose.videos))}</div>`
-      : '';
+    /* v4.28.9 需求 6：发帖器搬进弹窗（openComposeForm），这三个变量也跟着搬过去 ——
+       页面这边现在只剩「✍️ 动态」入口和角标，不再渲染发帖面板。 */
 
     const tags = allPostTags();
-    /* v4.28.5：两排标签各管各的 —— 搜索框下面这排**只筛动态**，
-       发帖面板里「添加标签」输入框下面那排**只加进这次发布**。
-       v4.15.0 曾把它们合成一排靠文案切换语义，结果发帖时要点的地方离输入框半屏远，
-       用户根本没发现那排能加标签。现在按动作分家，按钮的 data-act 也不同：
-       post-tag = 筛选，compose-tag-add = 加入这次发布。 */
-    const tagChips = tags.length
-      ? `<div class="tag-filter">` +
-        `<span class="tf-label">标签</span>` +
-        `<button type="button" class="chip${state.postTag === '' ? ' on' : ''}" data-act="post-tag" data-tag="">全部</button>` +
-        tags.map((t) =>
-          `<button type="button" class="chip${state.postTag === t ? ' on' : ''}" data-act="post-tag" data-tag="${esc(t)}">#${esc(t)}</button>`).join('') +
-        `</div>`
-      : '';
-    const composeTagList = String(state.compose.tags || '').split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
-    const composerTagChips = tags.length ? `
-        <div class="tag-pick">
-          <span class="tf-label">点标签加入这次发布</span>
-          ${tags.map((t) =>
-            `<button type="button" class="chip${composeTagList.includes(t) ? ' on' : ''}"
-                     data-act="compose-tag-add" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}
-        </div>` : '';
+    /* v4.28.5：两排标签各管各的 —— 标签行这排**只筛动态**，
+       发帖弹窗里那排**只加进这次发布**。
+       v4.28.9 需求 6：
+         · 标签行最右侧放放大镜（搜索入口），不再单独占一行；
+         · 删掉行首那个「标签」二字 —— 一排 #xxx 是什么，不需要文字解释。 */
+    const postSearchOpen = !!state.postSearchOpen || !!state.postQuery.trim();
+    /* v4.28.9 需求 6：放大镜挂在标签行的**外层**（align-items:flex-start），
+       这样标签换行时它仍然停在第一行最右，而不会跟着跑到底部。 */
+    const tagChips = `<div class="tag-row">`
+      + `<div class="tag-filter">`
+      + `<button type="button" class="chip${state.postTag === '' ? ' on' : ''}" data-act="post-tag" data-tag="">全部</button>`
+      + tags.map((t) =>
+        `<button type="button" class="chip${state.postTag === t ? ' on' : ''}" data-act="post-tag" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')
+      + `</div>`
+      + `<button type="button" class="btn-icon post-search-toggle${postSearchOpen ? ' on' : ''}"
+              data-act="post-search-toggle" title="搜索动态" aria-label="搜索动态">🔍</button>`
+      + `</div>`;
     const q = state.postQuery.trim().toLowerCase();
     const all = state.posts;
     const list = all
@@ -1723,21 +1782,16 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     }).join('');
 
     /* v2.0.0 需求 4：把「发帖 / 视图切换 / 搜索」三块合成一张工具卡。
-       旧版是三个独立卡片竖着排（发帖卡 → 切换条 → 搜索卡），占了小半屏，
-       而且「发帖」这个最高频的动作被埋在工具区上方、和搜索毫无关联。
-       现在：一行放「动态流 / 按日历看」+ 右侧「✍️ 发帖」按钮（发帖面板默认收起），
-       第二行放搜索框与标签筛选 —— 一眼就能看出这一页能干什么。 */
+       v4.28.9 需求 6：搜索不再常驻 —— 它收进标签行最右的放大镜里（点开才出现）。 */
     /* ★ 一律走 String(x || '')：草稿对象是会被替换的，少一个字段就整页白屏，
        宁可显示成空也不要把渲染搞崩（渲染函数里不该出现「读某个字段必定存在」的假设）。 */
     const draftText = String(state.compose.text || '');
     const draftTags = String(state.compose.tags || '');
     const draftCount = state.compose.images.length + state.compose.videos.length
       + (draftText.trim() ? 1 : 0) + (draftTags.trim() ? 1 : 0);
-    /* ★ 面板开合**只**听 state.composeOpen 一个人的。
-       不要写成「有草稿就强制展开」——那样草稿在的时候按钮会显示「收起」却收不起来，
-       用户会以为界面坏了。草稿本来就不会丢（存在 state 里），收起是完全安全的操作。 */
-    const composerOpen = state.composeOpen;
 
+    /* v4.28.9 需求 6：发帖不再在页面里展开，改成「添加待办」那样的一次性表单弹窗。
+       ★ 这里只留入口按钮；草稿条数仍然挂在这个按钮上（有草稿的角标不能丢）。 */
     const toolsCard = `
       <div class="card feed-tools post-tools">
         <div class="pt-row">
@@ -1745,84 +1799,31 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <button type="button" data-view="feed" class="${state.postView === 'feed' ? 'on' : ''}">动态流</button>
             <button type="button" data-view="calendar" class="${state.postView === 'calendar' ? 'on' : ''}">按日历看</button>
           </div>
-          <button type="button" class="btn-${composerOpen ? 'ghost' : 'primary'} btn-sm pt-compose-btn" data-act="post-compose">
-            ${composerOpen ? '收起' : '✍️ 发帖'}${!composerOpen && draftCount ? ` <span class="pt-draft">${draftCount}</span>` : ''}
+          <button type="button" class="btn-primary btn-sm pt-compose-btn" data-act="post-compose">
+            ✍️ 动态${draftCount ? ` <span class="pt-draft">${draftCount}</span>` : ''}
           </button>
         </div>
         ${state.postView === 'feed' ? `
-          <div class="pt-row">
+          ${tagChips}
+          ${postSearchOpen ? `<div class="pt-row">
             ${searchBarHtml({
               act: 'post-query', clearAct: 'post-q-clear', preserve: 'post-q', id: 'post-q',
               placeholder: '搜索动态：内容 / 标签 / 发布人 / 评论 / 一起写…', value: state.postQuery, grow: false,
             })}
-          </div>
-          ${tagChips}
+          </div>` : ''}
           ${state.postQuery.trim() || state.postTag
             ? `<div class="search-hint">找到 ${list.length} 条动态${state.postTag ? `（标签 #${esc(state.postTag)}）` : ''}${
               all.length > list.length ? ` · 共 ${all.length} 条` : ''}</div>`
             : ''}`
-          /* 按日历看时不显示动态筛选标签栏；发帖要用的那排在下面的发布器里 */
+          /* 按日历看时不显示动态筛选标签栏 */
           : ''}
       </div>`;
 
-    const composer = composerOpen ? `
-      <div class="card composer">
-        ${state.draftNotice === 'post' ? `<div class="draft-bar">
-          <span class="grow">📝 已恢复上次未发布的内容</span>
-          <button type="button" class="drop" data-act="draft-drop">丢弃草稿</button>
-        </div>` : ''}
-        <textarea placeholder="记录此刻的生活…" rows="2" data-autogrow data-max-h="360"
-                  data-preserve="compose-text" data-act="compose-text">${esc(draftText)}</textarea>
-        ${imgs.length ? `<div class="composer-imgs" data-gal="${esc(JSON.stringify(composePaths))}">${imgs}</div>` : ''}
-        ${vids}
-        ${state.composeEmoji ? `<div class="emoji-panel" id="compose-emoji">
-          ${COMPOSE_EMOJIS.map((e) =>
-            `<button type="button" class="emoji-pick" data-act="compose-emoji-pick" data-emoji="${e}">${e}</button>`).join('')}
-        </div>` : ''}
-        <!-- v4.28.2：可见范围（默认全家可见）。选「指定可见成员」后展开成员勾选，
-             默认一个都不勾 = 仅自己可见；没勾的人看不到这条动态、也收不到通知。 -->
-        <div class="compose-vis">
-          <button type="button" class="btn-ghost btn-sm${state.compose.visibility === 'private' ? '' : ' on'}"
-                  data-act="compose-vis" data-vis="family">👨‍👩‍👧 全家可见</button>
-          <button type="button" class="btn-ghost btn-sm${state.compose.visibility === 'private' ? ' on' : ''}"
-                  data-act="compose-vis" data-vis="private">🔒 指定可见成员</button>
-        </div>
-        ${state.compose.visibility === 'private' ? `<div class="vis-members">
-          <div class="vis-members-hint">默认只有你自己可见；勾选要一起看的家人：</div>
-          <div class="chips">${visOthers().length
-            ? visOthers().map((m) => `<button type="button" class="chip vis-chip${
-              (state.compose.visibleTo || []).map(Number).includes(Number(m.id)) ? ' on' : ''}"
-                data-act="compose-vis-member" data-vis-id="${Number(m.id)}">${esc(m.display_name)}</button>`).join('')
-            : '<span class="field-hint">家里还没有其他成员</span>'}</div>
-        </div>` : ''}
-        <div class="composer-bar">
-          <div class="composer-ops-left">
-            <button type="button" class="btn-ghost btn-sm" data-act="compose-pick">＋ 图片</button>
-            <button type="button" class="btn-ghost btn-sm" data-act="compose-vpick">＋ 视频</button>
-            <button type="button" class="btn-ghost btn-sm${state.composeEmoji ? ' on' : ''}" data-act="compose-emoji">😊 表情</button>
-          </div>
-          <div class="composer-ops-right">
-            <span class="draft-hint${draftHintText('post') ? '' : ' hidden'}${((state.draftState || {}).post || {}).pending ? ' saving' : ''}" id="post-draft-hint">${esc(draftHintText('post'))}</span>
-            <button type="button" class="btn-ghost btn-sm" data-act="draft-save">💾 存草稿</button>
-          </div>
-        </div>
-        <!-- v4.28.3 需求 2：标签与「发布」同一行 —— 输入框吃满剩余宽度，按钮固定在右端 -->
-        <div class="composer-foot">
-          <input type="text" class="composer-tags" maxlength="80" placeholder="添加标签（用空格分隔，如：出游 美食）"
-                 data-preserve="compose-tags" data-act="compose-tags" value="${esc(draftTags)}">
-          <button type="button" class="btn-primary btn-sm" data-act="compose-publish">发布</button>
-        </div>
-        <!-- v4.28.5：可点选的已有标签紧跟在「添加标签」输入框下面，点一下就加进去 -->
-        ${composerTagChips}
-        <input type="file" accept="image/*" multiple class="hidden" id="compose-file">
-        <input type="file" accept="video/*" multiple class="hidden" id="compose-video-file">
-      </div>` : '';
-
     if (state.postView === 'calendar') {
-      return toolsCard + composer + postCalendarHtml();
+      return toolsCard + postCalendarHtml();
     }
 
-    return toolsCard + composer +
+    return toolsCard +
       `${feed || `<div class="card empty"><span class="em">${q ? '🔍' : '🖼️'}</span>${
         q ? `没有匹配「${esc(state.postQuery.trim())}」的动态` : '还没有动态，发布第一条吧'}</div>`}`;
   }
@@ -2021,21 +2022,31 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           title="${deletable ? '点按筛选 · 长按删除该分类' : '点按筛选'}">${esc(c)}</button>`;
     }).join('');
 
+    /* v4.28.9 需求 8：搜索从「常驻一行」收成分类行最右侧的放大镜。
+       「当前记录 / 已归档」搬到原来搜索框那一行，并且铺满整行（两个页签等分）；
+       分类下方那句「长按分类可删除…」整段删除 —— 长按是可发现性最低的手势，
+       写一段提示也无法让它变好懂，不如让页面清爽。 */
+    const searchOpen = !!state.recSearchOpen || !!state.recQuery.trim();
     return `
       <div class="card card-pad">
-        <div class="list-tools">
-          ${searchBarHtml({
-            act: 'rec-query', clearAct: 'rec-q-clear', preserve: 'rec-q',
-            placeholder: '搜索标题 / 正文 / 附件名…', value: state.recQuery,
-          })}
-          <button type="button" class="btn-primary btn-sm" data-act="rec-new">＋ 新建记录</button>
+        <div class="list-tools rec-tools-row">
+          <div class="segmented seg-wrap arch-switch" data-act="rec-arch-view">
+            <button type="button" data-arch="0" class="${state.recShowArchived ? '' : 'on'}">当前记录</button>
+            <button type="button" data-arch="1" class="${state.recShowArchived ? 'on' : ''}">已归档</button>
+          </div>
+          <button type="button" class="btn-primary btn-sm" data-act="rec-new">✍️ 记录</button>
         </div>
-        <div class="chips cats-row">${cats}</div>
-        <div class="cats-hint">提示：长按分类可删除（该分类下的记录会移到「通用」）· 长按记录卡片可归档</div>
-        <div class="segmented seg-wrap arch-switch" data-act="rec-arch-view">
-          <button type="button" data-arch="0" class="${state.recShowArchived ? '' : 'on'}">当前记录</button>
-          <button type="button" data-arch="1" class="${state.recShowArchived ? 'on' : ''}">已归档</button>
+        <div class="cats-wrap">
+          <div class="chips cats-row">
+            ${cats}
+          </div>
+          <button type="button" class="btn-icon rec-search-toggle${searchOpen ? ' on' : ''}"
+                  data-act="rec-search-toggle" title="搜索记录本" aria-label="搜索记录本">🔍</button>
         </div>
+        ${searchOpen ? `<div class="rec-search-row">${searchBarHtml({
+          act: 'rec-query', clearAct: 'rec-q-clear', preserve: 'rec-q',
+          placeholder: '搜索标题 / 正文 / 附件名…', value: state.recQuery,
+        })}</div>` : ''}
       </div>
       ${list.length ? list.map(recordHtml).join('')
         : `<div class="card empty"><span class="em">${state.recShowArchived ? '🗄️' : '📌'}</span>${
@@ -2353,6 +2364,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       foot: `
         <button type="button" class="btn-ghost" data-act="modal-close">关闭</button>
         <div class="spacer"></div>
+        <!-- v4.28.10 需求 3：表单里的「置顶」勾选框删掉了（那里每新建一条都要看一眼，
+             而置顶是偶尔才做一次的事）。开关挪到查看页 —— 打开记录、看清楚了再决定要不要置顶，
+             比在新建表单里盲勾更合理，能力也没有丢。 -->
+        <button type="button" class="btn-ghost btn-sm" data-act="rec-pin-toggle" data-id="${r.id}"
+                title="${r.pinned ? '取消置顶后回到正常时间顺序' : '置顶后固定排在列表最前面'}">${r.pinned ? '★ 已置顶' : '☆ 置顶'}</button>
         <button type="button" class="btn-primary" data-act="rec-edit" data-id="${r.id}">编辑</button>`,
     });
     recViewId = r.id;            // 必须放在 openModal 之后：它内部会先 closeModal 把这里清空
@@ -2714,20 +2730,29 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         </div>` : '<span class="br-lock" title="只能编辑自己记的账">🔒</span>'}
       </div>`).join('');
 
+    /* v4.28.10 需求 6：
+       · 搜索框不再常驻一行 —— 和待办 / 动态 / 记录本统一，收进分类行最右侧的 🔍；
+       · 「导出 CSV」改名「导出账单」，并跟「全家 / 只看我的」并排（同一行右侧），
+         原来它和搜索框挤在工具行里，两个动作的层级分不清。 */
+    const billSearchOpen = !!state.billSearchOpen || !!state.billQuery.trim();
     return `
       <div class="card card-pad">
-        <div class="list-tools">
-          ${searchBarHtml({
-            act: 'bill-query', clearAct: 'bill-q-clear', preserve: 'bill-q',
-            placeholder: '搜索备注 / 分类 / 记账人…', value: state.billQuery,
-          })}
-          <button type="button" class="btn-soft btn-sm" data-act="bill-export">导出 CSV</button>
+        <div class="list-tools bill-tools-row">
+          <div class="segmented seg-wrap bill-scope-switch" data-act="bill-scope">
+            <button type="button" data-scope="all" class="${state.billScope === 'all' ? 'on' : ''}">全家</button>
+            <button type="button" data-scope="mine" class="${state.billScope === 'mine' ? 'on' : ''}">只看我的</button>
+          </div>
+          <button type="button" class="btn-soft btn-sm" data-act="bill-export">导出账单</button>
         </div>
-        <div class="segmented seg-wrap" data-act="bill-scope">
-          <button type="button" data-scope="all" class="${state.billScope === 'all' ? 'on' : ''}">全家</button>
-          <button type="button" data-scope="mine" class="${state.billScope === 'mine' ? 'on' : ''}">只看我的</button>
+        <div class="cats-wrap">
+          <div class="chips cats-row">${chips}</div>
+          <button type="button" class="btn-icon bill-search-toggle${billSearchOpen ? ' on' : ''}"
+                  data-act="bill-search-toggle" title="搜索账单" aria-label="搜索账单">🔍</button>
         </div>
-        <div class="chips cats-row">${chips}</div>
+        ${billSearchOpen ? `<div class="rec-search-row">${searchBarHtml({
+          act: 'bill-query', clearAct: 'bill-q-clear', preserve: 'bill-q',
+          placeholder: '搜索备注 / 分类 / 记账人…', value: state.billQuery,
+        })}</div>` : ''}
       </div>
       <div class="card bill-list">
         ${rows || `<div class="empty"><span class="em">🧾</span>${
@@ -2876,6 +2901,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   function billStatsHtml() {
     const onCal = state.billStatsView === 'calendar';
+    /* v4.28.10 需求 6：两个子视图下方那两句说明整段删除 ——
+       「筛选查看 / 日历查看」这两个名字已经把各自在做什么讲完了。 */
     const switchHtml = `
       <div class="card card-pad stats-view-tools">
         <div class="list-tools">
@@ -2884,9 +2911,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <button type="button" data-view="calendar" class="${onCal ? 'on' : ''}">日历查看</button>
           </div>
         </div>
-        <div class="stats-hint">${onCal
-          ? '按天看全家支出，点某一天展开当天明细；右上角可跳到任意年月。'
-          : '按日期范围筛选，看这段时间钱花在哪儿；默认就是本月。'}</div>
       </div>`;
     return switchHtml + (onCal ? billCalHtml() : billFilterHtml());
   }
@@ -2895,6 +2919,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
    * 「筛选查看」：**只剩日期范围**一种口径（需求原文：移除日期选择和月份选择）。
    * 原来那四张「我的/全家 · 当日/当月」卡片依赖「日期」「月份」两个输入，
    * 输入没了它们就失去了意义，所以一并去掉 —— 范围合计 + 本月分类两段反而更清楚。
+   *
+   * ★ v4.28.10 需求 6：上面那张独立的「日期范围」卡片整块删掉，
+   *   两个日期框搬进「范围合计」卡的标题行 —— 日期本来就是这张卡的口径，
+   *   单独占一张卡等于让人先读一遍标题再往下找数据。改日期即刷新，不再点「查看」。
    */
   function billFilterHtml() {
     const st = state.billStats;
@@ -2902,29 +2930,25 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const monthFirst = today.slice(0, 8) + '01';
     if (!st) return '<div class="card empty"><span class="em">📊</span>正在统计…</div>';
     const rg = st.range;
+    const fromV = state.billStatFrom || (rg && rg.from) || monthFirst;
+    const toV = state.billStatTo || (rg && rg.to) || today;
     const top = rg ? (rg.family.top || []).slice(0, 8) : [];
     const topMax = top.length ? Math.max.apply(null, top.map((r) => r.amountCents)) : 1;
     const rank = (st.monthByCategory || []).slice(0, 8);
     const max = rank.length ? Math.max.apply(null, rank.map((r) => r.amountCents)) : 1;
 
     return `
-      <div class="card card-pad">
-        <div class="sec-head"><span class="sec-ico">🗓️</span><span class="sec-title">日期范围</span>
-          <span class="sec-note">只看支出 · 全家共享</span></div>
-        <div class="list-tools stat-tools">
-          <label class="field field-sm"><span>从</span>
-            <input type="date" value="${esc(state.billStatFrom || monthFirst)}" data-act="bill-stat-from"></label>
-          <label class="field field-sm"><span>至</span>
-            <input type="date" value="${esc(state.billStatTo || today)}" data-act="bill-stat-to"></label>
-          <button type="button" class="btn-soft btn-sm" data-act="bill-range-apply">查看</button>
-        </div>
-        <div class="field-hint">默认就是本月 1 号到今天，改完日期点「查看」即可。</div>
-      </div>
-      ${rg ? `
       <div class="card card-pad stat-range-card">
-        <div class="sec-head"><span class="sec-ico">📈</span>
-          <span class="sec-title">${esc(rg.from)} ~ ${esc(rg.to)}</span>
-          <span class="sec-note">全家 ${rg.family.count} 笔</span></div>
+        <div class="sec-head stat-range-head">
+          <span class="sec-ico">📈</span>
+          <div class="stat-range-dates">
+            <input type="date" value="${esc(fromV)}" data-act="bill-stat-from" aria-label="起始日期">
+            <span class="sr-dash">~</span>
+            <input type="date" value="${esc(toV)}" data-act="bill-stat-to" aria-label="结束日期">
+          </div>
+          <span class="sec-note">全家 ${rg ? rg.family.count : 0} 笔</span>
+        </div>
+        ${rg ? `
         <div class="stat-grid">
           ${statBox('我的 · 范围合计', rg.personal, 'range')}
           ${statBox('全家 · 范围合计', rg.family, 'range')}
@@ -2939,7 +2963,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <span class="rk-bar"><i style="width:${Math.max(3, Math.round(r.amountCents / topMax * 100))}%"></i></span>
             <span class="rk-val">¥${fmtYuan(r.amountCents)}</span>
           </div>`).join('') : '<div class="empty" style="padding:12px"><span class="em">📉</span>这个范围还没有支出</div>'}
-      </div>` : ''}
+        ` : '<div class="empty" style="padding:12px"><span class="em">📉</span>正在统计…</div>'}
+      </div>
       <div class="card card-pad">
         <div class="sec-head"><span class="sec-ico">🏷️</span><span class="sec-title">${esc(st.month)} 支出分类</span>
           <span class="sec-note">按全家口径</span></div>
@@ -3043,8 +3068,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   function billChannelSel() {
     const cur = billChannelOf();
     return `
-      <label class="field field-sm"><span>记账推送渠道
-        <span class="field-hint">（不单独指定就跟随「推送方式」）</span></span>
+      <label class="field field-sm"><span>记账推送渠道</span>
         <select data-act="bill-channel">
           <option value=""${!cur ? ' selected' : ''}>跟随推送方式设置（首选 ${esc(PUSH_LABEL[pushChannelOf(state.me)] || '企业微信')}）</option>
           ${CAT_CHANNELS.map((v) => `<option value="${v}"${cur === v ? ' selected' : ''}>${esc(PUSH_LABEL[v])}</option>`).join('')}
@@ -3060,15 +3084,17 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const key = kind === 'notify' ? 'channel_notify' : 'channel_todo';
     const cur = String((state.prefs || {})[key] || '');
     return `
-      <label class="field field-sm"><span>我自己收到的${kind === 'notify' ? '内容通知' : '待办提醒'}走哪条通道
-        <span class="field-hint">（个人偏好，留空跟随「推送方式」；只影响你自己）</span></span>
+      <!-- v4.28.11 需求 6：原来那句「我自己收到的待办提醒走哪条通道（个人偏好，留空跟随…；只影响你自己）」
+           一长串，读者要先解析主语才知道这是「这一类的个人通道」。四个字就够。 -->
+      <label class="field field-sm"><span>我的推送方式</span>
         <select data-act="my-channel" data-kind="${kind === 'notify' ? 'notify' : 'todo'}">
           <option value=""${!cur ? ' selected' : ''}>跟随推送方式设置（首选 ${esc(PUSH_LABEL[pushChannelOf(state.me)] || '企业微信')}）</option>
           ${CAT_CHANNELS.map((v) => `<option value="${v}"${cur === v ? ' selected' : ''}>${esc(PUSH_LABEL[v])}</option>`).join('')}
         </select></label>`;
   }
 
-  /** 成员也能改自己的「记账推送渠道」——报表设置那一堆仍只有管理员能改 */  function openBillChannelForm() {
+  /** 成员也能改自己的「记账推送渠道」——报表设置那一堆仍只有管理员能改 */
+  function openBillChannelForm() {
     openModal({
       title: '记账推送',
       body: `${billChannelSel()}
@@ -3104,55 +3130,30 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   function billPushBodyHtml() {
     const { r, st, fmtAt } = billSetCtx();
     const attachOn = st.attachTodo !== false;
-    const sameDay = r.reportWhen === 'same_day';
-    /* 说明文字随日报口径变化：附带的是「报告日的第二天」，
-       当天发当天 → 明天；第二天发前一天 → 今天（也就是发送当天）。 */
-    const attachHint = !attachOn ? '现在不会附带待办'
-      : (sameDay
-        ? '当天发送时，附上<b>第二天</b>的待办（明天要做什么）'
-        : '第二天发送时，附上<b>第二天</b>的待办（也就是发送当天的待办）');
-    /* v4.17.0 需求 7：这里要区分两个数 ——
-       wcN = 按各自推送方式算下来**真正投得出去**的人数；
-       mapN = 账号映射表里实际绑定的账号数（服务端 bondCount）。
-       「投不出去」不等于「没映射」：映射了 3 个人但都只选了邮件，一样是 0。
-       提示里把两个数都说清，再给一个直达账号映射的按钮。 */
-    const wcN = Number(r.wecomRecipientCount) || 0;
-    const mapN = state.wecom ? Number(state.wecom.bondCount) || 0 : 0;
-    const wxHint = wcN
-      ? `会发给 ${wcN} 位已映射的家人（严格按各自在「推送渠道设置」里选的推送方式）`
-      : (mapN
-        ? `账号映射里已有 ${mapN} 位家人，但目前没人符合投递条件：看看大家的推送方式是不是都选了「仅邮件」，或企业微信推送没开`
-        : '账号映射还是空的：把家人的企业微信 UserID 对应到家庭账号，报表才能发到企业微信');
+    /* v4.28.12：整块「企业微信收件人」按需求删掉了（小标题 + 按账号映射投递 + 去映射按钮）。
+       报表到底发给谁，仍然由每个人自己的「首选 + 兜底」决定，不需要在这里再交代一遍。 */
     return `
         ${billChannelSel()}
         <div class="row-list">
-          <div class="row"><div class="r-label"><b>每日日报</b><small>把前一天的账单发给全家</small></div>
+          <div class="row"><div class="r-label"><b>每日日报</b></div>
             <button type="button" class="btn-soft btn-sm" data-act="bill-reports-toggle">${r.reportsEnabled ? '已开启 · 点此关闭' : '已关闭 · 点此开启'}</button></div>
-          <div class="row"><div class="r-label"><b>推送时间</b><small>HH:MM</small></div>
+          <div class="row"><div class="r-label"><b>推送时间</b></div>
             <input type="time" class="inp-compact" data-act="bill-daily-time" value="${esc(r.dailyTime || '21:00')}"></div>
-          <div class="row row-stack"><div class="r-label"><b>日报口径</b><small>当天发当天 / 第二天发前一天</small></div>
+          <div class="row row-stack"><div class="r-label"><b>日报口径</b></div>
             <div class="segmented seg-wrap" data-act="bill-report-when">
               <button type="button" data-val="same_day" class="${r.reportWhen === 'same_day' ? 'on' : ''}">当天发当天</button>
               <button type="button" data-val="next_day" class="${r.reportWhen !== 'same_day' ? 'on' : ''}">第二天发前一天</button>
             </div></div>
-          <div class="row"><div class="r-label"><b>月初月报</b><small>每月 1 号补发上月</small></div>
+          <div class="row"><div class="r-label"><b>月初月报</b></div>
             <button type="button" class="btn-soft btn-sm" data-act="bill-monthly-toggle">${r.monthlyReport ? '已开启 · 点此关闭' : '已关闭 · 点此开启'}</button></div>
-          <div class="row row-stack"><div class="r-label"><b>是否附带待办</b><small>${attachHint}</small></div>
+          <div class="row row-stack"><div class="r-label"><b>是否附带待办</b></div>
             <label class="check-line"><input type="checkbox" data-act="bill-attach-todo"${attachOn ? ' checked' : ''}>
               <span>随日报 / 月报附上待办</span></label></div>
           <div class="row"><div class="r-label"><b>上次发送</b>
             <small>${esc(fmtAt(st.at))} · ${esc(st.result || '尚无记录')}${
               st.errors && st.errors.length ? ` · <span class="warn-text">${esc(st.errors[0])}</span>` : ''}</small></div>
             <button type="button" class="btn-ghost btn-sm" data-act="bill-report-test">试发</button></div>
-
-          <div class="sub-head">企业微信收件人</div>
-          <div class="row"><div class="r-label"><b>按账号映射投递</b>
-            <small>${wxHint}</small></div>
-            ${wcN ? '' : `<button type="button" class="btn-soft btn-sm" data-act="bill-push-goto-map">去账号映射</button>`}</div>
         </div>
-        <div class="note-box bill-push-note">报表严格按每个人自己的「首选 + 兜底」投递：先走首选，发不出去才补兜底，<b>不会两条同时发</b>。
-          三类内容里「记账」可以单独指定首选（下面「记账推送渠道」），兜底始终沿用推送方式设置里的兜底。
-          关掉日报只影响汇总消息，不影响提醒和手动记账。</div>
         ${msgTplBlock('bill')}`;
   }
 
@@ -3171,15 +3172,18 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const curModel = r.currentModel || {};
     const aiOpen = !!state.billAiParamsOpen;
     const q = m.quota || {};
+    /* v4.28.11（图 4 / 图 8）：说明文字整体让位给控件本身 ——
+       没有 hint 时连 <small> 都不渲染，免得留下一条空行把行高撑开。 */
+    const rowHint = (hint) => (hint ? `<small>${hint}</small>` : '');
     const rowNum = (key, label, hint, val, min, max, step) => `
-          <div class="row"><div class="r-label"><b>${label}</b><small>${hint}</small></div>
+          <div class="row"><div class="r-label"><b>${label}</b>${rowHint(hint)}</div>
             <input type="number" class="inp-compact" min="${min}" max="${max}"${step ? ` step="${step}"` : ''} inputmode="decimal"
                    data-mk="${key}" value="${esc(String(val))}"></div>`;
     const rowCheck = (key, label, hint, on) => `
-          <div class="row"><div class="r-label"><b>${label}</b><small>${hint}</small></div>
+          <div class="row"><div class="r-label"><b>${label}</b>${rowHint(hint)}</div>
             <input type="checkbox" data-mk="${key}"${on ? ' checked' : ''}></div>`;
     const rowSel = (key, label, hint, val) => `
-          <div class="row"><div class="r-label"><b>${label}</b><small>${hint}</small></div>
+          <div class="row"><div class="r-label"><b>${label}</b>${rowHint(hint)}</div>
             <select class="inp-compact" data-mk="${key}">
               <option value="auto"${val !== 'strict' ? ' selected' : ''}>自动新建</option>
               <option value="strict"${val === 'strict' ? ' selected' : ''}>只用现有（归「其他」）</option>
@@ -3187,7 +3191,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
     return `
         <div class="row-list">
-          <div class="row"><div class="r-label"><b>AI 功能</b><small>停用后只能手动录入</small></div>
+          <div class="row"><div class="r-label"><b>AI 功能</b></div>
             <button type="button" class="btn-soft btn-sm" data-act="bill-ai-toggle">${r.aiEnabled ? '已开启 · 点此停用' : '已停用 · 点此开启'}</button></div>
           <div class="row"><div class="r-label"><b>本月用量</b>
             <small>${q.used || 0} / ${q.limit || 1000} 次 · ${q.tokens || 0} token${
@@ -3204,18 +3208,13 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         ${state.billAiLogs ? billAiLogsHtml() : ''}
         <!-- v4.24.0 需求 1：通用平台三件套（接口地址 + API Key + 模型 ID），
              不再限定任何一家服务商 —— 凡提供 OpenAI 兼容端点的平台都能填。 -->
-        <label class="field"><span>接口地址（Base URL）<span class="field-hint">（OpenAI 兼容端点，以 /v1 结尾）</span></span>
-          <input type="text" data-mk="aiBaseUrl" maxlength="300"
-                 value="${esc(r.aiBaseUrl || '')}" placeholder="例如 https://api.openai.com/v1"></label>
-        <label class="field"><span>API Key</span>
-          <input type="password" data-mk="aiKey" placeholder="${r.hasAiKey ? `已保存（尾号 ${esc(r.aiKeyTail || '****')}），留空不改` : '在你使用的 AI 平台控制台创建'}"></label>
-        <label class="field"><span>模型 ID<span class="field-hint">（须支持图片输入；与你填的平台匹配）</span></span>
-          <input type="text" data-mk="aiVlModel" maxlength="64"
-                 value="${esc(r.aiVlModel || '')}" placeholder="例如 gpt-4o-mini、gemini-2.5-flash、glm-4v-flash"></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="aiBaseUrl" maxlength="300"
+                 value="${esc(r.aiBaseUrl || '')}" placeholder="例如 https://api.openai.com/v1"><span class="flab">接口地址</span><small class="field-hint">（OpenAI 兼容端点，以 /v1 结尾）</small></label>
+        <label class="field fld"><input class="fld-inp" type="password" data-mk="aiKey" placeholder="${r.hasAiKey ? `已保存（尾号 ${esc(r.aiKeyTail || '****')}），留空不改` : '在你使用的 AI 平台控制台创建'}"><span class="flab">APIKey</span></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="aiVlModel" maxlength="64"
+                 value="${esc(r.aiVlModel || '')}" placeholder="例如 gpt-4o-mini、gemini-2.5-flash、glm-4v-flash"><span class="flab">模型ID</span><small class="field-hint">（须支持图片输入；与你填的平台匹配）</small></label>
         ${r.aiLegacy ? '<div class="note-box">检测到密钥仍保存在旧版「千问」配置里，识别照常可用。建议把上面三项重新填一遍保存，完成迁移。</div>' : ''}
-        <div class="cur-model">当前模型：<b>${esc(r.aiVlModel || '')}</b>${curModel.price ? ` · ${esc(curModel.price)}` : ''}${
-          curModel.vision === false ? ' <span class="warn-text">· 名字不像视觉模型</span>' : ''}</div>
-
+        
         <!-- v4.3.1 需求 6：识别参数默认收拢，点标题展开 / 再点收拢（交互同「周期提醒」）。
              控件始终在 DOM 里（只是 hidden），保存时不会因为「没展开」把参数写回默认值。 -->
         <div class="ai-params${aiOpen ? ' open' : ''}">
@@ -3227,31 +3226,20 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <!-- v4.25.0 需求 3：思考模式 / 思考预算 / 最大输出 / 采样温度 四项已下线。
                  它们不是「各有偏好」而是「有唯一正确答案」：关思考、短输出、温度 0。
                  留着开关只会出现「有人把思考打开 ⇒ 一次识别 30 秒」。 -->
-            ${rowNum('aiTimeoutS', '超时（秒）', '超时就断开并提示，不会一直等', Math.round((ai.timeoutMs || 60000) / 1000), 5, 300)}
-            ${rowNum('aiRetry', '失败重试', '网络抖动时最多再试几次', ai.retry == null ? 1 : ai.retry, 0, 3)}
-            ${rowCheck('aiFallback', '模型不可用时自动换默认模型', '关掉则填错模型直接报错', ai.fallback !== false)}
-            ${rowSel('aiCategoryMode', '新分类的处理', '「只用现有」时新品类归入「其他」', ai.categoryMode)}
-            ${rowCheck('aiImgCompress', '上传前压缩图片', '越小上传越快（官方：不影响模型耗时）', ai.imgCompress !== false)}
+            ${rowNum('aiTimeoutS', '超时（秒）', '', Math.round((ai.timeoutMs || 60000) / 1000), 5, 300)}
+            ${rowNum('aiRetry', '失败重试', '', ai.retry == null ? 1 : ai.retry, 0, 3)}
+            ${rowCheck('aiFallback', '模型不可用时自动换默认模型', '', ai.fallback !== false)}
+            ${rowSel('aiCategoryMode', '新分类的处理', '', ai.categoryMode)}
+            ${rowCheck('aiImgCompress', '上传前压缩图片', '', ai.imgCompress !== false)}
             ${rowNum('aiImgEdge', '图片长边', '640–2400 像素', ai.imgEdge || 1024, 640, 2400)}
             ${rowNum('aiImgQuality', '图片质量', '0.4–0.95，越低体积越小', ai.imgQuality == null ? 0.7 : ai.imgQuality, 0.4, 0.95, 0.05)}
             ${rowNum('aiImgKb', '目标体积', '超过就继续降画质（KB）', ai.imgKb || 480, 200, 4000)}
-            ${rowNum('aiCatHint', '提示词里的分类条数', '列得越少提示词越短；0 = 不列', ai.catHint == null ? 8 : ai.catHint, 0, 40)}
-          </div>
-          <div class="note-box ai-share-note">
-            <b>这一页的参数对「网页上传截图」和「企业微信发图」同时生效</b> —— 两边调的是同一个识别接口、
-            同一份参数（模型 / 超时 / 重试 / 分类归一 / 提示词），改完保存即刻生效，不需要重启。
-            思考模式、输出上限、采样温度这类「每次识别都必须一样」的参数已固化为<b>极速档</b>（关思考 / 短输出 / 温度 0），
-            不再开放调节 —— 唯一会拖慢识别的是模型本身，觉得慢就换个更快的视觉模型。
-            唯一的差别是<b>图片压缩</b>：网页端在上传前按这里的「长边 / 质量 / 目标体积」压一遍，
-            企业微信发来的图是微信客户端压过的原图（服务端零依赖、不做二次编码，
-            只在超过参数规格时提前告诉你），所以两边体积通常不会一模一样 ——
-            但**判定用的是同一份参数**。
+            ${rowNum('aiCatHint', '提示词里的分类条数', '', ai.catHint == null ? 8 : ai.catHint, 0, 40)}
           </div>
           <label class="field ai-prompt-field"><span>自定义提示词<span class="field-hint">（已预填内置内容；支持 {today} 与 {categories}）</span></span>
             <textarea data-mk="aiPromptCustom" maxlength="2000" rows="5" data-def="${esc(defPrompt)}"
                       placeholder="留空即用内置默认">${esc(promptVal)}</textarea>
             <div class="ai-prompt-ops">
-              <span class="field-hint">改坏了不要紧：点右边一键还原（还原后仍需点保存生效）</span>
               <button type="button" class="btn-ghost btn-sm" data-act="bill-prompt-reset">恢复默认</button>
             </div></label>
         </div>
@@ -3301,11 +3289,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <option value="">＋ 给某个分类设预算</option>
             ${noBudget.map((c) => `<option value="${esc(c)}"${pick === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}
           </select>
-          <span class="field-hint">${noBudget.length
-            ? `还有 ${noBudget.length} 个分类没设预算，选一个就开始填`
-            : '所有分类都已设预算'}</span>
         </div>
-        <div class="budget-tip">把金额清空再保存 = 取消该分类的预算。自定义分类可长按（电脑上右键）或点「删」删除。</div>
         <div class="cm-add">
           <input type="text" maxlength="12" placeholder="新增支出分类" data-mk="newcat-expense">
           <button type="button" class="btn-ghost btn-sm" data-act="bill-cat-add" data-kind="expense">添加</button>
@@ -3315,7 +3299,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
              下面跟着的分类规则块（管理员）与它互不干扰。 -->
         <div class="status-ops">
           <button type="button" class="btn-primary btn-sm" data-act="bill-save-budgets">保存预算</button>
-          <span class="status-hint">超出预算会在聊天里提醒</span>
         </div>
         ${state.me && state.me.is_admin ? billCatRulesHtml() : ''}`;
   }
@@ -3333,15 +3316,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return `
         <div class="sub-head">自动识别分类规则</div>
         <div class="row row-stack"><div class="r-label"><b>关键词 → 分类</b>
-          <small>已预置内置关键词规则，可直接增删改。每行一条，格式「分类：关键词1、关键词2」；
-            最多 50 条，每条关键词最长 20 字。保存后下一句记账就按新规则归类
-            （没命中规则的词仍按内置关键词表兜底）。</small></div>
+          <!-- v4.28.11（图 9）：原来那三行说明删掉，只留一行「怎么写」——
+               格式不写用户没法填，其它（预置了什么、什么时候生效、兜底逻辑）都属于说明书。 -->
+          <small>每行一条：分类：关键词1、关键词2（最多 50 条）</small></div>
           <textarea data-mk="cat-rules" rows="10" data-min-h="0" autocomplete="off"
             placeholder="餐饮：饭、餐、吃…">${esc(text)}</textarea></div>
         <div class="status-ops">
           <button type="button" class="btn-ghost btn-sm" data-act="bill-cat-rules-save">保存规则</button>
           <button type="button" class="btn-ghost btn-sm" data-act="bill-cat-rules-reset">恢复默认</button>
-          <span class="status-hint">恢复默认 = 还原为内置关键词表</span>
         </div>`;
   }
 
@@ -3638,17 +3620,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         ${isSdraft ? `<div class="note-box">这条来自<b>微信草稿箱</b>（微信里「存草稿」存的），核对无误后点「确认入账」，入账成功草稿会自动移除。</div>` : ''}
         ${isDraft && !isSdraft ? `<div class="note-box">这条来自<b>识别草稿箱</b>，核对无误后点「确认入账」，入账成功草稿会自动移除。</div>` : ''}
         ${raw ? `<div class="ocr-raw">${esc(d.text || '（没有识别到文字）')}</div>` : ''}
-        <label class="field"><span>金额（元）</span>
-          <input type="text" data-mk="amount" inputmode="decimal" maxlength="12"
-                 value="${esc(d.amount)}" placeholder="例如 30.00"></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="amount" inputmode="decimal" maxlength="12"
+                 value="${esc(d.amount)}" placeholder="例如 30.00"><span class="flab">金额</span></label>
         <label class="field"><span>分类</span>
           <select data-mk="category">${cats.map((c) => `<option${c === cat ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
         <label class="field"><span>日期</span>
           <input type="date" data-mk="date" value="${esc(d.date)}"></label>
-        <label class="field"><span>备注</span>
-          <input type="text" data-mk="note" maxlength="60" value="${esc(d.note)}" placeholder="比如：超市买菜"></label>
-        <label class="field"><span>交易平台（可选）</span>
-          <input type="text" data-mk="platform" maxlength="20" value="${esc(d.platform || '')}" placeholder="比如：微信 / 支付宝"></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="note" maxlength="60" value="${esc(d.note)}" placeholder="比如：超市买菜"><span class="flab">备注</span></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="platform" maxlength="20" value="${esc(d.platform || '')}" placeholder="比如：微信 / 支付宝"><span class="flab">交易平台</span></label>
         ${!d.parsedOk ? '<div class="field-hint" style="color:var(--danger)">自动识别没找到金额，请手动填一个</div>' : ''}`,
       foot: `<button type="button" class="btn-ghost" data-act="bill-draft-cancel">取消</button>
              ${isOcr ? '<button type="button" class="btn-ghost" data-act="bill-draft-keep">存为草稿</button>' : ''}
@@ -4022,8 +4001,15 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       await refreshBills();
       render();
       paintBillPushForm();
+      /* ★ v4.28.6：统计口径 = **实际送达的份数**（邮件 + 企微 + 飞书 + 钉钉）。
+         旧版只看 out.mails —— 只配企微 / 群机器人的家庭明明已经发出去了，
+         页面却写「已发送 0 封」，看起来像根本没发。 */
+      const n = Number(out.total != null ? out.total
+        : (out.mails || 0) + (out.wecom || 0) + (out.feishu || 0) + (out.dingtalk || 0));
+      const bad = (out.errors || []).length;
       if (out.skipped) toast(`未发送：${out.skipped}`, 'err');
-      else toast(`已发送 ${out.mails} 封记账报表`, 'ok');
+      else if (!n) toast(`没发出去：${(out.errors && out.errors[0]) || '没有可用的收件人'}`, 'err');
+      else toast(`已发送 ${n} 份记账报表${bad ? `（${bad} 人未成功，见推送日志）` : ''}`, bad ? 'err' : 'ok');
     } catch (err) { toast(err.message || '发送失败', 'err'); }
   }
 
@@ -4031,19 +4017,18 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   /* ═══ v4.0.0：快捷短语自定义 / AI 开关与额度 / 日报时机 / 模型列表 / 调用日志 ═══ */
 
-  /** 快捷短语编辑弹窗：点短语删掉、输入框加新的、可一键恢复出厂例句 */
+  /** 快捷短语编辑弹窗：点短语删掉、输入框加新的、可一键恢复出厂例句
+   *  v4.28.10 需求 5：删掉顶部那句「点一下短语就删掉…」——
+   *  每个短语后面就跟着 ✕，删法写在按钮上比写在这里显眼。 */
   function openBillQuickEditor() {
     const quick = (state.billQuick && state.billQuick.length) ? state.billQuick : DEFAULT_BILL_QUICKS;
     openModal({
       title: '自定义快捷短语',
       body: `
-        <div class="note-box">点一下短语就删掉；输入新的再点「添加」。最多 8 条、每条 30 字。
-          短语按人保存，换设备也还在。</div>
         <div class="chips cats-row" id="quick-edit-list">
           ${quick.map((t) => `<button type="button" class="chip chip-del" data-act="bill-quick-del" data-text="${esc(t)}" title="点击删除">${esc(t)} ✕</button>`).join('')}
         </div>
-        <label class="field"><span>新增短语</span>
-          <input type="text" data-mk="new-quick" maxlength="30" placeholder="比如：停车费 15"></label>`,
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="new-quick" maxlength="30" placeholder="比如：停车费 15"><span class="flab">新增短语</span></label>`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">关闭</button>
              <button type="button" class="btn-ghost" data-act="bill-quick-reset">恢复出厂例句</button>
              <button type="button" class="btn-primary" data-act="bill-quick-add">添加</button>`,
@@ -4254,8 +4239,17 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const fbk = pushFallbackOf(me);
     const { bound, ready } = pushInfoOf(me);
     const noMail = !(me && me.notify_email);
+    const st = state.settings || null;
+    const hookOk = (name) => {
+      const stt = st ? (name === 'feishu' ? st.feishuStatus : st.dingtalkStatus) : null;
+      return !!(stt && stt.configured);
+    };
     const line = (label, note) => `${label}${note ? ` · ${note}` : ''}`;
     const parts = [];
+    /* 首选到底能不能用 —— 下面两处都要用（写说明 + 判断要不要提示「会回退邮件」） */
+    const chOk = ch === 'mail' ? !noMail
+      : ch === 'wecom' ? !!(ready && bound)
+        : hookOk(ch);
     if (ch === 'mail') parts.push(line('首选 邮件', noMail ? '还没设置收件邮箱，这类消息发不出去' : ''));
     else if (ch === 'wecom') {
       parts.push(line('首选 企业微信', ready
@@ -4263,9 +4257,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         : '企业微信应用未启用，这条走不通'));
     } else if (ch === 'feishu' || ch === 'dingtalk') {
       const name = ch === 'feishu' ? '飞书' : '钉钉';
-      const st = state.settings || null;
-      const stt = st ? (ch === 'feishu' ? st.feishuStatus : st.dingtalkStatus) : null;
-      const note = !st ? `群机器人由管理员配置` : (!stt || !stt.configured ? `管理员还没配置${name}群机器人` : `已配置${name}群机器人`);
+      const note = !st ? '群机器人由管理员配置' : (hookOk(ch) ? `已配置${name}群机器人` : `管理员还没配置${name}群机器人`);
       parts.push(line(`首选 ${name}群`, note));
     }
     if (fbk) {
@@ -4274,6 +4266,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     } else {
       parts.push('没有兜底');
     }
+    /* 首选走不通但有邮件兜底时，把「会自动回退」明说出来 ——
+       用户要知道这条消息最终从哪来，才不会以为「设了企微却收到邮件」是 bug。 */
+    if (!chOk && fbk === 'mail' && !noMail) parts.push('首选发不出去会自动回退邮件');
     return `当前：${parts.join(' → ')}`;
   }
 
@@ -4329,17 +4324,15 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return `
         <div class="row-list">
           <div class="row">
-            <div class="r-label"><b>接入配置</b>
-              <small>企业 ID / AgentId / Secret / Token / EncodingAESKey</small></div>
+            <!-- v4.28.11（图 3）：这行参数清单删掉 —— 点「配置」进去就看得见五个字段，列在这里只是噪音 -->
+            <div class="r-label"><b>接入配置</b></div>
             <div class="row-ops">
               <span class="${statusCls}">${statusText}</span>
               <button type="button" class="btn-soft btn-sm" data-act="wecom-settings">配置</button>
             </div>
           </div>
           <div class="row row-stack">
-            <div class="r-label"><b>账号映射</b>
-              <small>左边是家庭账号（已自动列好），右边填 TA 在企业微信里的 UserID；留空 = 还没绑定。
-                记账记到谁名下、报表推给谁，都只看这张表。</small></div>
+            <div class="r-label"><b>账号映射</b></div>
             <!-- ★ v4.28.1：映射框里只有登录账号（英文），管理员未必记得谁是谁 ——
                  框上面补一行「账号 = 昵称」的对照，看一眼就知道该给哪一行填。
                  位置特意在输入框**之前**：绑定状态那句仍紧贴输入框下方，不挤走它。 -->
@@ -4350,9 +4343,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
                       placeholder="alice=zhangsan&#10;bob=lisi">${esc(wecomMapText(w))}</textarea>
             <div class="wecom-map-state">
               <span class="${statusCls}">${bondN ? `已绑定 ${bondN} 个账号` : '还没绑定任何账号'}</span>
-              <span class="wms-hint">${bondN
-                ? '家人发消息、收报表都会按这里的对应关系认人。'
-                : 'UserID 在企业微信管理后台「通讯录 → 成员 → 账号」里看；填好保存即可。'}</span>
+              ${bondN ? '' : '<span class="wms-hint">UserID 在企业微信管理后台「通讯录 → 成员 → 账号」里看；填好保存即可。</span>'}
             </div>
             <div class="row-ops">
               <button type="button" class="btn-soft btn-sm" data-act="wecom-map-save">保存映射</button>
@@ -4363,10 +4354,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
               <small class="wecom-cb">${esc(cb)}<br>需企业微信服务器能访问到（内网穿透或公网域名）</small></div>
           </div>
         </div>
-        <div class="sec-note-box"><div class="note-box">
-          配好后，家人在企业微信里发「今天买菜 30 元」就能记账，发图也能识别；
-          报表与催办走上面「推送方式」里给每个人选的那条通道。
-        </div></div>`;
+        `;
   }
 
   /* ── v4.5.0 需求 5：企业微信配置弹窗 ─────────────────── */
@@ -4405,17 +4393,12 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           在企业微信管理后台建一个「自建应用」，把下面这些填进去；
           <b>接收消息</b>的 URL 与账号映射在外面的折叠区里设置。
         </div>
-        <label class="field"><span>企业 ID（CorpId）</span>
-          <input type="text" data-mk="wc-corp" maxlength="64" value="${esc(w.corpId || '')}" placeholder="ww 开头的一串字符"></label>
-        <label class="field"><span>应用 AgentId</span>
-          <input type="text" data-mk="wc-agent" maxlength="20" value="${esc(w.agentId || '')}" placeholder="纯数字，例如 1000002"></label>
-        <label class="field"><span>应用 Secret</span>
-          <input type="password" data-mk="wc-secret" maxlength="128" value=""
-                 placeholder="${w.hasSecret ? '已保存，留空表示不修改' : '填应用详情里的 Secret'}"></label>
-        <label class="field"><span>Token</span>
-          <input type="text" data-mk="wc-token" maxlength="32" value="${esc(w.token || '')}" placeholder="接收消息设置里自己填的 Token"></label>
-        <label class="field"><span>EncodingAESKey</span>
-          <input type="text" data-mk="wc-aes" maxlength="43" value="${esc(w.aesKey || '')}" placeholder="43 位，点「随机获取」生成"></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="wc-corp" maxlength="64" value="${esc(w.corpId || '')}" placeholder="ww 开头的一串字符"><span class="flab">企业ID</span></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="wc-agent" maxlength="20" value="${esc(w.agentId || '')}" placeholder="纯数字，例如 1000002"><span class="flab">应用AgentId</span></label>
+        <label class="field fld"><input class="fld-inp" type="password" data-mk="wc-secret" maxlength="128" value=""
+                 placeholder="${w.hasSecret ? '已保存，留空表示不修改' : '填应用详情里的 Secret'}"><span class="flab">应用Secret</span></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="wc-token" maxlength="32" value="${esc(w.token || '')}" placeholder="接收消息设置里自己填的 Token"><span class="flab">Token</span></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="wc-aes" maxlength="43" value="${esc(w.aesKey || '')}" placeholder="43 位，点「随机获取」生成"><span class="flab">EncodingAESKey</span></label>
 
         <!-- v4.24.0 需求 3：可信 IP 代理 —— 服务器 IP 不固定 / 在 NAT 后时，
              改走一台固定出口 IP 的中转服务器（nginx 反代，或零依赖 Node 转发脚本）。
@@ -4423,12 +4406,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <label class="check-line" style="margin-top:10px;">
           <input type="checkbox" data-mk="wc-proxy-on"${w.proxyEnabled ? ' checked' : ''}>
           <span><b>启用可信 IP 代理</b>（把对企微 API 的请求经固定出口 IP 的中转服务器转发）</span></label>
-        <label class="field"><span>代理地址<span class="field-hint">（中转机上的反代基址，转发到 qyapi.weixin.qq.com）</span></span>
-          <input type="text" data-mk="wc-proxy-url" maxlength="300" value="${esc(w.proxyUrl || '')}"
-                 placeholder="例如 https://relay.example.com/wecom"></label>
-        <label class="field"><span>代理鉴权 Token</span>
-          <input type="password" data-mk="wc-proxy-token" maxlength="128" value=""
-                 placeholder="${w.hasProxyToken ? '已保存，留空表示不修改' : '自定义一串随机字符，中转机用它校验请求'}"></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="wc-proxy-url" maxlength="300" value="${esc(w.proxyUrl || '')}"
+                 placeholder="例如 https://relay.example.com/wecom"><span class="flab">代理地址</span><small class="field-hint">（中转机上的反代基址，转发到 qyapi.weixin.qq.com）</small></label>
+        <label class="field fld"><input class="fld-inp" type="password" data-mk="wc-proxy-token" maxlength="128" value=""
+                 placeholder="${w.hasProxyToken ? '已保存，留空表示不修改' : '自定义一串随机字符，中转机用它校验请求'}"><span class="flab">代理鉴权Token</span></label>
         <div class="note-box">
           启用后：白名单里只需填<b>中转服务器的固定 IP</b>，家里服务器换网 / 换机都不用再动后台。
         </div>
@@ -4609,7 +4590,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const cfg = state.config || {};
     const sysRemindOn = s ? s.remindEnabled !== false : g.remindEnabled !== false;
     const sysRemindTime = s ? (s.remindDefaultTime || '08:00') : (g.remindDefaultTime || '08:00');
-    const sysAdv = s ? (Number(s.remindAdvanceDays) || 0) : (Number(g.advanceDays) || 0);
     const sysNotifyOn = s ? s.notifyOnChange !== false : g.notifyOnChange !== false;
     /* v4.14.0 需求 4：notifyKinds / notifyDigestTime / quiet* 这几个局部变量
        原本是给「家庭默认」那块表单用的；表单在 v4.13.0 就撤掉了，
@@ -4680,8 +4660,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <div class="sub-head">我的接收方式</div>
         <div class="row-list">
           <div class="row">
-            <div class="r-label"><b>提醒收件邮箱</b>
-              <small>${me.notify_email ? '当前：' + esc(me.notify_email) : '未设置 · 配置后，参加的待办到点会把提醒发给你'}</small></div>
+            <div class="r-label"><b>收件邮箱</b>
+              <small>${me.notify_email ? '当前：' + esc(me.notify_email) : '未设置'}</small></div>
             <button type="button" class="btn-ghost btn-sm" data-act="notify-email">设置</button>
           </div>
           <div class="row">
@@ -4708,7 +4688,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           <!-- v4.23.0 需求 5：推送日志（管理员）。所有推送逐条留痕，可一键清空。 -->
           <div class="row">
             <div class="r-label"><b>推送日志</b>
-              <small>待办提醒 / 内容通知 / 记账推送 / 测试邮件的逐条记录，排查「谁没收到、为什么」</small></div>
+              </div>
             <button type="button" class="btn-ghost btn-sm" data-act="push-logs-open">查看</button>
           </div>` : ''}
         </div>
@@ -4718,9 +4698,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           ${notifyStatusBlock(s)}
           ${billPushStatusBlock(s)}
         </div>
-        <div class="sec-note-box"><div class="note-box">${me.is_admin
-          ? '你是管理员：上面「待办提醒 / 内容通知 / 记账推送 → 设置」里改的就是<b>全家的默认值</b>，保存后全家生效。成员可以选「跟随管理员」，也可以自己收窄（只能关，不能放大）。'
-          : '你的「待办提醒 / 内容通知」默认<b>跟随管理员</b>；想单独关掉某一类，点右侧「设置」自己选（只能收窄，不能放大）。'}</div></div>`;
+        `;
 
     /* —— ⑤ 推送配置（仅管理员）——
        需求原文：「发件邮箱移入推送配置并支持勾选邮件／企业微信推送后展开配置」。
@@ -4759,18 +4737,17 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const dtOpen = dtOn && isOpen('dingtalk');
     const fsSt = (s && s.feishuStatus) || {};
     const dtSt = (s && s.dingtalkStatus) || {};
-    /* 一块群机器人通道的配置区（飞书 / 钉钉同构，只有文案与接口名不同） */
+    /* 一块群机器人通道的配置区（飞书 / 钉钉同构，只有文案与接口名不同）
+       v4.28.11（图 1 / 图 2 / 图 6）：删掉折叠头那行「已配置 · 群机器人建在哪个群…」、
+       Webhook 下的「已配置：https://…」、加签密钥左侧的解释 ——
+       开没开看右边那个复选框，配没配就看「已保存，留空表示不修改」的 placeholder。 */
     const hookBox = (which, label, open, on, st) => `
         <div class="row-list">
           <div class="row">
             <div class="r-label">
               <b><button type="button" class="fold-title" data-act="push-fold" data-which="${which}"
                          aria-expanded="${open ? 'true' : 'false'}">${label}推送</button>
-                 <span class="fold-caret">${open ? '⌃' : '⌄'}</span></b>
-              <small>${on
-                ? (st.configured ? '已配置 · 群机器人建在哪个群，消息就发到哪个群' : '已开启 · 还没填 Webhook')
-                : '已关闭 · 选了「' + label + '群」的家人收不到'}${
-                on && !open ? ' · 点标题展开配置' : ''}</small></div>
+                 <span class="fold-caret">${open ? '⌃' : '⌄'}</span></b></div>
             <label class="check-line"><input type="checkbox" data-act="push-${which}-toggle"${on ? ' checked' : ''}>
               <span>启用</span></label>
           </div>
@@ -4778,13 +4755,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <div class="push-sub${open ? '' : ' hidden'}" id="push-${which}-box">
           <div class="row-list">
             <div class="row row-stack">
-              <div class="r-label"><b>Webhook 地址</b>
-                <small>${st.configured ? `已配置：${esc(st.webhookMasked || '…')}` : `在${label}群里添加「自定义机器人」后复制这里的地址`}</small></div>
+              <div class="r-label"><b>Webhook 地址</b></div>
               <input type="text" data-mk="hook-${which}-webhook" maxlength="500"
                      value="" placeholder="${st.configured ? '已保存，留空表示不修改' : (which === 'feishu' ? 'https://open.feishu.cn/open-apis/bot/v2/hook/…' : 'https://oapi.dingtalk.com/robot/send?access_token=…')}">
             </div>
-            <div class="row"><div class="r-label"><b>加签密钥</b>
-              <small>${st.hasSecret ? '已保存，留空表示不修改' : `机器人的「${which === 'feishu' ? '签名校验' : '加签'}」安全设置里生成；用关键词安全设置则留空`}</small></div>
+            <div class="row"><div class="r-label"><b>加签密钥</b></div>
               <input type="password" data-mk="hook-${which}-secret" maxlength="100" value="" placeholder="留空不改"></div>
           </div>
           <div class="status-ops">
@@ -4802,9 +4777,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <div class="r-label">
               <b><button type="button" class="fold-title" data-act="push-fold" data-which="mail"
                          aria-expanded="${mailOpen ? 'true' : 'false'}">邮件推送</button>
-                 <span class="fold-caret">${mailOpen ? '⌃' : '⌄'}</span></b>
-              <small>${mailOn ? '已开启 · 走下面的发件邮箱' : '已关闭 · 提醒不会用邮件发'}${
-                mailOn && !mailOpen ? ' · 点标题展开配置' : ''}</small></div>
+                 <span class="fold-caret">${mailOpen ? '⌃' : '⌄'}</span></b></div>
             <label class="check-line"><input type="checkbox" data-act="push-mail-toggle"${mailOn ? ' checked' : ''}>
               <span>启用</span></label>
           </div>
@@ -4832,10 +4805,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
               <b><button type="button" class="fold-title" data-act="push-fold" data-which="wecom"
                          aria-expanded="${wecomOpen ? 'true' : 'false'}">企业微信推送</button>
                  <span class="fold-caret">${wecomOpen ? '⌃' : '⌄'}</span></b>
-              <small>${wecomOn
-                ? '已开启 · 提醒、催办、报表都走它'
-                : '已关闭 · 企业微信接入整体停用（回消息也停）'}${
-                wecomOn && !wecomOpen ? ' · 点标题展开配置' : ''}</small></div>
+              </div>
             <label class="check-line"><input type="checkbox" data-act="push-wecom-toggle"${wecomOn ? ' checked' : ''}>
               <span>启用</span></label>
           </div>
@@ -4845,28 +4815,20 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         </div>
         ${hookBox('feishu', '飞书', fsOpen, fsOn, fsSt)}
         ${hookBox('dingtalk', '钉钉', dtOpen, dtOn, dtSt)}
-        <div class="sec-note-box"><div class="note-box">
-          关掉一个通道<b>不会删掉它的配置</b>：授权码 / 企业微信参数 / 群机器人 Webhook 都还在，重新勾上就能用，不用重填。
-          飞书与钉钉是<b>群机器人</b>：消息发到群里全家可见，没有「绑定到个人」这一步。
-          每个家人具体走哪条通道，在各自的「消息推送设置 → 推送方式」里选。
-        </div></div>`;
+        `;
 
     /* —— ⑥ 数据备份（仅管理员）—— */
     const backupBody = `
         <div class="row-list">
           <div class="row">
-            <div class="r-label"><b>导出备份</b><small>下载一个 JSON 文件，含全部数据与图片</small></div>
+            <div class="r-label"><b>导出备份</b></div>
             <button type="button" class="btn-soft btn-sm" data-act="backup-download">下载</button>
           </div>
           <div class="row">
             <div class="r-label"><b>从备份恢复</b><small>整体替换现有数据，不可撤销</small></div>
             <button type="button" class="btn-ghost btn-sm" data-act="backup-restore">选择文件</button>
           </div>
-          <div class="row">
-            <div class="r-label"><b>冷备份数据库</b><small>服务器上执行 npm run backup，直接拷单个 .db 文件</small></div>
-          </div>
         </div>
-        <div class="sec-note-box"><div class="note-box">数据都在服务器的一个 SQLite 文件里。<b>定期下载备份</b>，换服务器时把备份传上去恢复即可完成迁移。</div></div>
         <input type="file" accept="application/json,.json" class="hidden" id="restore-file">`;
 
     return `
@@ -4891,7 +4853,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       <!-- ① 外观主题：**唯一不折叠**的分区（需求原文）。
            三张卡片直接给出「另外两套长什么样」，看得见才好选。 -->
       <section class="card sec">
-        ${secHead('🎨', '外观主题', '跟着账号走，换设备也一样')}
+        ${secHead('🎨', '外观主题')}
         <div class="theme-wrap">
           <div class="theme-grid">
             ${THEMES.map((t) => `
@@ -4920,7 +4882,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           </div>
         </div>` : ''}
         <div class="sub-head sub-head-row">成员（${state.members.length} 人）${
-          me.is_admin ? '<span class="sub-head-hint">点头像可查看该成员的配置信息</span>' : ''}</div>
+          me.is_admin ? '<span class="sub-head-hint">点击成员头像查看参数</span>' : ''}</div>
         <div class="row-list">${members}</div>`)}
 
       ${meFold('notify', '🔔', '消息推送设置',
@@ -4933,9 +4895,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
       ${meFold('cat', '🏷️', '记账分类与预算', billCatSummary(), billCatBodyHtml())}
 
-      ${me.is_admin ? meFold('backup', '💾', '数据备份', '导出 / 恢复 / 冷备', backupBody) : ''}
+      ${me.is_admin ? meFold('backup', '💾', '数据备份', '导出 / 恢复', backupBody) : ''}
 
-      ${meFold('system', 'ℹ️', '系统状态', `v${esc((state.config && state.config.version) || '?')} · 管理员默认配置`, systemStatusHtml(s, g, cfg))}
+      ${meFold('system', 'ℹ️', '系统状态', `v${esc((state.config && state.config.version) || '?')}`, systemStatusHtml(s, g, cfg))}
 
       <div class="app-foot">${brandFootHtml()}</div>`;
   }
@@ -4957,7 +4919,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         : (s.pushMailEnabled !== false ? '只用邮件' : (s.pushWecomEnabled !== false ? '只用企业微信' : '两个都关着')))
       : '跟随管理员';
     const remindTime = s ? (s.remindDefaultTime || '08:00') : ((g && g.remindDefaultTime) || '08:00');
-    const advD = s ? (Number(s.remindAdvanceDays) || 0) : (Number(g && g.advanceDays) || 0);
     const quietS = s ? String(s.notifyQuietStart || '') : String((g && g.notifyQuietStart) || '');
     const quietE = s ? String(s.notifyQuietEnd || '') : String((g && g.notifyQuietEnd) || '');
     const rep = (state.billMeta && state.billMeta.reports) || null;
@@ -4984,14 +4945,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             ${(s ? s.pushMailEnabled !== false || s.pushWecomEnabled !== false : true) ? rsPill('ok', '已配置') : rsPill('off', '两个通道都关着')}</div>
           <div class="rs-grid">
             ${rsCell('推送方式', pushText + ` · 我：${PUSH_LABEL[pushChannelOf(me)] || '企业微信'}`, '', true)}
-            ${rsCell('待办提醒', `${s ? (s.remindEnabled !== false ? '开' : '关') : ((g && g.remindEnabled !== false) ? '开' : '关')} · ${remindTime} · ${advanceLabel(advD)}`, '', true)}
+            ${rsCell('待办提醒', `${s ? (s.remindEnabled !== false ? '开' : '关') : ((g && g.remindEnabled !== false) ? '开' : '关')} · 默认 ${remindTime}`, '', true)}
             ${rsCell('内容通知', (quietS && quietE) ? `免打扰 ${quietS}–${quietE} 后合并 · 上限 ${notifyMaxPerMin()}/分` : `变更即发 · 上限 ${notifyMaxPerMin()}/分`, '', true)}
             ${rsCell('记账推送', billText)}
           </div>
         </div>
-        <div class="rs-line">${s
-          ? `注册${s.allowRegister ? '开放' : '已关闭'} · 免登录 ${esc(String(s.sessionTtlHours))} 小时 · 数据保存在你自己的服务器上`
-          : '家庭设置仅管理员可查看'}</div>
+        <!-- v4.28.11（图 5）：底部这行「注册已关闭 · 免登录 720 小时 · 数据保存在你自己的服务器上」删掉 ——
+             前两项在上面「家庭设置」里就有开关，第三项是产品宣传，不该占系统状态的位置。 -->
+        ${s ? '' : '<div class="rs-line">家庭设置仅管理员可查看</div>'}
       </div>`;
   }
 
@@ -5034,7 +4995,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   function pushLogsHtml(logs) {
     if (!logs.length) {
-      return `<div class="note-box">还没有推送记录。发出第一条待办提醒 / 内容通知 / 记账推送后就会出现在这里。</div>`;
+      return '<div class="note-box">还没有推送记录。</div>';
     }
     return `<div class="push-logs">${logs.map((l) => `
         <div class="push-log${l.ok ? '' : ' fail'}">
@@ -5057,8 +5018,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     } catch (err) { toast(err.message, 'err'); return; }
     openModal({
       title: '推送日志',
-      body: `<div class="note-box">最近 200 条（库里保留最近 3000 条）。「未送达」下面写着原因：
-        没配发件邮箱 / 企业微信失败后已改用邮件 / 免打扰时段内缓发…</div>${pushLogsHtml(logs)}`,
+      /* v4.28.11（图 7）：只留「最近 200 条（库里保留最近 3000 条）。」——
+         「未送达下面写着原因…」那半句是在教人怎么读日志，而日志本身每一行就写着原因。 */
+      body: `<div class="note-box">最近 200 条（库里保留最近 3000 条）。</div>${pushLogsHtml(logs)}`,
       foot: `<button type="button" class="btn-danger btn-sm" data-act="push-logs-clear">清除日志</button>
         <div class="spacer"></div>
         <button type="button" class="btn-ghost" data-act="modal-close">关闭</button>`,
@@ -5076,11 +5038,29 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   /* ═══ 弹窗 ═══════════════════════════════════════════════ */
 
+  /* v4.28.11 需求 1：移动端全屏弹窗跟随「视觉视口」高度。
+     iOS 键盘弹起时 layout viewport 不变，100dvh 也不变 → 输入框会被键盘盖住；
+     visualViewport.height 才是真正可见的那一块。没这个 API 的浏览器回落到 100dvh。 */
+  function syncModalViewport() {
+    const layer = $('#modal-layer');
+    if (!layer || !layer.classList.contains('is-fullscreen')) return;
+    const vv = window.visualViewport;
+    const h = vv && vv.height ? vv.height : window.innerHeight;
+    layer.style.setProperty('--modal-h', Math.round(h) + 'px');
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncModalViewport);
+    window.visualViewport.addEventListener('scroll', syncModalViewport);
+  }
+
   function openModal(opts) {
     closeModal();
     const layer = document.createElement('div');
     layer.className = 'modal-layer';
     layer.id = 'modal-layer';
+    /* ★ v4.28.11 需求 1：长表单（待办 / 发帖 / 记录）在移动端全屏。
+       PC 端由 CSS 媒体查询挡住，class 挂上也不影响居中卡片。 */
+    if (opts.fullscreen) layer.classList.add('is-fullscreen');
     layer.innerHTML = `
       <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-head">
@@ -5092,6 +5072,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       </div>`;
     layer.addEventListener('mousedown', (e) => { if (e.target === layer) closeModal(); });
     $('#modal-root').appendChild(layer);
+    if (opts.fullscreen) syncModalViewport();
     if (opts.onMount) opts.onMount(layer);
   }
 
@@ -5559,6 +5540,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   document.addEventListener('contextmenu', (e) => {
     const img = e.target && e.target.closest ? e.target.closest(MENU_SELECTOR) : null;
     if (!img) return;
+    /* v4.28.12：发帖页缩略图上「右键 / 长按」的语义是排序，不是看图 ——
+       只吃掉浏览器默认菜单（含安卓的「保存图片」），不弹我们自己的图片菜单。 */
+    if (img.hasAttribute('data-nomenu')) { e.preventDefault(); return; }
     e.preventDefault();
     openImgMenu(imgSrcOf(img), e.clientX, e.clientY, galleryOf(img));
   });
@@ -5566,7 +5550,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   // 移动端：长按 500ms 弹菜单
   document.addEventListener('touchstart', (e) => {
     const img = e.target && e.target.closest ? e.target.closest(MENU_SELECTOR) : null;
-    if (!img || e.touches.length !== 1) return;
+    /* data-nomenu：发帖页缩略图（长按是排序），连计时器都不要起 ——
+       否则 0.4s 起拖、0.5s 又把图片菜单盖在拖拽层上面。 */
+    if (!img || img.hasAttribute('data-nomenu') || e.touches.length !== 1) return;
     const t = e.touches[0];
     longPress.fired = false;
     clearTimeout(longPress.timer);
@@ -5637,6 +5623,24 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       await api('/api/records/' + id, { method: 'PATCH', body: { archived: to } });
       await refreshRecords();
       toast(to ? '已归档（切到「已归档」可查看）' : '已取消归档', 'ok');
+    } catch (err) { toast(err.message, 'err'); }
+  }
+
+  /* v4.28.10 需求 3：记录置顶开关（原「添加记录」表单里的勾选框，挪到查看页） */
+  async function toggleRecordPinned(id) {
+    const r = state.records.find((x) => x.id === id);
+    if (!r) return;
+    const to = !r.pinned;
+    try {
+      await api('/api/records/' + id, { method: 'PATCH', body: { pinned: to } });
+      await refreshRecords();
+      recRefreshView();            // 徽标跟着变（查看页里的「★ 置顶」）
+      const btn = $('#modal-layer [data-act="rec-pin-toggle"]');
+      if (btn) {
+        btn.textContent = to ? '★ 已置顶' : '☆ 置顶';
+        btn.title = to ? '取消置顶后回到正常时间顺序' : '置顶后固定排在列表最前面';
+      }
+      toast(to ? '已置顶（列表最前面）' : '已取消置顶', 'ok');
     } catch (err) { toast(err.message, 'err'); }
   }
 
@@ -6200,69 +6204,12 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   /* ═══ 待办表单 ═══════════════════════════════════════════ */
 
-  /* —— 时间设置的「简便模式」（v1.6.0）——
-     旧版要依次点开两个时间表盘；v1.6.0 起改成「挑一个时长」，
-     结束时间自动算出来，需要精确时再展开结束时间输入。
-     v4.12.0：连「常用时间」那一排 chip 也去掉了（需求原文「移除常用时间点选」）——
-     真正会用的人直接填 HH:MM，不用的人只是被多占一屏。TIME_QUICK 与 time-pick
-     处理器一并删除，只留 DURATION_CHOICES。 */
+  /* v4.28.7：「时长」下拉已删除（需求原文「删除时长」）。
+     结束时间改由「跨天结束日」表达，开始时间字段改名「提醒时间」——
+     它决定的是「几点提醒」，不是「几点开始」。因此 DURATION_CHOICES /
+     toMin / toHHMM / addMinutes / durationFromTimes / syncTimeUI 一并移除，
+     不再保留没人调用的死代码。 */
 
-  /** 时长选项：结束时间 = 开始 + 时长；「不限」表示不设结束时间 */
-  const DURATION_CHOICES = [
-    ['0', '不限时长'],
-    ['30', '30 分钟'],
-    ['60', '1 小时'],
-    ['90', '1.5 小时'],
-    ['120', '2 小时'],
-    ['180', '3 小时'],
-    ['__custom__', '自定义…'],
-  ];
-
-  const toMin = (hhmm) => {
-    const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(hhmm || ''));
-    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
-  };
-  const toHHMM = (mins) => `${pad(Math.floor((mins % 1440) / 60))}:${pad(mins % 60)}`;
-  const addMinutes = (hhmm, n) => {
-    const base = toMin(hhmm);
-    return base == null ? '' : toHHMM((base + Number(n) + 1440) % 1440);
-  };
-
-  /** 由已有的开始/结束时间反推时长选项（编辑旧数据时用） */
-  function durationFromTimes(start, end) {
-    const a = toMin(start); const b = toMin(end);
-    if (a == null || b == null || b <= a) return '0';
-    const diff = b - a;
-    return DURATION_CHOICES.some(([v]) => v === String(diff)) ? String(diff) : '__custom__';
-  }
-
-  /**
-   * 把时长换算成结束时间，并刷新界面：
-   *   · 「不限」→ 保留用户手填的结束时间（不动它）
-   *   · 具体时长 → 由开始时间 + 时长算出来
-   *   · 「自定义…」→ 展开结束时间输入框，让用户自己挑
-   */
-  function syncTimeUI(layer) {
-    const start = modalValue('startTime');
-    const dur = layer.dataset.duration || '0';
-    const endInput = layer.querySelector('[data-mk="endTime"]');
-    const exact = layer.querySelector('.time-exact');
-    const custom = dur === '__custom__';
-    if (exact) exact.classList.toggle('hidden', !custom);
-    if (!custom && endInput) {
-      const n = Number(dur) || 0;
-      if (n > 0 && start) endInput.value = addMinutes(start, n);
-      // n === 0（不限）时保持原值不动：可能是用户之前精确设置过的结束时间
-    }
-    /* v4.12.0：常用时间 chip 已移除，这里不再需要同步 chip 的选中态 */
-    const hint = layer.querySelector('#time-hint');
-    if (hint) {
-      const end = endInput ? endInput.value : '';
-      if (!start) hint.textContent = '不设具体时间，只记日期。';
-      else if (end && end >= start) hint.textContent = `将记录为 ${start} – ${end}。`;
-      else hint.textContent = `将记录为 ${start} 开始（未设结束时间）。`;
-    }
-  }
 
   /**
    * 待办表单。
@@ -6290,9 +6237,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        所以下面这些函数都只负责**界面**与**提交字段**，判断可见性永远由服务端做。 */
 
   /** 除自己以外的家庭成员（自己始终可见，不出现在勾选列表里） */
+  /**
+   * 可见成员候选：v4.28.8 起包含**所有用户（含自己）**。
+   * 需求原文「选择指定成员可见时列出所有用户，默认选择自己且不可取消」——
+   * 以前这里只列「其他成员」，自己的可见性被写成一句提示文字，等于要求用户相信一句说明；
+   * 现在把本人作为一个恒亮的、点不掉的成员摆出来，看得见的东西才不用解释。
+   */
   function visOthers() {
-    const meId = Number((state.me && state.me.id) || 0);
-    return (state.members || []).filter((m) => Number(m.id) !== meId);
+    return (state.members || []);
   }
 
   /** 可见范围选择器 + 成员勾选面板。visibleTo 是 id 数组（新数据）或逗号串（兜底） */
@@ -6300,10 +6252,18 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const priv = vis === 'private';
     const sel = new Set((Array.isArray(visibleTo) ? visibleTo : String(visibleTo || '').split(','))
       .map((x) => Number(x)).filter(Boolean));
-    const others = visOthers();
-    const chips = others.length
-      ? others.map((m) => `<button type="button" class="chip vis-chip${sel.has(Number(m.id)) ? ' on' : ''}"
-            data-act="vis-member" data-vis-id="${Number(m.id)}">${esc(m.display_name)}</button>`).join('')
+    const meId = Number((state.me && state.me.id) || 0);
+    const all = visOthers();
+    const chips = all.length
+      ? all.map((m) => {
+        const id = Number(m.id);
+        const isMe = id === meId;
+        /* 自己恒选中且不可取消：本人永远看得到自己的待办（服务端 VISIBLE 也是这么判的），
+           所以这里不是「一个可以改的选项」，而是一个事实。 */
+        const on = isMe || sel.has(id);
+        return `<button type="button" class="chip vis-chip${on ? ' on' : ''}${isMe ? ' vis-self' : ''}"
+            data-act="vis-member" data-vis-id="${id}"${isMe ? ' disabled title="本人始终可见"' : ''}>${esc(m.display_name)}${isMe ? '（我）' : ''}</button>`;
+      }).join('')
       : '<span class="field-hint">家里还没有其他成员</span>';
     return `
       <div class="segmented" data-act="vis-pick">
@@ -6311,7 +6271,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <button type="button" data-vis="private" class="${priv ? 'on' : ''}">🔒 指定可见成员</button>
       </div>
       <div class="vis-members${priv ? '' : ' hidden'}" data-vis-box>
-        <div class="vis-members-hint">默认只有你自己可见；勾选要一起看的家人，没勾的人看不到、也收不到推送。</div>
         <div class="chips">${chips}</div>
       </div>`;
   }
@@ -6363,19 +6322,95 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     }
   }
 
+  /**
+   * v4.28.6：「记录本提醒」候选（待办添加页）。
+   * 只列**已勾「开启提醒」且未归档**的记录 —— 归档表示「收起来了」，即使还留着提醒勾选
+   * 也不该再被翻出来当候选。数据源复用 /api/records 的默认口径（archived=0），不新增接口。
+   */
+  async function toggleTodoRecordPicker(layer) {
+    const wrap = layer.querySelector('#todo-record-wrap');
+    if (!wrap) return;
+    if (!wrap.classList.contains('hidden')) { wrap.classList.add('hidden'); return; }
+    let list = [];
+    try {
+      const out = await api('/api/records?archived=0');
+      list = (out.records || []).filter((r) => r.remind && !r.archived);
+    } catch (err) { toast(err.message || '读取记录本失败', 'err'); return; }
+    if (!list.length) {
+      toast('记录本里还没有「已开启提醒」且未归档的记录', 'err');
+      return;
+    }
+    wrap.dataset.list = JSON.stringify(list.map((r) => ({
+      id: r.id, title: String(r.title || ''), content: String(r.content || '').slice(0, 500),
+    })));
+    wrap.innerHTML = `
+      <div class="field-hint" style="margin-top:8px">点一条把它的标题与内容带进这条待办（日期、时间仍在这里设）：</div>
+      <div class="chips" style="margin-top:6px">
+        ${list.map((r) => `<button type="button" class="chip" data-act="todo-record-apply" data-id="${Number(r.id)}">${esc(r.title)}</button>`).join('')}
+      </div>`;
+    wrap.classList.remove('hidden');
+  }
+
+  /** 选中一条记录：**记录标题就是这条待办的事项，记录内容进备注**（v4.28.11 需求 3）。
+      这是「从记录本里挑一件要做的事」的入口 —— 事项名照搬记录标题，才不会让人
+      再想一遍怎么描述；内容作为备注留在下面当背景。
+      ★ 它只是内容入口，不额外派生任何提醒逻辑：日期、时间、提醒类型都还是这条待办自己的。 */
+  function applyTodoRecord(layer, recId) {
+    const wrap = layer.querySelector('#todo-record-wrap');
+    if (!wrap) return;
+    let list = [];
+    try { list = JSON.parse(wrap.dataset.list || '[]'); } catch { /* 忽略 */ }
+    const rec = list.find((x) => String(x.id) === String(recId));
+    if (!rec) return;
+    const titleEl = layer.querySelector('[data-mk="title"]');
+    if (titleEl) titleEl.value = rec.title;
+    const noteWrap = layer.querySelector('#todo-note-wrap');
+    const noteEl = layer.querySelector('[data-mk="note"]');
+    if (noteEl) {
+      const cur = String(noteEl.value || '').trim();
+      const body = String(rec.content || '').trim();
+      if (body) noteEl.value = cur ? `${cur}\n\n${body}` : body;
+    }
+    if (noteWrap) noteWrap.classList.remove('hidden');
+    const nb = layer.querySelector('[data-act="todo-note-open"]');
+    if (nb) nb.classList.add('hidden');
+    /* 记下来源：卡片右上角的「记录本」角标靠它，推送模板也据此标一句 */
+    layer.dataset.recordId = String(rec.id);
+    /* 记录本提醒的意义就是「要提醒我」：如果用户之前选了「不提醒」，带进来时切回系统默认，
+       否则这条待办建出来根本不会响（比不提供这个入口更让人困惑）。 */
+    const modeSel = layer.querySelector('[data-mk="remindMode"]');
+    if (modeSel && modeSel.value === 'none') {
+      modeSel.value = 'system';
+      modeSel.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    wrap.classList.add('hidden');
+    toast(`已带入记录本「${rec.title}」`, 'ok');
+  }
+
   async function openTodoForm(todo) {
     const isEdit = !!todo;
     try { await refreshMembers(); } catch { /* 拉不到就用现有列表兜底，不阻断填写 */ }
-    const t = todo || {
-      title: '', note: '', date: state.selected, endDate: '', endTime: '',
-      /* v4.17.0 需求 4：新建待办的开始时间默认 = 消息推送设置里待办提醒的默认推送时间。
-         大多数「要提醒的待办」就发生在那个点上，预填比每次手敲更省事；
-         不想要的人清空即可（空 = 不带时间，催促走默认提醒时间）。 */
-      startTime: myRemindTime(),
-      participants: [], priority: 'normal', repeat: '', repeatRule: '', visibility: 'family', done: false,
-      remind: true, remindAdvanceDays: -1, urgeMinutes: 0, urgeMaxCount: 20, urgeWindowStart: '08:00', urgeWindowEnd: '22:00',
-      urgeStartAt: '',
-    };
+    const t = (() => {
+      const base = todo || {
+        title: '', note: '', date: state.selected, endDate: '', endTime: '',
+        /* v4.17.0 需求 4：新建待办的开始时间默认 = 消息推送设置里待办提醒的默认推送时间。
+           大多数「要提醒的待办」就发生在那个点上，预填比每次手敲更省事；
+           不想要的人清空即可（空 = 不带时间，催促走默认提醒时间）。 */
+        startTime: myRemindTime(),
+        participants: [], priority: 'normal', repeat: '', repeatRule: '', visibility: 'family', done: false,
+        remind: true, remindAdvanceDays: -1, urgeMinutes: 0, urgeMaxCount: 20, urgeWindowStart: '08:00', urgeWindowEnd: '22:00',
+        urgeStartAt: '',
+        /* v4.28.7：新建待办默认「提前 5 分钟」这一档的位置先摆好，
+           但默认提醒类型仍是「到点提醒」——值在这儿只是让切换过去时不用再填一遍。 */
+        advanceValue: -1, advanceUnit: 'minute',
+        repeatEndMode: 'never', repeatEndDate: '', repeatEndCount: 0,
+      };
+      /* v4.28.10 需求 4：新建时把上次没写完的草稿当**初值**合并进来。
+         放在这里而不是 onMount 回填，模板就能一次性渲染成草稿的样子。 */
+      if (todo) return base;
+      const d = readTodoDraft();
+      return d ? Object.assign({}, base, d, { _draftRestored: true }) : base;
+    })();
     // v4.10.0：重复规则的当前值走统一读取（repeat_rule 优先、repeat 回落）
     const curRule = Repeat.rule(t);
     const myName = state.me ? state.me.display_name : '';
@@ -6391,147 +6426,212 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     /* v4.12.0：提醒方式三档（邮件提醒与催促完成合并后的产物）。
        'system' 用系统配置的提醒方式（邮件 / 企业微信 / 两者），是默认值。 */
     const urgeOn = Number(t.urgeMinutes) > 0;
-    /* v4.22.0 需求 1：这条待办自己设了 0–5 天 → 选「提前提醒」；-1 → 跟随系统设置 */
-    const ownAdv = Number(t.remindAdvanceDays) >= 0 ? Number(t.remindAdvanceDays) : -1;
-    const remindMode = t.remind === false ? 'none' : (urgeOn ? 'urge' : (ownAdv >= 0 ? 'advance' : 'system'));
-    const noteOpen = !!String(t.note || '').trim();
-    /* v4.23.0 需求 1 / 2：两个字段的「当前默认值」都如实写在标签上。
-       · 时间：我自己设过 → 我的；没设过 → 管理员的（并明确写出是几点）；
-       · 提醒方式：当前系统会走哪条通道（管理员的通道开关 + 我自己的推送方式）。 */
+    /* v4.22.0 需求 1 / v4.28.7：提前量可能是分钟 / 小时 / 天。
+       ★ v4.28.9 修：这里必须读「这条待办自己设的值」（-1 = 没设、跟随家庭默认），
+         不能读「实际生效值」。服务端早先把 advanceValue 下成了生效值，
+         于是家庭默认设了提前天数时，**每一条待办**打开都显示成「提前提醒」，
+         一保存就把家庭默认写死成这条待办自己的设置 —— 这就是
+         「现有待办（含重复事项）全变成提前提醒」的根因。
+         另外 0 天的提前等价于不提前，也不该算「设了提前量」。 */
+    const advRaw = Number(t.advanceValue);
+    const hasNewAdv = Number.isFinite(advRaw) && advRaw > 0;
+    const legacyRaw = Number(t.remindAdvanceDays);
+    const legacyAdv = Number.isFinite(legacyRaw) && legacyRaw > 0 && legacyRaw <= 29 ? legacyRaw : -1;
+    const ownAdv = hasNewAdv ? advRaw : legacyAdv;
+    /* v4.28.10 需求 4：草稿里记了用户手选的提醒类型就以它为准 ——
+       只按 remind/urge/提前量反推的话，「提前提醒 + 提前 0 天」这种组合会还原成「到点提醒」。 */
+    const remindMode = (!todo && t.remindMode)
+      ? String(t.remindMode)
+      : (t.remind === false ? 'none' : (urgeOn ? 'urge' : (ownAdv > 0 ? 'advance' : 'system')));
+    /* v4.28.7：新建默认「提前 5 分钟」；编辑时按库里存的单位回填 */
+    let advUnit0 = hasNewAdv ? String(t.advanceUnit || 'day') : (legacyAdv > 0 ? 'day' : 'minute');
+    let advValue0 = ownAdv > 0 ? ownAdv : 5;
+    /* ★ v4.28.11 需求 5：每天重复的事项不能按天提前 ——「提前 1 天」等于落到上一个周期，
+       提醒就永远落在「上一次的那一天」，等于白设。打开编辑页时库里如果是「每天 + 按天」，
+       就地折算成小时（×24−1，封顶 23），否则下拉里那个被置灰的「天」会成为
+       选不中又改不掉的死状态。 */
+    if (curRule === 'daily' && advUnit0 === 'day') {
+      advValue0 = Math.min(23, Math.max(1, advValue0 * 24 - 1));
+      advUnit0 = 'hour';
+    }
+    /* v4.28.9 需求 3：「提前」是选择框（按单位封顶）。
+       v4.28.11 需求 5：范围重新定为 分钟 1-59 / 小时 1-23 / 天 1-29；
+       每周重复按天最多 6 —— 提前 7 天就正好压到上一次的那一天。
+       ★ 已经存着的值即使超出上限也要留在选项里（否则打开编辑页会看到「1」，
+         等于静默改数）；真正超范围由保存时的提示拦。 */
+    const dayCapOf = (rep) => (rep === 'weekly' ? 6 : 29);
+    const advCapOf = (u, rep) => (u === 'hour' ? 23
+      : u === 'day' ? dayCapOf(rep === undefined ? curRule : rep) : 59);
+    /* v4.28.12：库里可能存着「每周 + 提前 20 天」这类旧值 ——
+       打开编辑页时就落到上限，免得下拉框里选中一个不存在的项（变成空值）。
+       只改表单显示，保存前不动库；真的要改还是得点保存。 */
+    advValue0 = Math.min(advValue0, advCapOf(advUnit0, curRule));
+    /* v4.28.12：capIn 显式传入时严格只生成 1..cap。
+       上一版为了「不静默改掉超范围的旧值」，会把选项撑到旧值那么大 ——
+       于是「每周 + 按天」里出现了 7、8…29，选中就是一个必然保存失败的组合。
+       现在超范围的值在打开编辑页时就落到上限（见下面的夹取），选项里不再有非法值。 */
+    const advOpts = (u, cur, capIn) => {
+      const cap = capIn != null ? capIn : advCapOf(u);
+      const keep = Math.min(cap, Math.max(1, Math.round(Number(cur) || 1)));
+      let s = '';
+      for (let i = 1; i <= cap; i++) s += `<option value="${i}"${keep === i ? ' selected' : ''}>${i}</option>`;
+      return s;
+    };
+    /* v4.28.7：新建默认简洁视图（只填「做什么」）；编辑默认详细，否则看不到已有设置 */
+    const startDetail = isEdit;
+    const repEndMode = String(t.repeatEndMode || 'never');
+    /* v4.28.8：提醒时间不再在标签上写括号说明 —— 输入框里直接显示具体时刻
+       （用户设过用他的，没设过用管理员的），来源由摘要那一句话交代。 */
     const tInfo = remindTimeInfo();
-    const timeSrcLabel = tInfo.mine
-      ? `我的默认 ${tInfo.time}`
-      : `管理员默认 ${tInfo.admin}`;
-    const sysChannelLabel = (() => {
-      const s = state.settings || {};
-      const mail = s.pushMailEnabled !== false;
-      const wc = s.pushWecomEnabled !== false;
-      const base = mail && wc ? '邮件 + 企业微信'
-        : mail ? '只用邮件'
-          : wc ? '只用企业微信' : '两个通道都关着';
-      return `${base} · 我：${PUSH_LABEL[pushChannelOf(state.me)] || '企业微信'}`;
-    })();
 
     openModal({
       title: isEdit ? '编辑待办' : '添加待办',
+      fullscreen: true,
       body: `
-        <!-- ① 可见范围置顶（v4.28.2：默认全家可见；选「指定可见成员」后默认仅自己） -->
-        <div class="field"><span>可见范围</span>
+        <!-- ① 可见范围置顶（v4.28.8：选「指定可见成员」时列出全部用户，本人恒选中且不可取消）
+             v4.28.9 需求 7：去掉「可见范围」这个标题 —— 两个按钮本身就说明了它在问什么。 -->
+        <div class="field field-vis">
           ${visPickHtml(t.visibility, t.visibleTo)}
         </div>
 
-        <label class="field"><span>要做什么</span>
-          <input type="text" data-mk="title" maxlength="100" value="${esc(t.title)}" placeholder="例如：去领500万彩票奖金"></label>
-
-        <!-- ④ 备注：默认收起，点按钮才出现输入框 -->
-        <div class="field">
-          <div class="todo-note-head">
-            <span>备注<span class="field-hint">（可选）</span></span>
-            <button type="button" class="btn-ghost btn-sm${noteOpen ? ' hidden' : ''}" data-act="todo-note-open">＋ 添加备注</button>
-          </div>
-          <div id="todo-note-wrap"${noteOpen ? '' : ' class="hidden"'}>
-            <textarea data-mk="note" maxlength="2000" placeholder="补充说明，可留空">${esc(t.note)}</textarea>
-          </div>
-        </div>
-
-        <!-- ② 日期与重复并排：同一个决策的两个面 -->
-        <div class="time-row todo-date-row">
-          <label class="field field-sm"><span>日期<span class="field-hint">（可留空）</span></span>
-            <input type="date" data-mk="date" value="${esc(t.date)}"></label>
-          <label class="field field-sm"><span>重复</span>
-            <select data-mk="repeat" title="选了重复就不能跨天">
-              <option value=""${!curRule ? ' selected' : ''}>不重复</option>
-              <option value="daily"${curRule === 'daily' ? ' selected' : ''}>每天</option>
-              <option value="weekly"${curRule === 'weekly' ? ' selected' : ''}>每周</option>
-              <option value="monthly_solar"${curRule === 'monthly_solar' ? ' selected' : ''}>每月（公历）</option>
-              <option value="monthly_lunar"${curRule === 'monthly_lunar' ? ' selected' : ''}>每月（农历）</option>
-              <option value="yearly_solar"${curRule === 'yearly_solar' ? ' selected' : ''}>每年（公历）</option>
-              <option value="yearly_lunar"${curRule === 'yearly_lunar' ? ' selected' : ''}>每年（农历）</option>
-            </select></label>
-        </div>
-        <label class="field" id="todo-end-field"><span>结束日期<span class="field-hint">（可选：跨天待办，结束日之前的每天都出现在日历上；与重复互斥）</span></span>
-          <input type="date" data-mk="endDate" value="${esc(t.endDate || '')}" min="${esc(t.date || '')}"></label>
-
-        <!-- ③ 时间：常用时间点选已移除，直接填 / 选
-             v4.23.0 需求 1：标签里的 * 直接说明「这个默认值是哪儿来的」——
-               我自己设过默认时间 → 「我的默认 20:00」；
-               没设过 → 「管理员默认 08:00」。
-             两个值都从服务端来（个人偏好 / 家庭设置），不在前端写死。 -->
-        <div class="field"><span>时间<span class="field-hint">（可选：${timeSrcLabel}）</span></span>
-          <div class="time-row">
-            <label class="field field-sm"><span>开始</span>
-              <input type="time" data-mk="startTime" value="${esc(t.startTime)}"></label>
-            <label class="field field-sm"><span>时长</span>
-              <select data-mk="duration">
-                ${DURATION_CHOICES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
-              </select></label>
-          </div>
-          <label class="field field-sm time-exact hidden"><span>结束时间</span>
-            <input type="time" data-mk="endTime" value="${esc(t.endTime)}"></label>
-          <small class="field-hint" id="time-hint"></small>
-        </div>
-
-        <div class="field"><span>参与人物<span class="field-hint">（点一下即可选中/取消，提醒会发给选中的成员；「指定可见成员」之外的家人不可选）</span></span>
+        <!-- ② 参与提醒人物：v4.28.8 去掉括号说明 —— 摘要里会讲清「提醒谁」，
+             这里再写一段解释只是噪音。 -->
+        <div class="field"><span>参与提醒人物</span>
           <div class="chips" id="part-chips">
             ${names.map((n) =>
               `<button type="button" class="chip${chosen.has(n) ? ' on' : ''}" data-act="part-toggle" data-name="${esc(n)}">${esc(n)}${n === myName ? '（我）' : ''}</button>`).join('')}
           </div>
         </div>
-        <div class="field"><span>重要程度</span>
-          <div class="segmented" data-act="prio-pick">
-            <button type="button" data-prio="low" class="${t.priority === 'low' ? 'on' : ''}">稍后</button>
-            <button type="button" data-prio="normal" class="${t.priority === 'normal' ? 'on' : ''}">普通</button>
-            <button type="button" data-prio="high" class="${t.priority === 'high' ? 'on' : ''}">重要</button>
-          </div>
-        </div>
 
-        <!-- ⑤ 提醒方式：把「邮件提醒」和「催促完成」合成一个下拉
-             v4.23.0 需求 2：标签上的 * = 当前系统的提醒方式（管理员在
-             「推送渠道设置」里开的通道 + 我自己的推送方式），不再只有一句抽象说明。 -->
-        <label class="field"><span>提醒方式<span class="field-hint">（*：当前 ${esc(sysChannelLabel)}）</span></span>
-          <select data-mk="remindMode">
-            <option value="system"${remindMode === 'system' ? ' selected' : ''}>到点提醒（跟随系统配置的提醒方式）</option>
-            <option value="advance"${remindMode === 'advance' ? ' selected' : ''}>提前提醒（提前 N 天通知）</option>
-            <option value="urge"${remindMode === 'urge' ? ' selected' : ''}>到点提醒 + 催促完成</option>
-            <option value="none"${remindMode === 'none' ? ' selected' : ''}>不提醒</option>
-          </select>
-          <small class="field-hint">系统默认的提醒方式由管理员在「消息推送设置 → 推送渠道设置」里配置（邮件 / 企业微信），
-            我自己的推送方式在「消息推送设置 → 推送方式」里选。</small>
+        <!-- ③ 待办事项：v4.28.8 加高到 3 行（长一点的事项不用边打边滚）。
+             记录本提醒只在详细模式出现，并且内嵌在这个框的右下角 ——
+             它做的事就是「把记录本里的内容带进这个框」，跟这个框是同一件事，
+             另起一行反而像是另一个字段。 -->
+        <label class="field fld todo-title-field">
+          <textarea class="fld-inp" data-mk="title" rows="3" maxlength="100"
+                    placeholder="请输入待办事项">${esc(t.title)}</textarea>
+          <span class="flab">待办事项</span>
+          <button type="button" class="todo-record-inline" data-act="todo-record-pick">＋ 记录本提醒</button>
+        </label>
+        <div id="todo-record-wrap" class="hidden"></div>
+
+        <!-- ④ 备注：v4.28.8 收到 1 行。大多数备注只有一句，给 3 行等于逼着人看留白；
+             真要写长，textarea 自己可以往下拉。 -->
+        <label class="field fld todo-note-field">
+          <textarea class="fld-inp" data-mk="note" maxlength="2000" rows="1"
+                    placeholder="请输入备注">${esc(t.note)}</textarea>
+          <span class="flab">备注</span>
         </label>
 
-        <!-- v4.22.0 需求 1：只有选「提前提醒」才展开提前天数 -->
-        <div id="advance-box" class="field advance-box${remindMode === 'advance' ? '' : ' hidden'}">
-          <span>提前天数<span class="field-hint">（提前几天通知，0 = 当天）</span></span>
-          <div class="time-row">
-            <label class="field field-sm"><span>提前</span>
-              <input type="number" data-mk="remindAdvanceDays" min="0" max="5"
-                     value="${ownAdv >= 0 ? ownAdv : (Number(t.advanceDays) > 0 ? Math.min(5, Number(t.advanceDays)) : 1)}"></label>
-            <span class="field-hint" style="align-self:flex-end;padding-bottom:10px">天</span>
-          </div>
-          <small class="field-hint">设置后<b>不再跟随</b>管理员在「家庭设置 → 待办提醒」里的全局提前天数（0–5 天）。</small>
-        </div>
+        <!-- ⑤ 规则摘要：一句话模式下把自己的设置讲成一句话，不用展开也心里有数 -->
+        <div class="rule-line" id="todo-rule-line"></div>
 
-        <!-- 催促间隔：只有选了「催促」才出现 -->
-        <div id="urge-box" class="field urge-box${remindMode === 'urge' ? '' : ' hidden'}">
-          <span>催促间隔<span class="field-hint">（到点后反复提醒，直到标记完成）</span></span>
-          <select data-mk="urgeMinutes">
-            ${[5, 10, 15, 20, 30, 45, 60].map((m) =>
-              `<option value="${m}"${Number(t.urgeMinutes) === m || (!t.urgeMinutes && m === 10) ? ' selected' : ''}>每 ${m} 分钟催一次</option>`).join('')}
-          </select>
-          <!-- v4.14.0 需求 5：**只留「最多催几次」**。
-               原来的「开始时刻 / 静默时段」两项撤掉了 —— 催促是「到点没做完就一直催到做完」，
-               自己就有时限（24 小时硬顶 + 次数上限 + 回「已完成」即停），
-               再叠一层「几点到几点才催」既讲不清也容易和免打扰混淆。
-               催就是从待办的开始时间起，一直催到停为止；没填开始时间时用「我的」默认提醒时间
-               （v4.15.0 需求 7，服务端 urge.js 读 settings.remind_default_time，不再硬编码 09:00）。 -->
-          <div class="time-row">
-            <label class="field field-sm"><span>最多催几次</span>
-              <input type="number" data-mk="urgeMaxCount" min="0" max="999" value="${Number(t.urgeMaxCount) || 0}"
-                     title="0 = 不限次数；催够自动停"></label>
+        <!-- ⑥ 详细区：日期 / 时间 / 重复 / 结束重复 / 重要程度 / 提醒类型 -->
+        <div id="todo-detail"${startDetail ? '' : ' class="hidden"'}>
+          <!-- 开始日期与提醒时间并排：日期决定「哪天」，时间决定「几点提醒」。
+               v4.28.8：提醒时间**直接显示具体时刻** —— 用户自己设过就用他的，
+               没设过就用管理员的默认值；来源不再写成括号塞在标签里。 -->
+          <div class="time-row todo-date-row">
+            <label class="field field-sm"><span>开始日期</span>
+              <input type="date" data-mk="date" value="${esc(t.date || todayKey())}"></label>
+            <label class="field field-sm"><span>提醒时间</span>
+              <input type="time" data-mk="startTime" value="${esc(t.startTime || tInfo.time)}"></label>
           </div>
-          <small class="field-hint">从待办的开始时间起催；没填开始时间就按「我的」默认提醒时间
-            ${esc(myRemindTime())} 起催。催促按你选的「首选 + 兜底」渠道发（企业微信 / 邮件 / 飞书 / 钉钉）。
-            <b>企业微信</b>里回一句「已完成」就停；邮件和群机器人没有回执入口，正文会告诉你去「待办」里勾一下这条。</small>
+          <!-- 重复与结束重复并排：一个决定「多久一次」，一个决定「何时收手」 -->
+          <div class="time-row todo-date-row">
+            <label class="field field-sm"><span>重复</span>
+              <select data-mk="repeat" title="选了重复就不能跨天">
+                <option value=""${!curRule ? ' selected' : ''}>不重复</option>
+                <option value="daily"${curRule === 'daily' ? ' selected' : ''}>每天</option>
+                <option value="weekly"${curRule === 'weekly' ? ' selected' : ''}>每周</option>
+                <option value="monthly_solar"${curRule === 'monthly_solar' ? ' selected' : ''}>每月（公历）</option>
+                <option value="monthly_lunar"${curRule === 'monthly_lunar' ? ' selected' : ''}>每月（农历）</option>
+                <option value="yearly_solar"${curRule === 'yearly_solar' ? ' selected' : ''}>每年（公历）</option>
+                <option value="yearly_lunar"${curRule === 'yearly_lunar' ? ' selected' : ''}>每年（农历）</option>
+              </select></label>
+            <label class="field field-sm"><span>结束重复</span>
+              <select data-mk="repeatEndMode">
+                <option value="never"${repEndMode === 'never' ? ' selected' : ''}>永不</option>
+                <option value="date"${repEndMode === 'date' ? ' selected' : ''}>按时间</option>
+                <option value="count"${repEndMode === 'count' ? ' selected' : ''}>按次数</option>
+              </select></label>
+          </div>
+          <!-- 结束重复（v4.28.8 修复）：按时间 → 日期选择；按次数 → 次数输入。
+               两块各自就是一个完整的字段行，用 display 直接切；
+               旧结构是「外层 hidden 包着两个各自 hidden 的 div」，
+               外层一旦被判定为隐藏，里面怎么切都出不来 —— 这正是它看起来「点了没反应」的原因。 -->
+          <div id="repeat-end-box" class="repeat-end-box${repEndMode === 'never' || !curRule ? ' hidden' : ''}">
+            <label class="field field-sm" id="repeat-end-date-wrap">
+              <span>结束日期</span>
+              <input type="date" data-mk="repeatEndDate" value="${esc(t.repeatEndDate || '')}">
+            </label>
+            <label class="field field-sm" id="repeat-end-count-wrap">
+              <span>提醒次数</span>
+              <input type="number" data-mk="repeatEndCount" min="1" max="99" step="1"
+                     value="${Number(t.repeatEndCount) > 0 ? Number(t.repeatEndCount) : 10}">
+            </label>
+            <div class="field-hint" id="repeat-end-hint"></div>
+          </div>
+
+          <!-- 提醒类型：v4.28.7 起改叫「提醒类型」（它决定的是提醒怎么发生，不是走哪条通道）。
+               v4.28.8：删掉下方说明 —— 通道与默认值都写进了一句话摘要，这里再讲一遍是重复。
+               v4.28.9 需求 3：它和它的两个子项（提前量 / 催促间隔）一起上移到「重要程度」上方 ——
+               先定「怎么提醒」，再定「多重要」，读起来是一个决策而不是两段设置。 -->
+          <label class="field field-std"><span>提醒类型</span>
+            <select data-mk="remindMode">
+              <option value="system"${remindMode === 'system' ? ' selected' : ''}>到点提醒</option>
+              <option value="urge"${remindMode === 'urge' ? ' selected' : ''}>到点提醒 + 催促完成</option>
+              <option value="advance"${remindMode === 'advance' ? ' selected' : ''}>提前提醒</option>
+              <option value="none"${remindMode === 'none' ? ' selected' : ''}>不提醒</option>
+            </select>
+          </label>
+
+          <!-- 提前量：v4.28.9 需求 3：「提前」从输入框改成选择框（1–99，按单位封顶），
+               手机上不用弹键盘，也不会填出 0 / 负数 / 空值。 -->
+          <div id="advance-box" class="field advance-box${remindMode === 'advance' ? '' : ' hidden'}">
+            <span>提前量</span>
+            <div class="time-row todo-date-row">
+              <label class="field field-sm"><span>提前</span>
+                <select data-mk="advanceValue">${advOpts(advUnit0, advValue0, advCapOf(advUnit0, curRule))}</select></label>
+              <label class="field field-sm"><span>单位</span>
+                <select data-mk="advanceUnit">
+                  <option value="minute"${advUnit0 === 'minute' ? ' selected' : ''}>分钟</option>
+                  <option value="hour"${advUnit0 === 'hour' ? ' selected' : ''}>小时</option>
+                  <!-- v4.28.11 需求 5：每天重复的事项不能按天提前（一提前就跨到上一周期） -->
+                  <option value="day"${advUnit0 === 'day' ? ' selected' : ''}${curRule === 'daily' ? ' disabled' : ''}>天</option>
+                </select></label>
+            </div>
+          </div>
+
+          <!-- 催促间隔：只有选了「催促」才出现。v4.28.8：删掉框下那三行说明，
+               催促的行为（到点起催、按首选+兜底发）在摘要里一句话带过。 -->
+          <div id="urge-box" class="field urge-box${remindMode === 'urge' ? '' : ' hidden'}">
+            <span>催促间隔</span>
+            <select data-mk="urgeMinutes">
+              ${[5, 10, 15, 20, 30, 45, 60].map((m) =>
+                `<option value="${m}"${Number(t.urgeMinutes) === m || (!t.urgeMinutes && m === 10) ? ' selected' : ''}>每 ${m} 分钟催一次</option>`).join('')}
+            </select>
+            <!-- v4.14.0 需求 5：只留「最多催几次」；开始时刻 / 静默时段不再出现在界面上。 -->
+            <div class="time-row">
+              <label class="field field-sm"><span>最多催几次</span>
+                <input type="number" data-mk="urgeMaxCount" min="0" max="999" value="${Number(t.urgeMaxCount) || 0}"
+                       title="0 = 不限次数；催够自动停"></label>
+            </div>
+          </div>
+
+          <div class="field field-std"><span>重要程度</span>
+            <div class="segmented" data-act="prio-pick">
+              <button type="button" data-prio="low" class="${t.priority === 'low' ? 'on' : ''}">稍后</button>
+              <button type="button" data-prio="normal" class="${t.priority === 'normal' ? 'on' : ''}">普通</button>
+              <button type="button" data-prio="high" class="${t.priority === 'high' ? 'on' : ''}">重要</button>
+            </div>
+          </div>
+
+          <!-- 提醒渠道：v4.28.7 只读展示。单条待办不单独设通道 —— 全局已经有一套
+               「首选 + 兜底」，再给每条加一个开关只会变成第二个「我在哪设的」谜题。 -->
+          <div class="field"><span>提醒渠道</span>
+            <div class="field-hint" id="todo-channel-line">${esc(pushChannelSummary(state.me))}</div>
+          </div>
         </div>`,
       foot: `
         ${isEdit ? `<button type="button" class="btn-danger btn-sm" data-act="todo-delete" data-id="${t.id}">删除</button>` : ''}
@@ -6539,62 +6639,365 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
              重复事项本来就没有完成状态，没有这个按钮的话它只会永久留在库里每天提醒一次。 -->
         ${isEdit && Repeat.rule(t) ? `<button type="button" class="btn-ghost btn-sm" data-act="todo-end-repeat" data-id="${t.id}">结束重复</button>` : ''}
         <div class="spacer"></div>
+        <!-- v4.28.10 需求 4：草稿保存状态（新建时才有草稿，编辑态不显示） -->
+        ${isEdit ? '' : '<span class="draft-hint hidden" id="todo-draft-hint"></span>'}
         ${isEdit && !Repeat.rule(t) ? `<button type="button" class="btn-ghost" data-act="todo-done" data-id="${t.id}">${t.done ? '标为未完成' : '标为已完成'}</button>` : ''}
+        <!-- v4.28.8：一句话 / 详细 的切换放在保存按钮左侧 ——
+             它改变的是「这个表单有多少字段」，属于提交前最后一次选择，
+             摆在表单底部会让人以为那是「保存之后再说」的事。
+             v4.28.9 需求 2：**编辑时不给这个按钮** ——
+             编辑的对象是一条已经存在的待办，它有几个字段是既定事实，
+             不存在「改成一句话待办」这回事；留着只会让人以为能把已有设置一键抹掉。 -->
+        ${isEdit ? '' : '<button type="button" class="btn-ghost btn-sm" data-act="todo-mode-toggle">切换详细待办</button>'}
         <button type="button" class="btn-primary" data-act="todo-save" data-id="${isEdit ? t.id : ''}">保存</button>`,
       onMount: (layer) => {
+        /* v4.28.10 需求 4：只有「新建」才存草稿（编辑态存草稿会串内容，见 readTodoDraft 注释） */
+        layer.dataset.todoMode = isEdit ? 'edit' : 'new';
         layer.dataset.participants = JSON.stringify(Array.from(chosen));
         layer.dataset.priority = t.priority;
         layer.dataset.visibility = t.visibility;
         layer.dataset.repeat = curRule || '';
-        // v4.10.0：选了重复 → 结束日期输入框隐藏（跨天与重复互斥）
-        const syncEndField = () => {
-          const f = layer.querySelector('#todo-end-field');
-          if (f) f.classList.toggle('hidden', !!layer.dataset.repeat);
-          // 重复事项没有完成状态，顺手把「标为已完成」按钮藏起来，避免误解
-          // （v4.12.0：原先在全局 segmented 点击处理器里，跟着 repeat-pick 一起搬过来）
-          const doneBtn = layer.querySelector('[data-act="todo-done"]');
-          if (doneBtn) doneBtn.classList.toggle('hidden', !!layer.dataset.repeat);
+        /* v4.28.7：视图模式。新建默认简洁（只填「做什么」），编辑默认详细（否则看不到已有设置） */
+        layer.dataset.mode = startDetail ? 'detail' : 'simple';
+
+        const $mk = (k) => layer.querySelector(`[data-mk="${k}"]`);
+        const val = (k) => { const el = $mk(k); return el ? String(el.value || '') : ''; };
+
+        /* 提前量的中文短语，摘要与「提前提醒」选项文案共用 */
+        const advancePhrase = () => {
+          const n = Math.max(1, Math.round(Number(val('advanceValue')) || 5));
+          const u = val('advanceUnit') || 'minute';
+          return `${n} ${u === 'minute' ? '分钟' : u === 'hour' ? '小时' : '天'}`;
         };
-        syncEndField();
-        // v4.12.0：重复改成下拉 → 用 change 委托（原来是一排按钮的 click 委托）
-        layer.addEventListener('change', (ev) => {
-          const sel = ev.target;
-          if (!sel || sel.dataset.mk !== 'repeat') return;
-          layer.dataset.repeat = sel.value || '';
-          syncEndField();
-        });
-        // 提醒方式：选「催促」展开催促间隔；选「提前提醒」展开提前天数（v4.22.0）
-        const syncRemind = () => {
-          const mode = modalValue('remindMode');
+
+        /* v4.28.8：结束重复的显隐。
+           「按时间」= 一个日期选择器；「按次数」= 一个次数输入框。
+           ★ 修的是 old 版的结构性 bug：两个子块各自 hidden、外层再 hidden 一次，
+             外层被判定隐藏时里面怎么切都出不来（表现就是「选了按时间没反应」）。
+             现在外层只管「有没有重复规则」，里层按 mode 单点切换。 */
+        const syncRepeatEnd = () => {
+          /* v4.28.9 需求 4：不重复就没有「结束重复」这回事 ——
+             下拉置灰不可选，值归到「永不」。否则会存进「不重复 + 按时间结束」
+             这种自相矛盾的组合：它永远不会生效，只会在下次打开时让人以为设置丢了。 */
+          const hasRepeat = !!layer.dataset.repeat;
+          const endSel = $mk('repeatEndMode');
+          if (endSel) {
+            endSel.disabled = !hasRepeat;
+            endSel.title = hasRepeat ? '' : '选了「重复」才能设结束条件';
+            if (!hasRepeat) endSel.value = 'never';
+          }
+          const mode = hasRepeat ? (val('repeatEndMode') || 'never') : 'never';
+          const box = layer.querySelector('#repeat-end-box');
+          if (box) box.classList.toggle('hidden', !hasRepeat || mode === 'never');
+          const dw = layer.querySelector('#repeat-end-date-wrap');
+          if (dw) dw.style.display = mode === 'date' ? '' : 'none';
+          const cw = layer.querySelector('#repeat-end-count-wrap');
+          if (cw) cw.style.display = mode === 'count' ? '' : 'none';
+          const dateInp = $mk('repeatEndDate');
+          /* 没选过结束日期时先填「开始日期 + 3 个月」：给一个能直接确认的默认值，
+             而不是让用户面对一个空日期框自己算到哪天。 */
+          if (dateInp && mode === 'date' && !dateInp.value) {
+            const base = val('date') || todayKey();
+            const d = new Date(base + 'T00:00:00Z');
+            d.setUTCMonth(d.getUTCMonth() + 3);
+            dateInp.value = d.toISOString().slice(0, 10);
+          }
+          const hint = layer.querySelector('#repeat-end-hint');
+          if (hint) {
+            if (mode === 'date') {
+              const d = val('repeatEndDate');
+              hint.textContent = d ? `时间 · ${d} 之后不再重复` : '选择结束日期后不再重复';
+            } else if (mode === 'count') {
+              const n = Math.round(Number(val('repeatEndCount')) || 0);
+              hint.textContent = n ? `次数 · 成功提醒 ${n} 次后自动结束` : '填写 1–99 次';
+            } else hint.textContent = '';
+          }
+        };
+
+        /* 规则摘要（v4.28.8 按需求范本重写）：
+           「本条待办将在 <设定日期>，<提醒时间> 推送，<是否催办>，<重复规则>，
+             通过 <提醒渠道> <提醒方式> 推送 <参与人物>」
+           后面再补一句重要程度与结束条件 —— 需求要求这些也要展示，
+           但它们不是「会不会推送」的一部分，硬塞进主句只会让那句话读不懂。 */
+        const syncRuleLine = () => {
+          const box = layer.querySelector('#todo-rule-line');
+          if (!box) return;
+          /* v4.28.8：一句话模式的规则是**固定的默认**（今天起、每天重复、到点提醒、只发给自己），
+             摘要必须按「保存后实际会怎样」来写 —— 否则会出现「摘要说只提醒一次、
+             存进去却是每天重复」这种自相矛盾的说明。 */
+          const simpleMode = layer.dataset.mode !== 'detail';
+          const rep = simpleMode ? 'daily' : (layer.dataset.repeat || '');
+          const m = simpleMode ? 'system' : (val('remindMode') || 'system');
+
+          /* 日期：详细模式读输入框；一句话模式走「今天 / 已选中的那天」 */
+          const dk = val('date') || state.selected || todayKey();
+          const dObj = new Date(dk + 'T00:00:00Z');
+          const gap = Math.round((Date.parse(dk + 'T00:00:00Z')
+            - Date.parse(todayKey() + 'T00:00:00Z')) / 86400000);
+          const dateText = !Number.isFinite(gap) ? dk
+            : gap === 0 ? `今天（${dObj.getUTCMonth() + 1}月${dObj.getUTCDate()}日）`
+              : gap === 1 ? `明天（${dObj.getUTCMonth() + 1}月${dObj.getUTCDate()}日）`
+                : gap === 2 ? `后天（${dObj.getUTCMonth() + 1}月${dObj.getUTCDate()}日）`
+                  : `${dObj.getUTCMonth() + 1}月${dObj.getUTCDate()}日`;
+
+          /* 时间 + 它的来源：用户自己设过 → 本条设定；没设过 → 我的默认 / 管理员默认。
+             一句话模式不提交 startTime（保存时走默认时刻），所以摘要也必须按「默认」写。 */
+          const rawTime = simpleMode ? '' : val('startTime');
+          const timeVal = rawTime || tInfo.time;
+          const timeSrc = rawTime
+            ? '本条设定'
+            : (tInfo.mine ? '我的默认' : '管理员默认');
+
+          const urgeOn = m === 'urge';
+          const urgeText = !urgeOn ? '不催办'
+            : (() => {
+              const mc = Number(val('urgeMaxCount')) || 0;
+              const gapMin = Number(val('urgeMinutes')) || 10;
+              return mc > 0 ? `每 ${gapMin} 分钟催一次，最多 ${mc} 次` : `每 ${gapMin} 分钟催一次，直到完成`;
+            })();
+
+          const ruleText = !rep ? '只提醒一次'
+            : `${Repeat.RULE_LABEL[rep] || '按规则'}重复`
+              + (() => {
+                const em = val('repeatEndMode') || 'never';
+                if (em === 'date' && val('repeatEndDate')) return `，到 ${val('repeatEndDate')} 为止`;
+                if (em === 'count' && Number(val('repeatEndCount')) > 0) return `，共 ${val('repeatEndCount')} 次`;
+                return '，不设结束';
+              })();
+
+          const ps = modalParticipants();
+          const who = ps.length ? ps.join('、') : '';
+          /* 提醒方式的中文短语（放进句子时不要再套一层「方式」，
+             否则会出现「以『到点提醒』方式提醒」这种同义反复） */
+          const wayText = m === 'advance' ? `提前 ${advancePhrase()}提醒`
+            : m === 'urge' ? '到点提醒并按时催促'
+              : '到点提醒';
+          /* 渠道：摘要里只写「首选（兜底）」，不搬 pushChannelSummary 那段长解释 ——
+             一句话摘要的用途是让人扫一眼确认，不是替代设置页。 */
+          const channel = (() => {
+            const p = PUSH_LABEL[pushChannelOf(state.me)] || '企业微信';
+            const f = PUSH_LABEL[pushFallbackOf(state.me)] || '';
+            return f && f !== p ? `${p}（兜底 ${f}）` : p;
+          })();
+          const prio = layer.dataset.priority || 'normal';
+          const prioText = prio === 'high' ? '重要' : prio === 'low' ? '稍后' : '普通';
+
+          /* 按需求给的范本组织：
+             「本条待办将在<设定日期>，<提醒时间>推送，<是否催办>，<重复规则>，
+                通过<提醒渠道><提醒方式>推送<参与人物>」
+             重要程度不是「会不会推送」的一部分，跟在句末单独说一句。 */
+          const sentence = m === 'none'
+            ? `本条待办设定在${dateText}，不会推送提醒；${ruleText}，重要程度「${prioText}」。`
+            : `本条待办将在${dateText}，${timeVal}（${timeSrc}）推送，${urgeText}，${ruleText}，`
+              + (who
+                ? `通过${channel}${wayText}，推送给${who}，重要程度「${prioText}」。`
+                : `通过${channel}${wayText}，但还没选参与人（不会真的发出），重要程度「${prioText}」。`);
+          box.textContent = sentence;
+        };
+
+        /* 「提前提醒」这个选项的文案要跟着提前量走：提前提醒 · 提前5分钟 */
+        const syncAdvanceOption = () => {
+          const sel = $mk('remindMode');
+          if (!sel) return;
+          const opt = Array.from(sel.options).find((o) => o.value === 'advance');
+          if (!opt) return;
+          const keep = sel.value;
+          opt.textContent = `提前提醒 · 提前${advancePhrase()}`;
+          sel.value = keep;                 // 改 option 文本不会丢选中，这里锁一下更稳
+        };
+
+        /* v4.28.9 需求 3：「提前」改成选择框，单位一变就重建选项（v4.28.10：都到 99）。
+           ★ 仍然坚持 v4.28.8 的底线 —— 不静默改用户的选择：只在真的超上限时落到上限，
+             并且**说出来**（一句 toast），而不是让它悄悄变成 5。
+             quiet=true 用于打开弹窗时的那一次同步（那时只是把选项补全，不该报错）。 */
+        const syncAdvanceCap = (quiet) => {
+          const sel = $mk('advanceValue');
+          if (!sel) return;
+          const u = val('advanceUnit') || 'minute';
+          /* v4.28.11 需求 5：上限还要看当前重复规则（每周按天只到 6） */
+          const cap = advCapOf(u, val('repeat') || '');
+          /* sel.value 在「旧值超出新上限」时会读成空串（选项里没有那一项）——
+             空串要回落到初始值，否则 Number('')||5 会把用户的 20 天悄悄改成 5。 */
+          const had = Number(sel.value) || Number(advValue0) || 5;
+          const keep = Math.min(had, cap);
+          sel.innerHTML = advOpts(u, keep, cap);
+          sel.value = String(keep);
+          if (!quiet && keep !== had) {
+            const cn = u === 'minute' ? '分钟' : u === 'hour' ? '小时' : '天';
+            toast(`「提前」最多 ${cap} ${cn}，已改成 ${cap}`, 'err');
+          }
+        };
+
+        /* v4.28.11 需求 5：切换重复规则时，「天」能不能选、能选到几天都要跟着变。
+           已经停在「天」上又切成「每天」的，就地折算成小时并说一句为什么 ——
+           留一个 disabled 的选中项在界面上，用户会以为页面坏了。 */
+        const syncAdvanceRepeat = (quiet) => {
+          const rep = val('repeat') || '';
+          const dayOpt = layer.querySelector('[data-mk="advanceUnit"] option[value="day"]');
+          if (dayOpt) dayOpt.disabled = rep === 'daily';
+          const unitSel = $mk('advanceUnit');
+          if (rep === 'daily' && unitSel && unitSel.value === 'day') {
+            const vSel = $mk('advanceValue');
+            const had = Number(vSel && vSel.value) || 1;
+            const conv = Math.min(23, Math.max(1, had * 24 - 1));
+            unitSel.value = 'hour';
+            if (vSel) { vSel.innerHTML = advOpts('hour', conv, 23); vSel.value = String(conv); }
+            toast(`每天重复不能按天提前，已改成提前 ${conv} 小时`, 'err');
+            syncAdvanceCap(true);
+            return;
+          }
+          /* 非 quiet 时才提示「已改成 N 天」：打开弹窗那一次只是初始化，不该弹红字 */
+          syncAdvanceCap(quiet);
+        };
+
+        const syncRemind = (quiet) => {
+          const mode = val('remindMode') || 'system';
           const urgeBox = layer.querySelector('#urge-box');
           if (urgeBox) urgeBox.classList.toggle('hidden', mode !== 'urge');
           const advBox = layer.querySelector('#advance-box');
           if (advBox) advBox.classList.toggle('hidden', mode !== 'advance');
+          syncAdvanceOption();
+          syncAdvanceCap(quiet);
         };
-        const modeSel = layer.querySelector('[data-mk="remindMode"]');
-        if (modeSel) modeSel.addEventListener('change', syncRemind);
-        syncRemind();
-        // 备注：点「＋ 添加备注」才出现输入框，出现后聚焦
-        const noteBtn = layer.querySelector('[data-act="todo-note-open"]');
-        if (noteBtn) {
-          noteBtn.addEventListener('click', () => {
-            const wrap = layer.querySelector('#todo-note-wrap');
-            if (wrap) wrap.classList.remove('hidden');
-            noteBtn.classList.add('hidden');
-            const ta = layer.querySelector('[data-mk="note"]');
-            if (ta) setTimeout(() => ta.focus(), 40);
+
+        const syncMode = () => {
+          const detail = layer.dataset.mode === 'detail';
+          const det = layer.querySelector('#todo-detail');
+          if (det) det.classList.toggle('hidden', !detail);
+          const rule = layer.querySelector('#todo-rule-line');
+          if (rule) rule.classList.toggle('hidden', detail);
+          /* v4.28.8：一句话模式不显示「记录本提醒」——
+             一句话待办只提交标题，详细设置一个都不生效；
+             留一个能点、但点了也留不住的入口，只会让人以为带进来了。 */
+          const rec = layer.querySelector('.todo-record-inline');
+          if (rec) rec.classList.toggle('hidden', !detail);
+          if (!detail) {
+            const rw = layer.querySelector('#todo-record-wrap');
+            if (rw) rw.classList.add('hidden');
+          }
+          const btn = layer.querySelector('[data-act="todo-mode-toggle"]');
+          if (btn) btn.textContent = detail ? '切换一句话待办' : '切换详细待办';
+        };
+
+        /* v4.28.7：切回「一句话待办」= 清空详细内容，只留待办事项。
+           直接清空会有「手滑丢掉半屏」的风险，所以只有真的填过东西才弹确认，
+           并且**保留标题**（它是这条待办本身，不是设置项）。
+           v4.28.8：判断「填过东西」要排除掉刚补进去的默认值 ——
+           日期=今天、时间=默认时刻只说明「没改过」，不算用户输入，
+           否则每次切回都会弹一次确认，把确认框变成噪音。 */
+        const toSimple = () => {
+          const ps = modalParticipants();
+          const dateTouched = !!val('date') && val('date') !== todayKey();
+          const timeTouched = !!val('startTime') && val('startTime') !== tInfo.time;
+          const touched = dateTouched || timeTouched || !!val('note').trim()
+            || !!layer.dataset.repeat || !!val('repeatEndDate')
+            || (ps.length > 1 || (ps.length === 1 && ps[0] !== myName))
+            || (layer.dataset.priority || 'normal') !== 'normal';
+          if (touched && !window.confirm('切换后只保留「待办事项」，日期、提醒、重复、备注、参与人、重要程度都会清空，按一句话待办处理（默认今天起、每天提醒）。继续吗？')) return;
+          ['date', 'startTime', 'note', 'endDate', 'repeatEndDate'].forEach((k) => {
+            const el = $mk(k); if (el) el.value = '';
           });
-        }
-        // 时间：按已有开始/结束时间推断出「时长」，并在示例文案里说清楚会存成什么
-        layer.dataset.duration = durationFromTimes(t.startTime, t.endTime);
-        const durSel = layer.querySelector('[data-mk="duration"]');
-        if (durSel) durSel.value = layer.dataset.duration;
-        syncTimeUI(layer);
+          const cnt = $mk('repeatEndCount'); if (cnt) cnt.value = '10';
+          const rep = $mk('repeat'); if (rep) rep.value = '';
+          const rem = $mk('remindMode'); if (rem) rem.value = 'system';
+          const remEnd = $mk('repeatEndMode'); if (remEnd) remEnd.value = 'never';
+          layer.dataset.repeat = '';
+          layer.querySelectorAll('[data-act="prio-pick"] button')
+            .forEach((b) => b.classList.toggle('on', b.dataset.prio === 'normal'));
+          layer.dataset.priority = 'normal';
+          setModalParticipants(myName ? [myName] : []);
+          layer.dataset.mode = 'simple';
+          syncRepeatEnd(); syncRemind(); syncMode(); syncRuleLine();
+        };
+
+        /* v4.28.10 需求 4：待办草稿的自动保存（只在新建态生效）。
+           文本 / 下拉走 input + change，按钮型控件（参与人 / 重要程度 / 可见范围）
+           走下面的 click 委托 —— 它们只改 class 与 dataset，不触发 input。 */
+        const draftTouch = () => { if (layer.dataset.todoMode === 'new') scheduleTodoDraft(); };
+        layer.addEventListener('change', (ev) => {
+          const mk = ev.target && ev.target.dataset ? ev.target.dataset.mk : '';
+          if (mk === 'repeat') {
+            layer.dataset.repeat = ev.target.value || '';
+            syncRepeatEnd();
+            syncAdvanceRepeat();     // v4.28.11：每天 / 每周会改变「提前」的可选范围
+          } else if (mk === 'repeatEndMode') {
+            syncRepeatEnd();
+            /* v4.28.8：选「按时间」就把系统日期面板直接弹出来（Chromium 系支持 showPicker）；
+               不支持的环境只是少一次点击，日期框本身仍然在。 */
+            if (ev.target.value === 'date') {
+              const di = $mk('repeatEndDate');
+              if (di && typeof di.showPicker === 'function') {
+                try { di.showPicker(); } catch { /* 需要用户手势，忽略 */ }
+              }
+            } else if (ev.target.value === 'count') {
+              const ci = $mk('repeatEndCount');
+              if (ci) { try { ci.focus(); ci.select(); } catch { /* 忽略 */ } }
+            }
+          } else if (mk === 'remindMode') {
+            syncRemind();
+          } else if (mk === 'advanceUnit') {
+            /* v4.28.9：换单位要重建「提前」的选项（v4.28.10 起分钟 / 小时 / 天都是 1–99） */
+            syncAdvanceCap();
+            syncAdvanceOption();
+          } else if (mk === 'advanceValue') {
+            syncAdvanceOption();
+          }
+          syncRuleLine();
+          draftTouch();
+        });
+        layer.addEventListener('input', (ev) => {
+          const mk = ev.target && ev.target.dataset ? ev.target.dataset.mk : '';
+          if (mk === 'advanceValue') syncAdvanceOption();
+          syncRuleLine();
+          draftTouch();
+        });
+        layer.addEventListener('click', (ev) => {
+          const tgt = ev.target;
+          if (!tgt || !tgt.closest) return;
+          const toggle = tgt.closest('[data-act="todo-mode-toggle"]');
+          if (toggle) {
+            if (layer.dataset.mode === 'detail') { toSimple(); return; }
+            layer.dataset.mode = 'detail';
+            /* v4.28.8：切到详细时把两个「几乎总要用」的值补上：
+               开始日期 = 今天；提醒时间 = 用户默认（没设过就管理员默认）。
+               留空只会让人以为「不填就不提醒」。 */
+            const dEl = $mk('date'); if (dEl && !dEl.value) dEl.value = todayKey();
+            const tEl = $mk('startTime'); if (tEl && !tEl.value) tEl.value = tInfo.time;
+            syncMode(); syncRepeatEnd(); syncRuleLine();
+            return;
+          }
+          /* 参与人 / 重要程度由全局委托改 dataset，这里延后一拍同步摘要 */
+          if (tgt.closest('[data-act="part-toggle"]') || tgt.closest('[data-act="prio-pick"]')) {
+            setTimeout(syncRuleLine, 0);
+            setTimeout(draftTouch, 0);
+            return;
+          }
+          /* 可见范围 / 指定可见成员同样是按钮点击，也要记进草稿 */
+          if (tgt.closest('[data-act="vis-pick"]') || tgt.closest('[data-act="vis-member"]')) {
+            setTimeout(draftTouch, 0);
+            return;
+          }
+          const chip = tgt.closest('[data-act="todo-record-apply"]');
+          if (chip) { applyTodoRecord(layer, chip.dataset.id); setTimeout(syncRuleLine, 0); }
+        });
+
+        /* v4.28.6：「＋ 记录本提醒」—— 把记录本里「已勾提醒且未归档」的记录带进来。 */
+        const recBtn = layer.querySelector('[data-act="todo-record-pick"]');
+        if (recBtn) recBtn.addEventListener('click', () => toggleTodoRecordPicker(layer));
+
+        syncRepeatEnd();
+        syncRemind(true);
+        syncAdvanceRepeat(true);   // v4.28.11：按当前重复规则决定「天」能不能选（初始化不弹提示）
+        syncMode();
+        syncRuleLine();
         /* v4.28.2：进弹窗先按当前可见范围把参与人算一遍 ——
            编辑一条「指定可见成员」的待办时，没被勾的人本来就该是灰的。 */
         syncPartChips(layer);
+        /* v4.28.10：打开时若内容来自草稿，直接把「草稿已保存」点亮 ——
+           否则用户看不出眼前这些字是上次写了一半自动存下来的。 */
+        if (!isEdit && t._draftRestored) markDraftSaved('todo');
         const first = layer.querySelector('[data-mk="title"]');
-        if (first && !isEdit) setTimeout(() => first.focus(), 60);
+        if (first) setTimeout(() => first.focus(), 60);
       },
     });
   }
@@ -6609,98 +7012,109 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   async function saveTodo(id) {
     const layer = $('#modal-layer');
-    // 时间：以「时长」为准算出结束时间；「不限」则沿用输入框里的值（可能是精确设置过的）
-    const startTime = modalValue('startTime');
-    const dur = layer.dataset.duration || '0';
-    let endTime = modalValue('endTime');
-    if (dur !== '__custom__') {
-      const n = Number(dur) || 0;
-      if (n > 0) endTime = startTime ? addMinutes(startTime, n) : '';
+    /* v4.28.7：简洁模式 = 一句话待办。它只提交标题，其余走「今天起、每天提醒」的默认，
+       与服务端 / 微信那边的 quick 语义完全一致。 */
+    const simple = layer.dataset.mode !== 'detail';
+    const startTime = simple ? '' : modalValue('startTime');
+    /* v4.12.0：提醒类型是一个下拉，但要落成库里的两列（remind 布尔 + urge_minutes 数字）。
+         system → remind=1, urge=0
+         urge   → remind=1, urge=N
+         advance→ remind=1, urge=0 + 提前量
+         none   → remind=0, urge=0（催促字段一并清零，否则以后打开提醒会突然开始催） */
+    const remindMode = simple ? 'system' : (modalValue('remindMode') || 'system');
+    const remindOn = simple ? true : remindMode !== 'none';
+    const urgeMinutes = (!simple && remindMode === 'urge') ? (Number(modalValue('urgeMinutes')) || 10) : 0;
+    /* v4.28.7：提前量「值 + 单位」。只有「提前提醒」才写自己的值，其余档位一律 -1（跟随家庭设置），
+       这样从「提前」切回「到点」时，不会把上一次的 5 分钟偷偷留在库里。 */
+    let advValue = -1;
+    let advUnit = 'day';
+    if (!simple && remindMode === 'advance') {
+      const unit = modalValue('advanceUnit') || 'minute';
+      /* v4.28.11 需求 5：分钟 1-59 / 小时 1-23 / 天 1-29（与 reminders.ADVANCE_UNIT_MAX 同源）；
+         每周重复按天只到 6。★ 这里曾经写死 1440/168/5，v4.28.10 放宽上限时漏改，
+         结果是「界面能选 6 天、保存却报错」—— 上限只在服务端放一处，前端从它派生。 */
+      const rep = layer.dataset.repeat || '';
+      const cap = unit === 'minute' ? 59 : unit === 'hour' ? 23 : (rep === 'weekly' ? 6 : 29);
+      const n = Math.round(Number(modalValue('advanceValue')) || 5);
+      /* v4.28.8：超范围时说清楚，不再静默夹取 —— 静默改数的结果是
+         「我明明填了 30」，存进去却是 5，而且没有任何提示。 */
+      if (n > cap || n < 1 || (unit === 'day' && rep === 'daily')) {
+        const cn = unit === 'minute' ? '分钟' : unit === 'hour' ? '小时' : '天';
+        toast(unit === 'day' && rep === 'daily'
+          ? '每天重复的事项不能按天提前，请改用小时'
+          : `提前量请填 1–${cap} ${cn}`, 'err');
+        return;
+      }
+      advValue = n;
+      advUnit = unit;
     }
-    /* v4.12.0：提醒方式三档是一个下拉，但要落成库里的两列（remind 布尔 + urge_minutes 数字）。
-       三档对应的组合是固定的，别在这里做「智能推断」：
-         system → remind=1, urge=0（到点发一次，走系统配置的通道）
-         urge   → remind=1, urge=N（到点发一次 + 反复催：按首选 + 兜底渠道发，四条通道都支持）
-         none   → remind=0, urge=0（什么都不发；此时催促字段即使有值也一并清零，
-                  否则以后把 remind 打开会突然开始催，用户根本不知道哪来的） */
-    const remindMode = modalValue('remindMode') || 'system';
-    const remindOn = remindMode !== 'none';
-    const urgeMinutes = remindMode === 'urge' ? (Number(modalValue('urgeMinutes')) || 10) : 0;
-    /* v4.22.0 需求 1：「提前提醒」存自己的天数并覆盖全局；其余档位一律 -1（跟随家庭设置）。
-       这样从「提前」切回「到点」时，不会把上一次的 3 天偷偷留在库里。 */
-    const remindAdvanceDays = remindMode === 'advance'
-      ? Math.min(5, Math.max(0, Math.round(Number(modalValue('remindAdvanceDays')) || 0)))
-      : -1;
+    /* v4.28.7：结束重复只在重复事项上有意义 */
+    const repMode = simple ? 'never' : (modalValue('repeatEndMode') || 'never');
+    const repEndDate = repMode === 'date' ? modalValue('repeatEndDate') : '';
+    const repEndCount = repMode === 'count'
+      ? Math.min(99, Math.max(1, Math.round(Number(modalValue('repeatEndCount')) || 10))) : 0;
+    const repeat = simple ? 'daily' : (layer.dataset.repeat || '');
     // 不再提交 location：界面上已经没有这个字段，服务端保留旧值不动
     // （数据库里那列留着，是为了老数据不丢、回滚旧版本也安全）
     const body = {
-      title: modalValue('title').trim(),
-      date: modalValue('date'),
-      // v4.10.0：跨天待办。选了重复 → 强制空（与服务端同一条规则）；结束早于开始在前端先拦
-      endDate: layer.dataset.repeat ? '' : modalValue('endDate'),
+      /* v4.28.8：「待办事项」是三行文本框，允许在中间按回车；
+         但标题是一行文本，换行到了列表里会被 CSS 折叠成看不见的空隙。
+         保存前把换行压成空格，所见即所得。 */
+      title: modalValue('title').replace(/\s*\n+\s*/g, ' ').trim(),
+      date: simple ? (modalValue('date') || state.selected || todayKey()) : modalValue('date'),
+      /* v4.28.8：跨天「结束日期」已从表单删除。界面不给的字段就明确提交空串，
+         否则老数据里那个看不见的结束日期会一直生效。 */
+      endDate: '',
       startTime,
-      endTime,
-      note: modalValue('note').trim(),
+      /* v4.28.7：界面上已经没有「时长 / 结束时间」，明确提交空串把旧值清掉 ——
+         不传的话服务端会保留原值，于是列表里会出现一个「看不见却还在」的结束时间。 */
+      endTime: '',
+      note: simple ? '' : modalValue('note').trim(),
       participants: modalParticipants(),
-      priority: layer.dataset.priority || 'normal',
-      repeat: layer.dataset.repeat || '',
+      priority: simple ? 'normal' : (layer.dataset.priority || 'normal'),
+      repeat,
+      quick: simple ? true : undefined,
       remind: remindOn,
-      remindAdvanceDays,
-      // v4.6.0 需求 3：催促频率（0 = 不催）。服务端会把超范围的值夹到 1–60。
+      // 兼容列：只有「天」才同步，分钟/小时级一律 -1（真相在 value/unit）
+      remindAdvanceDays: advUnit === 'day' ? advValue : -1,
+      remindAdvanceValue: advValue,
+      remindAdvanceUnit: advUnit,
+      repeatEndMode: repMode,
+      repeatEndDate: repEndDate,
+      repeatEndCount: repEndCount,
       urgeMinutes,
       // v4.14.0 需求 5：只提交「最多催几次」。
-      // urge_start_at / urge_window_* 不再出现在界面上，也就不再提交 ——
-      // 服务端对这三个键是「不传就保持原值」，老数据原样留着，不影响任何判断。
-      urgeMaxCount: Math.max(0, Math.round(Number(modalValue('urgeMaxCount')) || 0)),
+      urgeMaxCount: simple ? 0 : Math.max(0, Math.round(Number(modalValue('urgeMaxCount')) || 0)),
       /* v4.28.2：可见范围 + 指定可见成员一起提交。
          visibility='family' 时 visibleTo 传空数组，服务端也会强制清空。 */
       ...visReading(layer),
     };
-    if (!body.title) { toast('请填写「要做什么」', 'err'); return; }
-    if (body.repeat && !body.date) { toast('选择重复规则需要先设置日期', 'err'); return; }
+    if (!body.title) { toast('请填写「待办事项」', 'err'); return; }
+    if (body.repeat && !body.date) { toast('选择重复规则需要先设置开始日期', 'err'); return; }
     if (body.endDate && !body.date) { toast('设置结束日期需要先填写开始日期', 'err'); return; }
     if (body.endDate && body.endDate < body.date) { toast('结束日期不能早于开始日期', 'err'); return; }
-    if (body.endTime && body.startTime && body.endTime < body.startTime) { toast('结束时间不能早于开始时间', 'err'); return; }
+    if (repMode === 'date' && !repEndDate) { toast('选择「按时间结束」时请填写结束日期', 'err'); return; }
+    if (repMode === 'date' && repEndDate < body.date) { toast('结束重复的日期不能早于开始日期', 'err'); return; }
+    /* v4.28.11 需求 3：只有真的从记录本带进来的才提交来源；没带就不传，
+       否则 PATCH 会把老待办已有的「记录本」标记清掉。 */
+    const recSrc = simple ? 0 : (Number(layer.dataset.recordId) || 0);
+    if (recSrc) body.recordId = recSrc;
     try {
       if (id) await api('/api/todos/' + id, { method: 'PATCH', body });
       else await api('/api/todos', { method: 'POST', body });
+      /* v4.28.10 需求 4：存成功就清掉草稿 —— 不然下次新建又带出这条已经存过的内容 */
+      if (!id) { dropDraft(TODO_DRAFT_KEY); clearDraftHint('todo'); }
       closeModal();
       await refreshTodos();
       // 提醒对象是参与人：勾了提醒却没选参与人，等于不会发信，必须说清楚
       if (body.remind && !body.participants.length) {
-        toast('已保存。但没选参与人，这条待办不会发出提醒邮件', 'err');
+        toast('已保存。但没选参与人，这条待办不会发出提醒', 'err');
       } else {
         toast(id ? '已保存' : '已添加到待办列表', 'ok');
       }
     } catch (err) { toast(err.message, 'err'); }
   }
 
-  /**
-   * 待办列表顶部快捷添加（一句话）。
-   * v4.19.0 需求 1：默认日期 = 今天、默认「每天」重复、到点提醒（提醒时刻不填 →
-   * 走「消息推送 → 待办提醒」的默认时间，与 「我的」里配的那个值同源）。
-   * 为什么提醒时刻留空而不是写死：留空时服务端每次按当前配置取默认值，
-   * 管理员改了默认时间，所有「没单独设时间」的待办自动跟着走。
-   */
-  async function quickAddTodo() {
-    const input = document.querySelector('[data-act="todo-quick-input"]');
-    const title = (input ? input.value : '').trim();
-    if (!title) { toast('先写一句要做的事', 'err'); return; }
-    input.value = '';
-    try {
-      await api('/api/todos', {
-        method: 'POST',
-        body: { title, date: todayKey(), repeat: 'daily', remind: true, quick: true },
-      });
-      /* v4.22.0 需求 2：一句话待办不再进「周期提醒」卡，所以这里不展开那张卡；
-         它已经在上面「待办列表」里，刷新即可见。 */
-      await refreshTodos();
-      toast('已添加：今天起每天提醒（时间跟随「待办提醒」默认设置）', 'ok');
-    } catch (err) {
-      input.value = title;      // 失败回滚输入
-      toast(err.message || '添加失败', 'err');
-    }
-  }
 
   /**
    * 勾选 / 取消勾选完成。
@@ -7430,14 +7844,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           填你的<b>用户名</b>，系统会给这个账号<b>绑定的邮箱</b>发一条 6 位验证码。
           验证码 15 分钟内有效、只能用一次；10 分钟内最多发 3 次。
         </div>
-        <label class="field"><span>用户名</span>
-          <input type="text" data-mk="fpUser" autocomplete="username" placeholder="你的登录名"></label>
-        <label class="field"><span>验证码（邮件里的 6 位数字）</span>
-          <input type="text" data-mk="fpCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000"></label>
-        <label class="field"><span>新密码</span>
-          <input type="password" data-mk="fpPass" autocomplete="new-password" placeholder="至少 6 位"></label>
-        <label class="field"><span>确认新密码</span>
-          <input type="password" data-mk="fpPass2" autocomplete="new-password" placeholder="再输一次"></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="fpUser" autocomplete="username" placeholder="你的登录名"><span class="flab">用户名</span></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="fpCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000"><span class="flab">验证码</span></label>
+        <label class="field fld"><input class="fld-inp" type="password" data-mk="fpPass" autocomplete="new-password" placeholder="至少 6 位"><span class="flab">新密码</span></label>
+        <label class="field fld"><input class="fld-inp" type="password" data-mk="fpPass2" autocomplete="new-password" placeholder="再输一次"><span class="flab">确认新密码</span></label>
         <p class="field-hint" data-mk="fpMsg"></p>
         <div class="note-box">
           没有绑定邮箱、或邮件一直收不到？让家里的管理员在「我的 → 家庭成员」里重置你的密码。
@@ -7691,7 +8101,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
       /* 待办 */
       case 'todo-new': state.selected = el.dataset.date || state.selected; await openTodoForm(null); break;
-      case 'todo-quick-add': await quickAddTodo(); break;
       case 'todo-edit': {
         const t = state.todos.find((x) => x.id === id);
         if (t) await openTodoForm(t);
@@ -7725,7 +8134,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
          不给一个收尾入口的话它会永久留在库里每天提醒一次（v4.19 起一句话待办
          默认每天重复，这一条就成了必须）。服务端负责清 repeat_rule 并标记完成。 */
       case 'todo-end-repeat': {
-        if (!window.confirm('结束这条重复提醒吗？\n它会变回一次性待办并标记为已完成，以后不再重复提醒。')) return;
+        if (!window.confirm('结束这条重复提醒吗？\n结束后不再按周期提醒，但它会留在「周期提醒」里并标上「已结束」，随时可以点开重新打开。')) return;
         try {
           await api(`/api/todos/${id}/end-repeat`, { method: 'POST' });
           closeModal();
@@ -7765,36 +8174,28 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       case 'compose-pick': $('#compose-file').click(); break;
       case 'compose-vpick': $('#compose-video-file').click(); break;
       /* v4.13.0（问题 4）：发帖表情面板 —— 展开 / 收起，选项在面板里点。
-         面板开关是界面状态，必须走 render（并进 DATA_SIG.moments）。 */
-      case 'compose-emoji':
+         v4.28.9：面板在发帖弹窗里，用局部刷新（弹窗不在页签容器里，整页 render 碰不到它）。 */
+      case 'compose-emoji': {
         state.composeEmoji = !state.composeEmoji;
-        render();
-        break;
-      case 'compose-emoji-pick': await insertComposeEmoji(el.dataset.emoji || ''); break;
-      /* v2.0.0 需求 4：「发帖」面板收起 / 展开。
-         展开后把焦点直接送进正文框 —— 少一次点击才是「整合」的意义所在。
-         注：草稿存在 state.compose.text 里，收起不会丢字。 */
-      case 'post-compose': {
-        state.composeOpen = !state.composeOpen;
-        render();
-        if (state.composeOpen) {
-          const ta = document.querySelector('[data-act="compose-text"]');
-          if (ta) {
-            ta.focus();
-            try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch { /* 忽略 */ }
-          }
-        }
+        const ebtn = document.querySelector('[data-act="compose-emoji"]');
+        if (ebtn) ebtn.classList.toggle('on', state.composeEmoji);
+        paintCompose();
         break;
       }
+      case 'compose-emoji-pick': await insertComposeEmoji(el.dataset.emoji || ''); break;
+      /* v2.0.0 需求 4：「发帖」面板。
+         v4.28.9 需求 6：不再是页面里展开 / 收起，而是打开一个表单弹窗。
+         草稿存在 state.compose 里，所以「关掉弹窗」与「收起面板」一样安全。 */
+      case 'post-compose': openComposeForm(); break;
       case 'compose-del':
         state.compose.images.splice(Number(el.dataset.i), 1);
         schedulePostDraft();
-        render();
+        paintCompose();
         break;
       case 'compose-vdel':
         state.compose.videos.splice(Number(el.dataset.i), 1);
         schedulePostDraft();
-        render();
+        paintCompose();
         break;
       // v1.9.0：点一下已有标签就把它加进标签输入框（已存在就跳过，别加出两个一样的）
       case 'compose-tag-add': {
@@ -7809,7 +8210,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
            （否则「只点了标签」这种最容易被刷掉的半成品会丢） */
         state.compose.tags = inp.value;
         schedulePostDraft();
-        render();   // 标签按钮的选中态要靠重绘刷新（input 的 value 不在 outerHTML 里）
+        paintCompose();   // 标签按钮的选中态靠局部刷新（弹窗不在页签容器里）
         const again = document.querySelector('[data-act="compose-tags"]');
         if (again) again.focus();
         break;
@@ -7836,6 +8237,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
            最小重绘会把「用户正在编辑的那份旧文字」原样保留，
            表现就是「点了丢弃草稿，字还在」。 */
         clearComposeInputs();
+        paintCompose();          // 弹窗里那组缩略图 / 表情面板也要跟着清
+        /* v4.28.9：草稿提示条在发帖弹窗里 —— 弹窗不在页签容器内，
+           整页 render() 碰不到它，得自己摘掉。 */
+        const dbar = document.querySelector('#modal-layer .draft-bar');
+        if (dbar) dbar.remove();
         render();
         toast('草稿已丢弃', 'ok');
         break;
@@ -7910,27 +8316,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       /* 记录本：归档视图切换（v1.9.0） */
       case 'rec-arch-view': break;      // 由分段控件处理器负责
       case 'post-view': break;          // 同上
-      /* v4.28.2：动态发布区的可见范围。原来的一个「🔒 仅自己可见」开关
-         换成「全家可见 / 指定可见成员」两档；切到指定时清空名单
-         —— 需求要求「默认仅自己可见」，不能沿用上一帖勾过的人。 */
-      case 'compose-vis':
-        if (el.dataset.vis === 'private') {
-          if (state.compose.visibility !== 'private') state.compose.visibleTo = [];
-          state.compose.visibility = 'private';
-        } else {
-          state.compose.visibility = 'family';
-          state.compose.visibleTo = [];
-        }
-        render(); break;
-      case 'compose-vis-member': {
-        const uid = Number(el.dataset.visId) || 0;
-        const cur = (state.compose.visibleTo || []).map(Number);
-        const i = cur.indexOf(uid);
-        if (i >= 0) cur.splice(i, 1); else cur.push(uid);
-        state.compose.visibleTo = cur;
-        render();
-        break;
-      }
+      /* v4.28.2 的动态发布区「全家可见 / 指定可见成员」两档按钮，
+         v4.28.9 需求 6 起换成和待办 / 记录本同一套 `vis-pick` 控件 ——
+         compose-vis / compose-vis-member 两个动作随之移除（不再有入口）。 */
       case 'compose-publish': await publishPost(); break;
       case 'post-edit': {
         state.postMenu = 0;   // v4.23.0：从菜单进来，先收起菜单
@@ -8084,8 +8472,26 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         render();
         break;
       }
+      /* v4.28.7：放大镜开关搜索框。收起来时顺手清空关键词 ——
+         否则会出现「看不见搜索框、列表却还是被过滤过的」这种没法自解释的状态。 */
+      case 'todo-search-toggle': {
+        state.todoSearchOpen = !state.todoSearchOpen;
+        if (!state.todoSearchOpen) {
+          state.todoQuery = '';
+          state.todoShown = state.todoPageSize;
+          state.repeatOpen = false;
+        }
+        render();
+        if (state.todoSearchOpen) {
+          setTimeout(() => {
+            const inp = document.querySelector('[data-act="todo-search"]');
+            if (inp) inp.focus();
+          }, 30);
+        }
+        break;
+      }
       case 'todo-q-clear': {
-        clearSearchInput('todo-query');
+        clearSearchInput('todo-search');
         state.todoQuery = '';
         state.todoShown = state.todoPageSize;
         state.repeatOpen = false;      // 关键词没了，「周期提醒」也跟着收起
@@ -8096,6 +8502,55 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         clearSearchInput('rec-query');
         state.recQuery = '';
         render();
+        break;
+      }
+      /* v4.28.9 需求 8：记录本的放大镜（分类行最右）。收起时一并清空关键词，
+         否则会留下「搜索框看不见、列表却还被筛着」的鬼状态。 */
+      case 'rec-search-toggle': {
+        state.recSearchOpen = !state.recSearchOpen;
+        if (!state.recSearchOpen) {
+          state.recQuery = '';
+          clearSearchInput('rec-query');
+        }
+        render();
+        if (state.recSearchOpen) {
+          setTimeout(() => {
+            const inp = document.querySelector('[data-act="rec-query"]');
+            if (inp) inp.focus();
+          }, 30);
+        }
+        break;
+      }
+      /* v4.28.10 需求 6：记账明细页的放大镜，行为与记录本 / 动态完全一致。 */
+      case 'bill-search-toggle': {
+        state.billSearchOpen = !state.billSearchOpen;
+        if (!state.billSearchOpen) {
+          state.billQuery = '';
+          clearSearchInput('bill-query');
+        }
+        render();
+        if (state.billSearchOpen) {
+          setTimeout(() => {
+            const inp = document.querySelector('[data-act="bill-query"]');
+            if (inp) inp.focus();
+          }, 30);
+        }
+        break;
+      }
+      /* v4.28.9 需求 6：动态页的放大镜（标签行最右），行为与上面两个完全一致。 */
+      case 'post-search-toggle': {
+        state.postSearchOpen = !state.postSearchOpen;
+        if (!state.postSearchOpen) {
+          state.postQuery = '';
+          clearSearchInput('post-query');
+        }
+        render();
+        if (state.postSearchOpen) {
+          setTimeout(() => {
+            const inp = document.querySelector('[data-act="post-query"]');
+            if (inp) inp.focus();
+          }, 30);
+        }
         break;
       }
       // 点图片：连同它所在的图组一起打开，进入灯箱后即可左右切换
@@ -8327,6 +8782,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         openRecordForm(r);
         break;
       }
+      case 'rec-pin-toggle': toggleRecordPinned(id); break;
       case 'rec-cat': state.recCategory = el.dataset.cat; render(); break;
       case 'rec-check-item': {
         const r = state.records.find((x) => x.id === id);
@@ -8542,23 +8998,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
          非管理员看不到推送配置，给一句明确的话，别让人以为是按钮坏了。 */
       case 'open-push-config':
       case 'push-hint-goto': await gotoPushConfig(); break;
-      /* v4.17.0 需求 7：记账推送弹窗里的「去账号映射」—— 关掉本弹窗，
-         打开「我的 → 推送配置」并保证企业微信区是展开的，最后把光标放到映射输入框上。 */
-      case 'bill-push-goto-map': {
-        const admin = state.me && state.me.is_admin;
-        closeModal();
-        if (!admin) { toast('推送渠道只有管理员能修改', 'err'); break; }
-        state.pushOpen = Object.assign({}, state.pushOpen, { wecom: true });
-        await gotoPushConfig();
-        const map = document.querySelector('#main [data-mk="wc-map-inline"]');
-        if (map) {
-          if (typeof map.scrollIntoView === 'function') {
-            try { map.scrollIntoView({ block: 'center' }); } catch { /* 老浏览器忽略 */ }
-          }
-          map.focus();
-        }
-        break;
-      }
       /* ═══ v4.0.0 ═══ */
       case 'bill-quick-edit': openBillQuickEditor(); break;
       case 'bill-quick-add': await addBillQuick(); break;
@@ -8720,11 +9159,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     // 设置弹窗里的控件带的是 data-mk 而不是 data-act。提前天数 / 默认提醒时间一改，
     // 示例文案就跟着变，管理员不必先保存就能确认「到底哪一天会发出提醒」。
     if (t && t.dataset && t.dataset.mk && t.closest && t.closest('#modal-layer')) {
-      // 待办表单的开始/结束时间一改，就重算结束时间与示例文案
-      if (t.dataset.mk === 'startTime' || t.dataset.mk === 'endTime') {
-        const layer = $('#modal-layer');
-        if (layer) syncTimeUI(layer);
-      }
       /* v4.3.3 需求 6：记录本「新建」弹窗里的标题 / 内容，
          每次输入都排一次自动存草稿（debounce 0.8 秒，不会真的频繁写 localStorage）。
          ★ 必须写在这个 early-return 之前 —— 弹窗里的输入框带的是 data-mk 而不是
@@ -8754,7 +9188,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       }
       return;
     }
-    if (act === 'todo-query') {
+    if (act === 'todo-search') {
       syncSearchBar(el);
       state.todoQuery = el.value;
       state.todoShown = state.todoPageSize;
@@ -8811,19 +9245,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       }
       return;
     }
-    // 时长：写进 modal 的 dataset（保存时据此算结束时间）
-    if (el.dataset && el.dataset.mk === 'duration') {
-      const layer = $('#modal-layer');
-      if (!layer) return;
-      layer.dataset.duration = el.value;
-      // 主动选「不限时长」= 明确不要结束时间，这时才清空
-      if (el.value === '0') {
-        const end = layer.querySelector('[data-mk="endTime"]');
-        if (end) end.value = '';
-      }
-      syncTimeUI(layer);
-      return;
-    }
     /* v2.0.0 记账：统计卡上的日期 / 月份。
        这两个是「按日期/按月」两个视图各自的选择，改动要重新统计一次（服务端算的，
        前端算不出「家庭成员各人」的口径），所以走 refreshBills 而不是本地重算。 */
@@ -8837,16 +9258,17 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       if (/^\d{4}-\d{2}$/.test(v)) { state.billMonth = v; await refreshBills(); render(); }
       return;
     }
-    /* v4.0.0 需求 4：日期范围筛选。选完只记下值（改两次日期只发一次请求），
-       点「按范围筛选」才真正刷新统计；「清除筛选」恢复整月口径。 */
+    /* v4.28.10 需求 6：日期框搬到「范围合计」卡的标题行之后，
+       改日期就**直接刷新**，不再点「查看」——
+       日期就是这个模块的口径，改了口径还不动数据，等于让人多点一次。 */
     if (el.dataset && el.dataset.act === 'bill-stat-from') {
       const v = String(el.value || '');
-      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { state.billStatFrom = v; render(); }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { state.billStatFrom = v; await refreshBills(); render(); }
       return;
     }
     if (el.dataset && el.dataset.act === 'bill-stat-to') {
       const v = String(el.value || '');
-      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { state.billStatTo = v; render(); }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { state.billStatTo = v; await refreshBills(); render(); }
       return;
     }
     // v4.0.0 需求 7：AI 月度额度上限，改完即时落库，失败还原
@@ -8947,12 +9369,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     if (e.target && e.target.id === 'lock-pass' && e.key === 'Enter') {
       e.preventDefault();
       unlockRecords();
-      return;
-    }
-    // 快捷添加待办：回车 = 添加
-    if (e.target && e.target.dataset && e.target.dataset.act === 'todo-quick-input' && e.key === 'Enter') {
-      e.preventDefault();
-      quickAddTodo();
       return;
     }
     // v2.0.0 记账：输入框里回车 = 发送（聊天式记账最自然的操作就是回一下）
@@ -9056,11 +9472,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       el.value = '';
       if (!files.length) return;
       if (state.compose.images.length + files.length > 9) { toast('最多 9 张图片', 'err'); return; }
-      state.composeOpen = true;
       const p = progressPanel(`正在处理 ${files.length} 张图片…`);
       const r = await uploadImages(files, (path) => state.compose.images.push({ path }), (v) => p.set(v));
       if (r.errors.length) p.fail(`${r.ok}/${files.length} 张成功`); else p.done('图片上传完成');
-      if (state.tab === 'moments') render();
+      paintCompose();          // v4.28.9：发帖在弹窗里，改局部刷新
       report(r, '张图片');
     }
 
@@ -9075,7 +9490,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         toast(`一条动态最多 ${postVideoMax()} 段视频`, 'err');
         return;
       }
-      state.composeOpen = true;
       const p = progressPanel(`正在上传 ${files.length} 段视频…`);
       let ok = 0; const errors = []; const total = files.length;
       for (let i = 0; i < total; i++) {
@@ -9089,7 +9503,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         p.set((i + 1) / total);
       }
       if (errors.length) p.fail(`${ok}/${total} 段成功`); else p.done('视频上传完成');
-      if (state.tab === 'moments') render();
+      paintCompose();          // v4.28.9：发帖在弹窗里，改局部刷新
       report({ ok, errors }, '段视频');
     }
 
@@ -9332,9 +9746,18 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       const file = (el.files || [])[0];
       el.value = '';
       if (!file) return;
-      const p = progressPanel('正在上传头像…');
-      try { await uploadAvatar(file, (v) => p.set(v)); p.done('头像上传完成'); }
-      catch (err) { p.fail(err.message || '头像上传失败'); toast(err.message || '头像上传失败', 'err'); }
+      /* v4.28.10：选图只做预览，点「保存」才上传 */
+      const layer = $('#modal-layer');
+      try {
+        const dataUrl = await prepareAvatarFile(file);
+        if (!layer) return;
+        layer.dataset.pendingAvatar = dataUrl;
+        const pv = layer.querySelector('.avatar-preview');
+        if (pv) pv.innerHTML = `<img class="avatar me-avatar" src="${esc(dataUrl)}" alt="头像预览">`;
+        const btn = layer.querySelector('[data-act="avatar-save"]');
+        if (btn) btn.disabled = false;
+        toast('已选择图片，点「保存」后生效', 'ok');
+      } catch (err) { toast(err.message || '这张图片读不出来', 'err'); }
     }
 
     if (el.id === 'restore-file') {
@@ -9437,7 +9860,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   }
   /** 清掉某一个草稿提示（丢弃草稿 / 发布成功） */
   function clearDraftHint(kind) {
-    const k = kind === 'rec' ? 'rec' : 'post';
+    const k = draftKeyOf(kind);
     state.draftState = Object.assign({}, state.draftState, { [k]: { pending: false, at: '' } });
     paintDraftHint(k);
   }
@@ -9459,7 +9882,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       text: String(d.text || ''),
       tags: String(d.tags || ''),
     };
-    if (state.postView !== 'calendar') state.composeOpen = true;
+    /* v4.28.9：发帖变成弹窗后，恢复草稿**不再自动弹窗**（一进页面就弹一张表单太打扰）。
+       草稿留在 state 里，用户点「✍️ 动态」时看到的就是它，按钮上的角标也还在。 */
     return true;
   }
 
@@ -9509,12 +9933,85 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     recDraftTimer = setTimeout(() => { recDraftTimer = null; saveRecordDraftNow(); }, 800);
   }
 
+  /* ── v4.28.10 需求 4：待办草稿（与记录本 / 动态同一套机制）。
+     只在「新建」时启用 —— 编辑已有待办不存草稿，否则你打开一条旧待办
+     随手改两个字又关掉，下次新建会莫名其妙带出它的内容。
+     ★ 恢复方式刻意选「当成初值传进模板」而不是「打开后再回填 DOM」：
+       后者要在 onMount 里重放 syncRemind / syncRepeatEnd / prior chips，
+       任何一处漏了就会「看着是草稿、保存出来的却不是」。 */
+  const TODO_DRAFT_KEY = 'fh-todo-draft';
+  let todoDraftTimer = null;
+
+  function todoDraftActive() {
+    const layer = $('#modal-layer');
+    return !!layer && layer.dataset.todoMode === 'new';
+  }
+
+  function todoDraftPayload() {
+    const layer = $('#modal-layer');
+    if (!layer) return null;
+    const participants = Array.from(layer.querySelectorAll('#part-chips .chip.on'))
+      .map((b) => b.dataset.name);
+    const vis = visReading(layer);
+    return {
+      uid: state.me ? Number(state.me.id) || 0 : 0,
+      title: modalValue('title').trim(),
+      note: modalValue('note'),
+      date: modalValue('date'),
+      startTime: modalValue('startTime'),
+      repeat: modalValue('repeat'),
+      priority: layer.dataset.priority || 'normal',
+      remindMode: modalValue('remindMode') || 'system',
+      advanceValue: Number(modalValue('advanceValue')) || -1,
+      advanceUnit: modalValue('advanceUnit') || 'minute',
+      urgeMinutes: Number(modalValue('urgeMinutes')) || 0,
+      repeatEndMode: modalValue('repeatEndMode') || 'never',
+      participants,
+      visibility: vis.visibility,
+      visibleTo: vis.visibleTo,
+      at: new Date().toISOString(),
+    };
+  }
+
+  function saveTodoDraftNow() {
+    if (!todoDraftActive()) return false;
+    if (todoDraftTimer) { clearTimeout(todoDraftTimer); todoDraftTimer = null; }
+    const d = todoDraftPayload();
+    if (!d) return false;
+    /* 只写了备注、标题还空着也算「正在写」—— 不然边想边写时草稿会时有时无 */
+    if (!d.title && !String(d.note || '').trim()) {
+      dropDraft(TODO_DRAFT_KEY);
+      clearDraftHint('todo');
+      return false;
+    }
+    writeDraft(TODO_DRAFT_KEY, d);
+    markDraftSaved('todo');
+    return true;
+  }
+
+  function scheduleTodoDraft() {
+    if (todoDraftTimer) clearTimeout(todoDraftTimer);
+    markDraftPending('todo');
+    todoDraftTimer = setTimeout(() => { todoDraftTimer = null; saveTodoDraftNow(); }, 800);
+  }
+
+  /** 读待办草稿：只认自己的（同一台设备换账号登录时，别人的草稿直接丢掉） */
+  function readTodoDraft() {
+    const d = readDraft(TODO_DRAFT_KEY);
+    if (!d || typeof d !== 'object') return null;
+    const myUid = state.me ? Number(state.me.id) || 0 : 0;
+    if (d.uid && myUid && Number(d.uid) !== myUid) { dropDraft(TODO_DRAFT_KEY); return null; }
+    if (!d.title && !String(d.note || '').trim()) return null;
+    return d;
+  }
+
   /* 页面被关掉 / 刷新（含异常崩溃前的卸载）时再兜一次：
      正常情况下 0.8 秒的 debounce 已经写过了，但「敲完最后一个字立刻关页面」
      是最常见的漏写场景。 */
   window.addEventListener('beforeunload', () => {
     savePostDraftNow();
     saveRecordDraftNow();
+    saveTodoDraftNow();
   });
 
   function resetCompose(visibility) {
@@ -9558,6 +10055,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   }
 
   async function publishPost() {
+    const layer = $('#modal-layer');
     const ta = document.querySelector('[data-act="compose-text"]');
     const content = (ta ? ta.value : '').trim();
     const images = state.compose.images.map((i) => i.path);
@@ -9567,16 +10065,20 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const tagInput = document.querySelector('[data-act="compose-tags"]');
     const tags = (tagInput ? tagInput.value : '').split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean).slice(0, 10);
     if (!content && !images.length && !videos.length) { toast('写点什么，或选张图片 / 一段视频吧', 'err'); return; }
+    /* v4.28.9：发帖搬进弹窗后，可见范围从弹窗里读（与保存记录 / 保存待办同一套 visReading），
+       仍然兜底到 state —— 万一哪天又从页面内联调用，不能发成「没有可见性」。 */
+    const vis = layer ? visReading(layer) : {
+      visibility: state.compose.visibility || 'family',
+      visibleTo: (state.compose.visibleTo || []).slice(0, 50),
+    };
     try {
       await api('/api/posts', {
         method: 'POST',
         body: {
           content, images, videos, tags,
           videoCovers,
-          /* v4.28.2：可见范围与「指定可见成员」。动态发布区不是弹窗，
-             所以这里直接取 state（弹窗里才有 layer.dataset）。 */
-          visibility: state.compose.visibility || 'family',
-          visibleTo: (state.compose.visibleTo || []).slice(0, 50),
+          visibility: vis.visibility,
+          visibleTo: vis.visibleTo.slice(0, 50),
         },
       });
       /* v4.28.2：发布成功后**回到「全家可见」**，不沿用上一条的可见范围。
@@ -9590,9 +10092,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       dropDraft(POST_DRAFT_KEY);
       clearDraftHint('post');
       state.draftNotice = '';
+      state.composeEmoji = false;
       state.postTag = '';                                // 清掉标签筛选，保证刚发的动态一定能看到
       await refreshPosts();
       clearComposeInputs();
+      closeModal();                                      // v4.28.9：发帖是一张表单，发完就关
       toast('已发布', 'ok');
     } catch (err) { toast(err.message, 'err'); }
   }
@@ -9686,13 +10190,250 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     if (box) box.innerHTML = videoChipHtml(list, 'post-video-del', '', covers);
   }
 
+  /* ═══ v4.28.9 需求 6：发帖 = 一个「添加待办」式的表单弹窗 ═══════════════
+     以前发帖是在动态页里就地展开一块面板：它把整条动态流往下推、搜索与标签被挤走，
+     而且「发帖」和「看动态」两件事混在同一屏。现在改成一次性表单：
+     点「✍️ 动态」开弹窗，填完发布，关掉就回到列表。
+     ★ 数据仍然全部落在 state.compose（草稿机制一个字没改）——
+       弹窗只是它的一个视图，关闭不丢内容靠的就是这一点。 */
+
+  function composeThumbsHtml() {
+    return (state.compose.images || []).map((im, i) =>
+      /* v4.28.12：data-nomenu —— 这张图只用于长按排序，不参与「长按弹图片菜单」。
+         MENU_SELECTOR 里本来就包含 .thumb img（记录页缩略图要靠它），所以不能
+         直接把它从选择器里摘掉，只能给发帖页这一处打标记，让两处手势入口跳过。 */
+      `<div class="thumb"><img src="${esc(assetUrl(im.path))}" alt="" data-nomenu="1" data-act="img-view" data-src="${esc(im.path)}"><button type="button" data-act="compose-del" data-i="${i}">×</button></div>`).join('');
+  }
+
+  /* ── v4.28.11 需求 2：发帖图片长按 0.4 秒进入拖拽排序 ──────────────────
+     为什么不用 HTML5 draggable：移动端根本不触发 dragstart，而且长按会先被
+     系统菜单 / 滚动抢走。Pointer Events 全端统一，还能顺手处理「手指移开就取消长按」。
+     ★ 数组是唯一真相：拖完从 DOM 顺序重建 state.compose.images，再 paintCompose 重绘。
+       绝不能反过来「把 DOM 当数据」——缩略图随时会被整块 innerHTML 换掉。 */
+  function bindComposeImgSort(layer) {
+    const box = layer.querySelector('#compose-imgs');
+    if (!box) return;
+    let press = null;          // { el, x, y, timer, dragging, id }
+    let skipClick = false;     // 拖完松手会补一个 click，别让它打开灯箱
+
+    const cancelPress = () => {
+      if (press && press.timer) clearTimeout(press.timer);
+      press = null;
+    };
+
+    const beginDrag = () => {
+      if (!press) return;
+      press.dragging = true;
+      /* 双保险：全局的「长按 500ms 弹图片菜单」已经在 touchstart 里跳过 data-nomenu，
+         但桌面右键 / 部分浏览器仍会在按下后才起计时 —— 起拖这一刻把计时器清干净。 */
+      clearTimeout(longPress.timer);
+      press.el.classList.add('thumb-drag');
+      document.body.classList.add('is-img-drag');
+      try { if (navigator.vibrate) navigator.vibrate(10); } catch { /* 忽略 */ }
+    };
+
+    const finishDrag = () => {
+      if (!press || !press.dragging) { cancelPress(); return; }
+      const el = press.el;
+      el.classList.remove('thumb-drag');
+      el.style.transform = '';
+      document.body.classList.remove('is-img-drag');
+      skipClick = true;
+      setTimeout(() => { skipClick = false; }, 350);
+      /* 以 DOM 的最终顺序为准重建数组（Map 保留 path 之外的其他字段） */
+      const byPath = new Map((state.compose.images || []).map((x) => [x.path, x]));
+      const order = Array.from(box.querySelectorAll('.thumb img'))
+        .map((im) => im.getAttribute('data-src'))
+        .filter(Boolean);
+      press = null;
+      if (order.length < 2) return;
+      state.compose.images = order.map((p) => byPath.get(p) || { path: p });
+      paintCompose();
+      schedulePostDraft();
+    };
+
+    box.addEventListener('pointerdown', (ev) => {
+      if (ev.button != null && ev.button !== 0) return;       // 只认左键 / 单指
+      const thumb = ev.target && ev.target.closest ? ev.target.closest('.thumb') : null;
+      if (!thumb) return;
+      if (ev.target.closest('[data-act="compose-del"]')) return;   // 删除按钮不算
+      cancelPress();
+      press = {
+        el: thumb, x: ev.clientX, y: ev.clientY, dragging: false,
+        timer: setTimeout(beginDrag, 400),
+      };
+    });
+
+    /* move 挂 window：拖到弹窗外面（甚至拖到分隔线外）也要跟手，挂 box 上会断 */
+    window.addEventListener('pointermove', (ev) => {
+      if (!press) return;
+      if (!press.dragging) {
+        /* 手指在 0.4 秒内就动了 → 用户是在滑页面，不是要拖图 */
+        if (Math.abs(ev.clientX - press.x) > 8 || Math.abs(ev.clientY - press.y) > 8) cancelPress();
+        return;
+      }
+      ev.preventDefault();
+      const el = press.el;
+      el.style.transform = `translate(${ev.clientX - press.x}px, ${ev.clientY - press.y}px)`;
+      /* 找到指针当前压着的那张图 → 换位（其他图自然让位） */
+      const others = Array.from(box.querySelectorAll('.thumb')).filter((t) => t !== el);
+      const hit = others.find((t) => {
+        const r = t.getBoundingClientRect();
+        return ev.clientX >= r.left && ev.clientX <= r.right
+          && ev.clientY >= r.top && ev.clientY <= r.bottom;
+      });
+      if (!hit) return;
+      const kids = Array.from(box.children);
+      const elIdx = kids.indexOf(el);
+      const hitIdx = kids.indexOf(hit);
+      if (elIdx < 0 || hitIdx < 0 || elIdx === hitIdx) return;
+      /* 往右拖就插到目标后面，往左拖就插到目标前面 —— 视觉上就是「换到它那儿」 */
+      if (elIdx < hitIdx) box.insertBefore(el, hit.nextSibling);
+      else box.insertBefore(el, hit);
+    });
+
+    const onUp = (ev) => {
+      if (!press) return;
+      if (press.dragging && ev && ev.pointerId != null) {
+        try { box.releasePointerCapture(ev.pointerId); } catch { /* 没捕获过也没关系 */ }
+      }
+      finishDrag();
+    };
+    box.addEventListener('pointerup', onUp);
+    box.addEventListener('pointercancel', onUp);
+    /* 手指滑出弹窗也要收尾，否则 press 会一直挂着 */
+    window.addEventListener('pointerup', onUp);
+
+    /* 拖完那次 click 要吃掉：否则松手就跳进灯箱，排序结果根本看不见 */
+    box.addEventListener('click', (ev) => {
+      if (skipClick) { ev.stopPropagation(); ev.preventDefault(); }
+    }, true);
+    /* 右键 / 长按一律吃掉浏览器菜单 —— 这个格子里只有「排序」一种语义。
+       不能只在 dragging 时拦：系统菜单在按下约 500ms 就弹，那时拖拽刚起（400ms），
+       两者只差 100ms，时序上经常抢在 dragstart 之前。 */
+    box.addEventListener('contextmenu', (ev) => ev.preventDefault());
+  }
+
+  function composeVideosHtml() {    const vs = state.compose.videos || [];
+    return vs.length ? videoChipHtml(vs.map((v) => v.path), 'compose-vdel', '', coverMapOf(vs)) : '';
+  }
+
+  function composeEmojiHtml() {
+    if (!state.composeEmoji) return '';
+    return `<div class="emoji-panel" id="compose-emoji">${COMPOSE_EMOJIS.map((e) =>
+      `<button type="button" class="emoji-pick" data-act="compose-emoji-pick" data-emoji="${e}">${e}</button>`).join('')}</div>`;
+  }
+
+  function composeTagChipsHtml() {
+    const tags = allPostTags();
+    if (!tags.length) return '';
+    const list = String(state.compose.tags || '').split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+    return `<div class="tag-pick" id="compose-tag-pick">${tags.map((t) =>
+      `<button type="button" class="chip${list.includes(t) ? ' on' : ''}"
+               data-act="compose-tag-add" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}</div>`;
+  }
+
+  /** 弹窗内局部重绘（上传完成 / 删图 / 删视频 / 点标签 / 开表情）——
+      不能走整页 render()：弹窗不在页签容器里，整页重绘不会碰它。 */
+  function paintCompose(layer) {
+    const box = layer || $('#modal-layer');
+    if (!box) return;
+    const ib = box.querySelector('#compose-imgs');
+    if (ib) {
+      ib.innerHTML = composeThumbsHtml();
+      /* data-gal 与缩略图同一份数据 —— 灯箱进去还能左右翻看这一组 */
+      ib.dataset.gal = JSON.stringify((state.compose.images || []).map((im) => im.path));
+    }
+    const vb = box.querySelector('#compose-videos');
+    if (vb) vb.innerHTML = composeVideosHtml();
+    const eb = box.querySelector('#compose-emoji-box');
+    if (eb) eb.innerHTML = composeEmojiHtml();
+    const tb = box.querySelector('#compose-tag-pick');
+    const next = composeTagChipsHtml();
+    if (tb && !next) tb.remove();
+    else if (tb) tb.outerHTML = next;
+    else if (next) {
+      const anchor = box.querySelector('[data-act="compose-tags"]');
+      const field = anchor && anchor.closest('label');
+      if (field) field.insertAdjacentHTML('afterend', next);
+    }
+  }
+
+  function openComposeForm() {
+    const draftText = String(state.compose.text || '');
+    const draftTags = String(state.compose.tags || '');
+    openModal({
+      title: '发布动态',
+      fullscreen: true,
+      body: `
+        <div class="composer">
+        ${state.draftNotice === 'post' ? `<div class="draft-bar">
+          <span class="grow">📝 已恢复上次未发布的内容</span>
+          <button type="button" class="drop" data-act="draft-drop">丢弃草稿</button>
+        </div>` : ''}
+        <!-- v4.28.9 需求 7：可见范围不写标题（两个按钮自己说明了在问什么），
+             选「指定可见成员」时本人恒选中且不可取消。 -->
+        <div class="compose-vis">${visPickHtml(state.compose.visibility, state.compose.visibleTo)}</div>
+        <label class="field fld compose-text-field">
+          <textarea class="fld-inp" rows="4" maxlength="5000" data-autogrow data-max-h="360"
+                    data-act="compose-text" placeholder="记录此刻的生活…">${esc(draftText)}</textarea>
+          <span class="flab">记录此刻的生活</span>
+        </label>
+        <div class="composer-imgs" id="compose-imgs" data-gal="${esc(JSON.stringify((state.compose.images || []).map((im) => im.path)))}">${composeThumbsHtml()}</div>
+        <div class="composer-videos" id="compose-videos">${composeVideosHtml()}</div>
+        <div id="compose-emoji-box">${composeEmojiHtml()}</div>
+        <div class="composer-bar">
+          <div class="composer-ops-left">
+            <button type="button" class="btn-ghost btn-sm" data-act="compose-pick">＋ 图片</button>
+            <button type="button" class="btn-ghost btn-sm" data-act="compose-vpick">＋ 视频</button>
+            <button type="button" class="btn-ghost btn-sm${state.composeEmoji ? ' on' : ''}" data-act="compose-emoji">😊 表情</button>
+          </div>
+          <div class="composer-ops-right">
+            <!-- v4.28.10 需求 4：删掉「存草稿」按钮 —— 草稿是自动存的（0.8 秒去抖），
+                 这里只留一行保存状态，让人知道「已经帮我存了」。 -->
+            <span class="draft-hint hidden" id="post-draft-hint"></span>
+          </div>
+        </div>
+        <label class="field fld">
+          <input class="fld-inp" type="text" maxlength="80" data-act="compose-tags"
+                 placeholder="添加标签（用空格分隔）" value="${esc(draftTags)}">
+          <span class="flab">标签</span>
+        </label>
+        ${composeTagChipsHtml()}
+        <input type="file" accept="image/*" multiple class="hidden" id="compose-file">
+        <input type="file" accept="video/*" multiple class="hidden" id="compose-video-file">
+        </div>`,
+      foot: `
+        <div class="spacer"></div>
+        <button type="button" class="btn-primary" data-act="compose-publish">发布</button>`,
+      onMount: (layer) => {
+        layer.dataset.visibility = state.compose.visibility || 'family';
+        bindComposeImgSort(layer);      // v4.28.11 需求 2：图片长按拖拽排序
+        /* 「指定可见成员」的勾选也要活起来：vis-pick / vis-member 由全局委托改 class，
+           这里延后一拍把结果写回 state，关掉弹窗再打开才不会把名单丢掉。 */
+        layer.addEventListener('click', (ev) => {
+          const t = ev.target;
+          if (!t || !t.closest) return;
+          if (t.closest('[data-act="vis-pick"]') || t.closest('[data-act="vis-member"]')) {
+            setTimeout(() => {
+              const r = visReading(layer);
+              state.compose.visibility = r.visibility;
+              state.compose.visibleTo = r.visibleTo;
+            }, 0);
+          }
+        });
+        const ta = layer.querySelector('[data-act="compose-text"]');
+        if (ta) setTimeout(() => ta.focus(), 60);
+      },
+    });
+  }
+
   function openPostForm(post) {
     const p = post;
     openModal({
       title: '编辑动态',
       body: `
-        <label class="field"><span>内容</span>
-          <textarea data-mk="content" maxlength="5000" placeholder="记录此刻的生活…">${esc(p.content)}</textarea></label>
+        <label class="field fld"><textarea class="fld-inp" data-mk="content" maxlength="5000" placeholder="记录此刻的生活…">${esc(p.content)}</textarea><span class="flab">内容</span></label>
         <div class="field"><span>图片</span>
           <div class="composer-imgs" id="post-imgs">${postThumbHtml(p.images)}</div>
           <button type="button" class="btn-ghost btn-sm" data-act="post-img-add">＋ 图片</button>
@@ -9703,8 +10444,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           <button type="button" class="btn-ghost btn-sm" data-act="post-video-add">＋ 视频</button>
           <input type="file" accept="video/*" multiple class="hidden" id="post-video-file">
         </div>
-        <label class="field"><span>标签（用逗号或空格分隔）</span>
-          <input type="text" data-mk="tags" maxlength="80" value="${esc(p.tags.join(' '))}" placeholder="例如：出游 美食"></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="tags" maxlength="80" value="${esc(p.tags.join(' '))}" placeholder="例如：出游 美食"><span class="flab">标签</span></label>
         ${allPostTags().length ? `<div class="field"><span>点选已有标签</span>
           <div class="tag-pick">${allPostTags().slice(0, 12).map((t) =>
             `<button type="button" class="chip" data-act="form-tag-add" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}</div>
@@ -9852,7 +10592,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   /* ── 记录本附件（v1.5.0） ─────────────────────────────── */
 
   function recAttHtml(atts) {
-    if (!atts.length) return '<div class="attach-empty">还没有附件</div>';
+    /* v4.28.10 需求 3：没有附件时不再渲染「还没有附件」占位 ——
+       一个空的附件区本身就是「还没加附件」，写一行字只是让表单变长。 */
+    if (!atts.length) return '';
     return atts.map((a, i) =>
       `<span class="attach-chip" title="${esc(a.name)}">` +
       `${a.cover ? `<img class="att-thumb" src="${esc(a.cover)}" alt="" loading="lazy">` : `<span class="att-ico">${fileIcon(a.name)}</span>`}` +
@@ -9899,24 +10641,25 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const curCat = r.category || '通用';
     const preset = cats.includes(curCat) ? curCat : '__custom__';
     openModal({
-      title: isEdit ? '编辑记录' : '新建重点记录',
+      title: isEdit ? '编辑记录' : '添加记录',
+      fullscreen: true,
       body: `
         ${draftOk ? `<div class="draft-bar">
           <span class="grow">📝 已恢复上次未保存的内容</span>
           <button type="button" class="drop" data-act="rec-draft-drop">丢弃草稿</button>
         </div>` : ''}
         <!-- v4.14.0 需求 1：「谁能看到」与「提醒」搬到标题上方。
-             这两项是**保存前就要定的归属与打扰**，先定好再写内容，比写完再回头勾更顺；
-             移动端也不用为了改可见性滑到表单最底。 -->
+             v4.28.9 需求 7：「谁能看到」这个标题删掉 —— 两个按钮自己说明了在问什么。 -->
         <div class="rec-head-fields">
-          <div class="field"><span>谁能看到</span>
+          <div class="field field-vis">
             ${visPickHtml(r.visibility, r.visibleTo)}
           </div>
           ${recRemindBlock(r)}
         </div>
-        <label class="field"><span>标题</span>
-          <input type="text" data-mk="title" maxlength="120" value="${esc(r.title)}" placeholder="例如：户口本存放位置"></label>
-        <div class="field"><span>分类<span class="field-hint">（选一个，或在下面自己输入）</span></span>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="title" maxlength="120" value="${esc(r.title)}" placeholder="例如：户口本存放位置"><span class="flab">标题</span></label>
+        <!-- v4.28.9 需求 10：分类与内容的标题 / 括号说明 / 下方提示词全部删除，
+             只剩控件本身。分类那排 chip 有选中态，一看就知道能点。 -->
+        <div class="field field-bare">
           <div class="chips" id="rec-cats">
             ${cats.map((c) =>
               `<button type="button" class="chip${c === curCat ? ' on' : ''}" data-act="rec-cat-pick" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}
@@ -9926,7 +10669,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
                  value="${preset === '__custom__' && curCat !== '通用' ? esc(curCat) : ''}"
                  class="${preset === '__custom__' ? '' : 'hidden'}" style="margin-top:8px">
         </div>
-        <div class="field"><span>内容<span class="field-hint">（支持图片、勾选框、序号列表）</span></span>
+        <div class="field field-bare">
           <!-- ★ v4.16.0 需求 4：正文只保留三种结构化能力 —— 图片 / 勾选框 / 序号列表，
                其余富文本（加粗 / 斜体 / 下划线 / 删除线 / 高亮 / 代码 / 无序列表）全部下线。
                真正的取值仍走下面那个**隐藏的 textarea**（data-mk="content"）：
@@ -9939,25 +10682,27 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <button type="button" class="fmt-btn" data-act="rec-check-insert" title="插入一条勾选项">☐ 勾选框</button>
             <input type="file" accept="image/*" class="hidden" id="rec-inline-file">
           </div>
-          <div id="rec-editor" class="rec-editor-rt" contenteditable="true" role="textbox"
-               aria-multiline="true" data-placeholder="把重要信息写清楚，长期保存"></div>
+          <!-- v4.28.10 需求 3：内容框也套上浮动标签（与标题框同一套外观）。
+               contenteditable 没有 :placeholder-shown，浮起判据用 :not(:empty)；
+               框里空着时 flab 隐藏、:empty::before 显示预置文字，和 input 表现一致。 -->
+          <label class="field fld rec-content-field">
+            <div id="rec-editor" class="rec-editor-rt" contenteditable="true" role="textbox"
+                 aria-multiline="true" data-placeholder="把重要信息写清楚，长期保存"></div>
+            <span class="flab">记录内容</span>
+          </label>
           <textarea data-mk="content" maxlength="20000" class="rec-editor hidden" aria-hidden="true" tabindex="-1"></textarea>
-          <small class="field-hint">勾选行的行首是 ☐，回车会自动续一行勾选框；粘贴的内容只保留文字；图片单独存在服务器，正文里只记路径。</small></div>
-        <div class="field"><span>图片<span class="field-hint">（单个不超过 ${maxImgMb()}MB，会自动压缩）</span></span>
+        </div>
+        <!-- v4.28.9 需求 10：图片 / 附件的标题与括号说明删除，
+             大小规则直接标在按钮上 —— 规则要在「要按的地方」被读到。 -->
+        <div class="field field-bare">
           <div class="composer-imgs" id="rec-imgs" data-gal="${esc(JSON.stringify((r.images || []).map(recImgSrc)))}">${recThumbHtml(r.images || [])}</div>
-          <button type="button" class="btn-ghost btn-sm" data-act="rec-img-add">＋ 图片</button>
+          <button type="button" class="btn-ghost btn-sm" data-act="rec-img-add">＋ 图片（单个不超过 ${maxImgMb()}MB，自动压缩）</button>
           <input type="file" accept="image/*" multiple class="hidden" id="rec-file">
         </div>
-        <div class="field"><span>附件<span class="field-hint">（PDF / Word / Excel / PPT / 压缩包 / 音视频 / 文本，单个不超过 ${maxFileMb()}MB，最多 10 个）</span></span>
+        <div class="field field-bare">
           <div class="attach-edit-list" id="rec-atts">${recAttHtml(r.attachments || [])}</div>
-          <button type="button" class="btn-ghost btn-sm" data-act="rec-att-add">＋ 添加附件</button>
+          <button type="button" class="btn-ghost btn-sm" data-act="rec-att-add">＋ 添加附件（单个不超过 ${maxFileMb()}MB，最多 10 个）</button>
           <input type="file" multiple class="hidden" id="rec-att-file">
-        </div>
-        <div class="field"><span>置顶</span>
-          <div class="segmented" data-act="rec-pin-pick">
-            <button type="button" data-pin="0" class="${r.pinned ? '' : 'on'}">普通</button>
-            <button type="button" data-pin="1" class="${r.pinned ? 'on' : ''}">★ 置顶</button>
-          </div>
         </div>`,
       foot: `
         ${isEdit ? '<button type="button" class="btn-danger btn-sm" data-act="rec-delete" data-id="' + r.id + '">删除</button>' : ''}
@@ -10032,53 +10777,28 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   }
 
   /**
-   * v4.12.0 需求（记录本）：提醒开关 + 三个子项。
-   *   · 默认**不提醒**（记录本是长期信息，不是待办）；
-   *   · 打开后才出现「提醒时间 / 提前提醒天数 / 提醒方式」；
-   *   · 三项的默认值都是「跟随系统」，与「家庭设置 → 待办提醒」同一套语义：
-   *       提醒时间   空串 = 用 remindDefaultTime
-   *       提前天数   -1   = 用 remindAdvanceDays
-   *       提醒方式   空串 = 用这个人自己的推送通道（我的 → 推送配置）
-   * 服务端 recordRemindPatch() 是这些默认值的最终裁判，这里只做界面。
+   * v4.28.6：记录本提醒只留一个开关，**不再有「提醒时间 / 提前提醒 / 提醒方式」三件套**。
+   *
+   * 为什么撤掉：记录本里的记录没有「到期日」，服务端只能拿「保存那一刻」当锚点，
+   * 于是同一件事在「记录本」和「待办」里有两套时间语义，用户改了一处另一处还按旧值发。
+   * 现在记录本这一侧只表达「我想被提醒」，真正的日期 / 时间 / 重复 / 渠道全部交给待办：
+   * 勾上之后这条记录会出现在「待办 → 添加待办 → 记录本提醒」的候选里，
+   * 由用户在待办里明确选日期与时间（也能顺手选重复规则）。
    */
   function recRemindBlock(r) {
-    const sys = state.settings || {};
-    const sysTime = String(sys.remindDefaultTime || '08:00');
-    const sysAdv = Number(sys.remindAdvanceDays) || 0;
     const on = !!r.remind;
-    const curAdv = (r.remindAdvanceDays == null || r.remindAdvanceDays < 0) ? -1 : Number(r.remindAdvanceDays);
-    const curCh = String(r.remindChannel || '');
-    /* ★ v4.15.0 需求 1：「跟随系统」的选项文字里原来塞了整句 pushChannelSummary
-       （「当前：智能 · 企业微信应用未启用，现在会走邮件；发不出去会自动回退邮件」），
-       手机上一个 <select> 里放 30 多个汉字：Chrome 会按**最长选项**算最小内容宽度，
-       在 320~360px 屏上直接把「提醒方式」这一行顶出弹窗右边界。
-       现在选项只说「跟随系统」，当前通道走下面的 .field-hint 说明。 */
-    const chLabel = { '': '跟随系统', mail: '邮件', wecom: '企业微信', feishu: '飞书群', dingtalk: '钉钉群' };
+    /* v4.28.9 需求 9：删掉「提醒（可选：交给我们一家的待办来提醒）」这一整行标题与括号说明，
+       只留「开启提醒」一个勾选框；勾选后的说明换成需求给的那一句。 */
     return `
-      <div class="field">
+      <div class="field field-bare">
         <div class="rec-remind-head">
-          <span>提醒<span class="field-hint">（可选：到点发一条提醒给<b>我自己</b>）</span></span>
           <label class="check-line"><input type="checkbox" data-mk="recRemind"${on ? ' checked' : ''}>
             <span>开启提醒</span></label>
         </div>
         <div id="rec-remind-wrap" class="${on ? '' : 'hidden'}">
-          <div class="time-row">
-            <label class="field field-sm"><span>提醒时间</span>
-              <input type="time" data-mk="recRemindTime" value="${esc(r.remindTime || '')}"></label>
-            <label class="field field-sm"><span>提前提醒</span>
-              <select data-mk="recRemindAdvance">
-                <option value="-1"${curAdv < 0 ? ' selected' : ''}>跟随系统（${esc(sysTime)} ${esc(advanceLabel(sysAdv))}）</option>
-                ${ADVANCE_CHOICES.map((n) =>
-                  `<option value="${n}"${curAdv === n ? ' selected' : ''}>${esc(advanceLabel(n))}</option>`).join('')}
-              </select></label>
+          <div class="note-box" id="rec-remind-hint">
+            勾上后，这条记录会出现在「待办 → 添加待办 → 记录本提醒」的候选里。请到待办列表新建一条提醒，在那里设置日期、时间；
           </div>
-          <label class="field field-sm"><span>提醒方式</span>
-            <select data-mk="recRemindChannel">
-              ${['', 'wecom', 'mail', 'feishu', 'dingtalk'].map((v) =>
-                `<option value="${v}"${curCh === v ? ' selected' : ''}>${esc(chLabel[v])}</option>`).join('')}
-            </select></label>
-          <small class="field-hint" id="rec-remind-hint">留空 = 跟随系统：默认 ${esc(sysTime)}·
-            ${esc(advanceLabel(sysAdv))}；${esc(pushChannelSummary(state.me))}。到点只发一次，发完不再重复。</small>
         </div>
       </div>`;
   }
@@ -10108,13 +10828,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       attachments,
       pinned: layer.dataset.pinned === '1',
       ...visReading(layer),
-      /* v4.12.0：记录本提醒。三处「跟随系统」都用「缺省值」表达：
-         remindTime 空串 / remindAdvanceDays -1 / remindChannel 空串。
-         服务端 recordRemindPatch() 认这几个值，不会把它们当成「用户填了空」。 */
+      /* v4.28.6：只提交「想不想提醒」。时间 / 提前天数 / 渠道不再由记录本承担 ——
+         它们改到「待办 → 添加待办 → 记录本提醒」里设置，服务端据此不再自动排 remind_at。 */
       remind: modalChecked('recRemind'),
-      remindTime: modalValue('recRemindTime'),
-      remindAdvanceDays: Number(modalValue('recRemindAdvance') || -1),
-      remindChannel: modalValue('recRemindChannel'),
     };
     if (!body.title) { toast('请填写标题', 'err'); return; }
     if (!body.category) { toast('请填写或选择一个分类', 'err'); return; }
@@ -10177,26 +10893,19 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const g = state.prefsGlobal || {};
     const on = s.remindEnabled !== undefined ? s.remindEnabled !== false : g.remindEnabled !== false;
     const time = String(s.remindDefaultTime || g.remindDefaultTime || '08:00');
-    const adv = Number(s.remindAdvanceDays != null ? s.remindAdvanceDays : g.advanceDays) || 0;
+    /* v4.28.10 需求 1：删掉「提前提醒天数」。提前量改成每条待办自己的事
+       （添加待办 → 提醒类型 → 提前提醒，按天能选 1-99），
+       家庭级再放一个「全家默认提前几天」只会和每条待办的设置打架。 */
     openModal({
       title: '待办提醒 · 全家默认',
       body: `
-        <label class="field"><span>待办到点时是否提醒</span>
-          <select data-mk="aRemindOn">
-            <option value="1"${on ? ' selected' : ''}>开启（到点提醒）</option>
-            <option value="0"${on ? '' : ' selected'}>关闭（全家都不再提醒）</option>
-          </select></label>
-        <label class="field"><span>默认提醒时间</span>
-          <input type="time" data-mk="aRemindTime" value="${esc(time)}">
-          <small class="field-hint">待办没有开始时间时按这个点提醒。</small></label>
-        <label class="field"><span>提前提醒天数</span>
-          <select data-mk="aAdvance">
-            ${ADVANCE_CHOICES.map((n) => `<option value="${n}"${adv === n ? ' selected' : ''}>${esc(advanceLabel(n))}</option>`).join('')}
-          </select></label>
+        <!-- v4.28.11 需求 6：删掉「待办到点时是否提醒」这个总开关 ——
+             它和每个人自己的「开启 / 关闭」叠在一起，用户分不清是谁覆盖谁；
+             要关就在自己的待办提醒里关，关掉的语义只有一层。 -->
+        <label class="field"><span>默认提醒时间<span class="field-hint">（待办没有开始时间时按这个点提醒）</span></span>
+          <input type="time" data-mk="aRemindTime" value="${esc(time)}"></label>
         ${myChannelSelect('todo')}
-        ${msgTplBlock('remind')}
-        <div class="note-box">成员可以在自己的「待办提醒」里选「跟随管理员」或「关闭」，关掉只影响他自己。
-          免打扰时段是每个人自己的，在成员自己的设置里选。</div>`,
+        ${msgTplBlock('remind')}`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
         <button type="button" class="btn-primary" data-act="admin-msg-save" data-which="remind">保存</button>`,
     });
@@ -10241,19 +10950,16 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <label><span>开始</span><input type="time" data-mk="aQuietStart" value="${esc(quietS)}"></label>
             <label><span>结束</span><input type="time" data-mk="aQuietEnd" value="${esc(quietE)}"></label>
           </div>
-          <small class="field-hint">这段时间内不发通知（可跨零点），期间的变更攒着，
-            <b>免打扰一结束就合并成一封</b>发出去。只填一个或起止同一时刻按「未启用」处理。</small></div>
+          </div>
         <!-- v4.15.0 需求 8：防轰炸阈值从写死的 20 封/分改成可调。
              调大 = 短时间内允许发更多封（人多、改得勤的时候有用）；
              调小 = 更保守，宁可漏一点也不炸邮箱。 -->
         <div class="field"><span>防轰炸上限<span class="field-hint">（一分钟最多发几封，1–500）</span></span>
-          <div class="row"><div class="r-label"><b>每分钟最多</b>
-            <small>超过就暂停发送、只计数不补发；默认 20 封</small></div>
+          <div class="row"><div class="r-label"><b>每分钟最多</b></div>
             <input type="number" class="inp-compact" data-mk="aMaxPerMin" min="1" max="500" inputmode="numeric"
                    value="${esc(String(Number(s.notifyMaxPerMin || g.notifyMaxPerMin || 20)))}"></div></div>
         ${myChannelSelect('notify')}
-        ${msgTplBlock('notify')}
-        <div class="note-box">成员可以选「跟随管理员」，也可以自己指定要收哪几类（只能收窄）。</div>`,
+        ${msgTplBlock('notify')}`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
         <button type="button" class="btn-primary" data-act="admin-msg-save" data-which="notify">保存</button>`,
     });
@@ -10265,9 +10971,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     if (which === 'remind') {
       const t = modalValue('aRemindTime').trim();
       if (t && !timeOk(t)) { toast('提醒时间格式不正确', 'err'); return; }
-      body.remindEnabled = modalValue('aRemindOn') !== '0';
+      /* v4.28.11 需求 6：「待办到点时是否提醒」这个总开关已从界面删除。
+         ★ 这里必须**不提交** remindEnabled —— 原来写的是
+           `body.remindEnabled = modalValue('aRemindOn') !== '0'`，控件没了之后
+           modalValue 返回空串，空串 !== '0' 恒为 true，等于每次点保存都替用户把提醒打开。
+         不传这个键，服务端保留原值（老家庭设置里的「关闭」不会被悄悄改掉）。 */
       body.remindDefaultTime = t || '08:00';
-      body.remindAdvanceDays = Number(modalValue('aAdvance')) || 0;
+      /* v4.28.10：不再提交 remindAdvanceDays —— 这个设置项已下线。
+         服务端对缺失的键有 != null 守卫，不传就是「保持原值」。 */
     } else {
       const qs = modalValue('aQuietStart').trim();
       const qe = modalValue('aQuietEnd').trim();
@@ -10435,19 +11146,21 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   function openRenameForm() {
     openModal({
       title: '修改昵称',
-      body: `<label class="field"><span>昵称</span>
-        <input type="text" data-mk="display_name" maxlength="20" value="${esc(state.me.display_name)}"></label>`,
+      body: `<label class="field fld"><input placeholder="请输入昵称" class="fld-inp" type="text" data-mk="display_name" maxlength="20" value="${esc(state.me.display_name)}"><span class="flab">昵称</span></label>`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
         <button type="button" class="btn-primary" data-act="rename-save">保存</button>`,
     });
   }
 
   function openPasswordForm() {
+    /* v4.28.10 需求 7：新密码输两遍再提交 —— 密码框看不见，
+       打错一个字符就要走「忘记密码」重来，这里多一次比对能挡掉绝大多数手滑。 */
     openModal({
       title: '修改密码',
       body: `
-        <label class="field"><span>当前密码</span><input type="password" data-mk="old_password"></label>
-        <label class="field"><span>新密码（至少 6 位）</span><input type="password" data-mk="new_password"></label>`,
+        <label class="field fld"><input placeholder="请输入当前密码" class="fld-inp" type="password" data-mk="old_password"><span class="flab">当前密码</span></label>
+        <label class="field fld"><input placeholder="请输入新密码" class="fld-inp" type="password" data-mk="new_password"><span class="flab">新密码</span></label>
+        <label class="field fld"><input placeholder="请再输入一次新密码" class="fld-inp" type="password" data-mk="new_password2"><span class="flab">确认新密码</span></label>`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
         <button type="button" class="btn-primary" data-act="password-save">确认修改</button>`,
     });
@@ -10461,11 +11174,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     openModal({
       title: '修改登录账号',
       body: `
-        <label class="field"><span>新登录账号（2-20 位中英文、数字或下划线）</span>
-          <input type="text" data-mk="username" maxlength="20" value="${esc(state.me.username)}"
-                 autocomplete="off" spellcheck="false"></label>
-        <label class="field"><span>当前密码</span>
-          <input type="password" data-mk="cur_password" autocomplete="new-password"></label>
+        <label class="field fld"><input placeholder="请输入新登录账号" class="fld-inp" type="text" data-mk="username" maxlength="20" value="${esc(state.me.username)}"
+                 autocomplete="off" spellcheck="false"><span class="flab">新登录账号</span></label>
+        <label class="field fld"><input placeholder="请输入当前密码" class="fld-inp" type="password" data-mk="cur_password" autocomplete="new-password"><span class="flab">当前密码</span></label>
         <div class="note-box">改完以后，其他设备下次登录要用新账号；已经登录的设备不受影响。
           如果记不住新账号，可以先用管理员账号在「家庭成员」里看 @账号。</div>`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
@@ -10577,7 +11288,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       title: `为 ${name} 重置密码`,
       body: `
         <div class="note-box">重置后该成员在其它设备上的登录会立即失效，请把新密码告诉他本人。</div>
-        <label class="field"><span>新密码（至少 6 位）</span><input type="password" data-mk="new_password"></label>`,
+        <label class="field fld"><input placeholder="请输入新密码" class="fld-inp" type="password" data-mk="new_password"><span class="flab">新密码</span></label>`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
         <button type="button" class="btn-primary" data-act="member-reset-save" data-id="${memberId}">确认重置</button>`,
     });
@@ -10645,19 +11356,16 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           <button type="button" data-mode="custom" class="${custom ? 'on' : ''}">自定义密码</button>
         </div>
       </div>`;
+    /* v4.28.10 需求 7：顶部两段说明都删掉 —— 这个弹窗的每个字段名
+       （当前密码 / 密码方式 / 新访问密码）已经把要做的事说清楚了。 */
     const body = on ? `
-        <div class="note-box">记录本已上锁。可以改访问密码，也可以直接关闭校验；关闭后打开记录本不再需要密码。
-          <br>「当前密码」填<b>原访问密码或登录密码</b>都可以。</div>
-        <label class="field"><span>当前密码（原访问密码或登录密码）</span>
-          <input type="password" data-mk="lockpw" autocomplete="off"></label>
+        <label class="field fld"><input placeholder="请输入当前密码" class="fld-inp" type="password" data-mk="lockpw" autocomplete="off"><span class="flab">当前密码</span></label>
         ${modePicker}
         <label class="field${custom ? '' : ' hidden'}" id="lock-new-pw"><span>新访问密码（至少 4 位）</span>
           <input type="password" data-mk="newlockpw" autocomplete="new-password"></label>`
       : `
-        <div class="note-box">开启后，每次打开记录本都需要先输入密码解锁；关闭页面再打开也要重新输入（解锁只在本次打开期间有效）。可以选择复用登录密码，或单独设一个访问密码。</div>
         ${modePicker}
-        <label class="field" id="lock-mode-hint"><span>输入登录密码以确认开启</span>
-          <input type="password" data-mk="lockpw" autocomplete="off"></label>`;
+        <label class="field fld" id="lock-mode-hint"><input placeholder="请输入输入登录密码以确认开启" class="fld-inp" type="password" data-mk="lockpw" autocomplete="off"><span class="flab">输入登录密码以确认开启</span></label>`;
     openModal({
       title: on ? '记录本访问密码' : '开启记录本访问密码',
       body,
@@ -10712,11 +11420,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   function openNotifyEmailForm() {
     const cur = state.me.notify_email || '';
     openModal({
-      title: '提醒收件邮箱',
+      title: '收件邮箱',
       body: `
-        <label class="field"><span>收件邮箱（留空表示不接收提醒）</span>
-          <input type="email" data-mk="email" maxlength="254" value="${esc(cur)}" placeholder="例如：xxxx@qq.com"></label>
-        <div class="note-box">待办到点时，系统会把提醒邮件发到这个邮箱。只有你参与（被列为参与人）的待办才会提醒你。</div>`,
+        <label class="field fld"><input class="fld-inp" type="email" data-mk="email" maxlength="254" value="${esc(cur)}" placeholder="例如：xxxx@qq.com"><span class="flab">收件邮箱</span></label>`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
         <button type="button" class="btn-primary" data-act="notify-email-save">保存</button>`,
       onMount: (layer) => { const f = layer.querySelector('[data-mk="email"]'); if (f && !cur) setTimeout(() => f.focus(), 60); },
@@ -10862,26 +11568,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     openModal({
       title: '推送方式',
       body: `
-        <div class="note-box">
-          <b>已启用且已配置</b>：${esc(opts.map((v) => PUSH_LABEL[v]).join('、'))}
-          <br><span class="field-hint">这里只列能真正发出去的通道 —— 选一个发不出去的通道，
-            界面好看但消息会安静地停在日志里。</span>
-        </div>
         ${lostP ? `<div class="note-box warn-text">你现在选的首选「${esc(PUSH_LABEL[curP])}」已经不可用（被关掉或没配好），请重新选一个。</div>` : ''}
         ${lostF ? `<div class="note-box warn-text">你原来的兜底「${esc(PUSH_LABEL[curF])}」已经不可用，已按「不设兜底」处理。</div>` : ''}
-        <label class="field"><span>首选推送方式
-          <span class="field-hint">（待办提醒 / 内容通知 / 记账都先走它）</span></span>
+        <!-- v4.28.11 需求 6：删掉「这里只列能真正发出去的通道…」与「首选 / 兜底」那两段说明 ——
+             能选哪些通道，下拉里本身就写着；首选与兜底谁先谁后，两个标签已经说明了。 -->
+        <label class="field"><span>首选推送方式</span>
           <select data-mk="pushPrimary" data-act="push-primary">${optHtml(opts.includes(curP) ? curP : opts[0], false)}</select></label>
-        <label class="field"><span>兜底推送方式
-          <span class="field-hint">（首选发不出去时才走它）</span></span>
+        <label class="field"><span>兜底推送方式</span>
           <select data-mk="pushFallback">${optHtml(opts.includes(curF) ? curF : '', true)}</select></label>
-        <div class="note-box">
-          <b>首选</b>：消息先走这条。<b>兜底</b>：首选没发出去（没绑定 / 通道故障 / 发送失败）才补发这一条，
-          <b>不会两条同时发</b>。<br>
-          兜底留空 = 不设兜底，首选失败会在推送日志里写明原因，不会静默丢弃。<br>
-          这一项是<b>全局默认</b>；待办提醒 / 内容通知 / 记账三类还可以各自指定<b>首选</b>
-          （在各自的设置里），<b>兜底始终跟着这里走</b>。
-        </div>
         <div class="note-box">${pushInfoOf(state.me).ready
           ? (pushInfoOf(state.me).bound
             ? `已绑定企业微信账号（UserID：${esc(pushInfoOf(state.me).wecomUser)}）。`
@@ -10930,12 +11624,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   function openAvatarForm() {
     const has = !!(state.me && state.me.avatar);
+    /* v4.28.10 需求 7：
+       · 删掉头像下方那段说明文字（「选一张照片作为你的头像…」）；
+       · 选图不再立刻上传，先预览、点「保存」才生效 —— 选错了还来得及换，
+         而不是一点文件选择框头像就已经被换掉。 */
     openModal({
       title: '更换头像',
       body: `
         <div class="avatar-preview">${avatarHtml(state.me.display_name, 'me-avatar')}</div>
-        <div class="note-box">选一张照片作为你的头像：会自动按中心裁成方形并压缩，不用自己先处理。
-          头像会出现在「我的」、动态与评论里，家里人都能看到。</div>
         <div class="row-list">
           <div class="row">
             <div class="r-label"><b>上传新头像</b><small>支持 JPG / PNG，单张不超过 ${maxImgMb()}MB</small></div>
@@ -10947,8 +11643,23 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           </div>` : ''}
         </div>
         <input type="file" accept="image/*" class="hidden" id="avatar-file">`,
-      foot: '<button type="button" class="btn-ghost" data-act="modal-close">关闭</button>',
+      foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
+        <button type="button" class="btn-primary" data-act="avatar-save" disabled>保存</button>`,
     });
+  }
+
+  /** 选图阶段：只做校验 + 编码，拿到 dataUrl 存进弹窗，等用户点「保存」 */
+  async function prepareAvatarFile(file) {
+    const name = file.name || '这张图片';
+    if (!looksLikeImage(file)) throw new Error(`「${name}」不是图片，请选择 JPG / PNG`);
+    const raw = await readAsDataUrl(file);
+    const img = await decodeImage(raw);
+    if (!img) throw new Error(`「${name}」浏览器无法识别，请换成 JPG / PNG（iPhone 的 HEIC 请先导出为 JPG）`);
+    // 先按 256 压，个别图仍偏大时再压到 160
+    let out = '';
+    try { out = encodeAvatar(img, 256, 0.82); } catch { /* 交给下一档 */ }
+    if (!out || dataUrlBytes(out) > maxImgMb() * 1024 * 1024) out = encodeAvatar(img, 160, 0.7);
+    return out;
   }
 
   /** 头像专用压缩：中心裁成正方形 + 缩到 256px，体积很小，不必走通用图片通道 */
@@ -10963,17 +11674,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return canvas.toDataURL('image/jpeg', quality);
   }
 
-  async function uploadAvatar(file, onProgress) {
-    const name = file.name || '这张图片';
-    if (!looksLikeImage(file)) throw new Error(`「${name}」不是图片，请选择 JPG / PNG`);
-    const raw = await readAsDataUrl(file);
-    const img = await decodeImage(raw);
-    if (!img) throw new Error(`「${name}」浏览器无法识别，请换成 JPG / PNG（iPhone 的 HEIC 请先导出为 JPG）`);
-    // 先按 256 压，个别图仍偏大时再压到 160
-    let out = '';
-    try { out = encodeAvatar(img, 256, 0.82); } catch { /* 交给下一档 */ }
-    if (!out || dataUrlBytes(out) > maxImgMb() * 1024 * 1024) out = encodeAvatar(img, 160, 0.7);
-    const res = await xhrUpload('/api/me/avatar', { dataUrl: out }, onProgress);
+  /** 点「保存」时上传已经编码好的头像（dataUrl 来自 prepareAvatarFile） */
+  async function uploadAvatarData(dataUrl, onProgress) {
+    if (!dataUrl) throw new Error('请先选择一张图片');
+    const res = await xhrUpload('/api/me/avatar', { dataUrl }, onProgress);
     state.me = res.user;
     await refreshMembers();
     closeModal();
@@ -11088,7 +11792,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         ${notes.map((n) => `<div class="rs-line ${n.tone}">${esc(n.text)}</div>`).join('')}
         <div class="status-ops">
           <button type="button" class="btn-ghost btn-sm" data-act="settings-rescan">立即重新扫描</button>
-          <span class="status-hint">重查 48 小时内被标记、却没发出去的提醒</span>
+
         </div>
       </div>`;
   }
@@ -11143,7 +11847,6 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           ${rsCell('上次通知', fmt(st.at))}
           ${rsCell('已发出', `${sent} 封`)}
           ${rsCell('待发队列', pendingN ? `${pendingN} 条` : '无')}
-          ${rsCell('生效类型', kinds, '', true)}
         </div>
         ${notes.map((n) => `<div class="rs-line ${n.tone}">${esc(n.text)}</div>`).join('')}
       </div>`;
@@ -11205,9 +11908,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       </div>`;
   }
 
-  /* 提前提醒可选 0-5 天。0 = 当天。 */
-  const ADVANCE_CHOICES = [0, 1, 2, 3, 4, 5];
-  const advanceLabel = (n) => (Number(n) > 0 ? `提前 ${Number(n)} 天` : '当天提醒');
+  /* v4.28.10 需求 1：`ADVANCE_CHOICES`（0-5 天那五个档）与 `advanceLabel` 随
+     「提前提醒天数」设置项一起下线 —— 家庭级不再有「提前几天」这个概念，
+     每条待办的提前量由服务端算成一句话（`shapeTodo().advanceText`）后下发。 */
 
   /** v4.15.0 需求 7：「我的」默认提醒时间 —— 我这一侧实际生效的那个值。
    *  管理员读自己的 settings，成员读管理员下发的 prefsGlobal；都没有就 08:00。
@@ -11230,11 +11933,12 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return remindTimeInfo().time;
   }
 
-  /** 「我的」页上的一句话摘要：让管理员不进弹窗也知道提醒会怎么发 */
+  /** 「我的」页上的一句话摘要：让管理员不进弹窗也知道提醒会怎么发。
+   *  v4.28.10：「提前提醒天数」已下线，这里不再拼「提前 N 天」——
+   *  提前量现在是每条待办自己的设置，家庭默认只剩「几点提醒」。 */
   function remindSummary(s) {
-    const adv = Number(s && s.remindAdvanceDays) || 0;
     const t = (s && s.remindDefaultTime) || '08:00';
-    return adv > 0 ? `提前 ${adv} 天 ${t}` : `当天 ${t}`;
+    return `${t} 提醒`;
   }
 
   /** 「提前提醒怎么算」的实时示例：让管理员一眼确认设置真的会按提前时间触发 */
@@ -11287,63 +11991,41 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       fileMaxMb: 20,
       videoMaxMb: 50,
     };
+    /* v4.28.10 需求 8：这一页只留「这个家叫什么」和三个上传上限。
+       · 站点名称下方那句说明删除（输入框自己说明了它是名字）；
+       · 「新成员自助注册」整块下线 —— 注册开关改由首启流程 / 邀请决定，
+         放在这里既容易误关，也解释不清「关了以后家里人怎么进来」；
+       · 免登录有效期 / 时区 / 三个上限后的括号说明全部删除；
+       · 上限的取值范围改成写在标签与预置文字里（见下），不再另起一行小字；
+       · 「成员参数」入口删除 —— 入口在「我的 → 家庭成员」，点头像即可。 */
     openModal({
       title: '家庭设置 · 基础配置',
       body: `
         <div class="set-pane on" data-pane="base">
-          <div class="field"><span>站点名称（显示在标题栏、登录页与提醒邮件上）</span>
+          <div class="field"><span>站点名称</span>
             <div class="part-add">
               <input type="text" data-mk="siteName" maxlength="${Number(s.siteNameMax) || 20}"
                      value="${esc(s.siteName || DEFAULT_APP_NAME)}"
                      placeholder="${esc(s.defaultSiteName || DEFAULT_APP_NAME)}">
               <button type="button" class="btn-ghost btn-sm" data-act="settings-site-reset">恢复默认</button>
             </div>
-            <small class="field-hint">对所有家庭成员生效，保存后立即刷新标题栏；留空即为默认的「${esc(s.defaultSiteName || DEFAULT_APP_NAME)}」。</small>
           </div>
-          <div class="field"><span>新成员自助注册</span>
-            <div class="segmented" data-act="set-register-pick">
-              <button type="button" data-reg="1" class="${s.allowRegister ? 'on' : ''}">允许注册</button>
-              <button type="button" data-reg="0" class="${!s.allowRegister ? 'on' : ''}">关闭注册</button>
-            </div>
-          </div>
-          <label class="field"><span>免登录有效期（登录一次后，多久内再打开无需登录）</span>
+          <label class="field"><span>免登录有效期</span>
             <select data-mk="ttl">
               ${TTL_CHOICES.map((h) => `<option value="${h}"${Number(s.sessionTtlHours) === h ? ' selected' : ''}>${ttlLabel(h)}</option>`).join('')}
             </select></label>
-          <label class="field"><span>时区（待办日期 / 时间按哪个时区理解）</span>
+          <label class="field"><span>时区</span>
             <select data-mk="tzOffset">
               ${TZ_CHOICES.map(([v, label]) => `<option value="${v}"${Number(s.tzOffsetMinutes) === v ? ' selected' : ''}>${label}</option>`).join('')}
             </select></label>
 
-          <div class="sub-head">上传大小限制（三个上限各自独立）</div>
-          <label class="field"><span>图片上限（1-100 MB）</span>
-            <input type="number" data-mk="imageMaxMb" min="1" max="100" step="1"
-                   value="${Number(s.imageMaxMb) || 10}" inputmode="numeric">
-            <small class="field-hint">动态与记录本的图片。前端会先压缩，正常几百 KB；
-              这里放宽是为了照顾「原图不压缩」的少数场景。</small></label>
-          <label class="field"><span>附件上限（1-200 MB）</span>
-            <input type="number" data-mk="fileMaxMb" min="1" max="200" step="1"
-                   value="${Number(s.fileMaxMb) || 20}" inputmode="numeric">
-            <small class="field-hint">记录本的附件（PDF / Word / Excel / PPT / 压缩包 / 音视频 / 文本）。</small></label>
-          <label class="field"><span>视频上限（5-500 MB）</span>
-            <input type="number" data-mk="videoMaxMb" min="5" max="500" step="5"
-                   value="${Number(s.videoMaxMb) || 50}" inputmode="numeric">
-            <small class="field-hint">动态里单个视频文件。改大之后服务端请求体上限会跟着放宽，不用重启。</small></label>
-
-          <!-- v4.28.0：设置界面也能按人排查 —— 点成员头像看他的全部可配置参数。
-               放在这里是因为「为什么他收不到提醒」通常就是在这个页面被发现的。 -->
-          <div class="sub-head">成员参数（点头像查看）</div>
-          <div class="row-list">
-            ${(state.members || []).map((m) => `
-              <div class="row member-row">
-                <button type="button" class="avatar-link" data-act="member-info" data-id="${m.id}"
-                        title="查看 ${esc(m.display_name)} 的全部参数">${avatarHtml(m.display_name)}</button>
-                <div class="r-label"><b>${esc(m.display_name)}${m.is_admin ? ' <span class="badge cat">管理员</span>' : ''}</b>
-                  <small>@${esc(m.username)}</small></div>
-                <button type="button" class="btn-ghost btn-sm" data-act="member-info" data-id="${m.id}">查看参数</button>
-              </div>`).join('')}
-          </div>
-          <small class="field-hint">打开成员参数会关闭本窗口，本页未保存的修改不会保留。</small>
+          <div class="sub-head">上传大小限制</div>
+          <label class="field fld"><input placeholder="图片上传上限（1-100MB动态与记录本的图片）" class="fld-inp" type="number" data-mk="imageMaxMb" min="1" max="100" step="1"
+                   value="${Number(s.imageMaxMb) || 10}" inputmode="numeric"><span class="flab">图片上限(1-100 MB)</span></label>
+          <label class="field fld"><input placeholder="附件上传上限（1-200MB记录本的附件）" class="fld-inp" type="number" data-mk="fileMaxMb" min="1" max="200" step="1"
+                   value="${Number(s.fileMaxMb) || 20}" inputmode="numeric"><span class="flab">附件上限(1-200 MB)</span></label>
+          <label class="field fld"><input placeholder="视频上传上限（5-500 MB动态里单个视频文件）" class="fld-inp" type="number" data-mk="videoMaxMb" min="5" max="500" step="5"
+                   value="${Number(s.videoMaxMb) || 50}" inputmode="numeric"><span class="flab">视频上限(5-500 MB)</span></label>
         </div>`,
       foot: `<button type="button" class="btn-ghost" data-act="modal-close">取消</button>
         <button type="button" class="btn-primary" data-act="settings-save">保存</button>`,
@@ -11505,8 +12187,12 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         break;
       }
       case 'password-save': {
+        const pw1 = modalValue('new_password');
+        const pw2 = modalValue('new_password2');
+        if (!pw1) { toast('请输入新密码', 'err'); break; }
+        if (pw1 !== pw2) { toast('两次输入的新密码不一致', 'err'); break; }
         try {
-          await api('/api/me/password', { method: 'POST', body: { old_password: modalValue('old_password'), new_password: modalValue('new_password') } });
+          await api('/api/me/password', { method: 'POST', body: { old_password: modalValue('old_password'), new_password: pw1 } });
           closeModal();
           toast('密码已修改，请重新登录', 'ok');
           window.alert('密码已修改，需要重新登录。');
@@ -11542,6 +12228,15 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       case 'member-lock-do': await adminMemberLock(Number(el.dataset.id), el.dataset.action); break;
       case 'me-avatar': openAvatarForm(); break;
       case 'avatar-pick': { const f = $('#modal-layer #avatar-file'); if (f) f.click(); break; }
+      case 'avatar-save': {
+        const layer = $('#modal-layer');
+        const dataUrl = layer && layer.dataset.pendingAvatar;
+        if (!dataUrl) { toast('请先选择一张图片', 'err'); break; }
+        const p = progressPanel('正在保存头像…');
+        try { await uploadAvatarData(dataUrl, (v) => p.set(v)); p.done('头像已更新'); }
+        catch (err) { p.fail(err.message || '头像保存失败'); toast(err.message || '头像保存失败', 'err'); }
+        break;
+      }
       case 'avatar-reset': await resetAvatar(); break;
       case 'lock-enable-save': await saveRecordLock(true); break;
       case 'lock-disable-save': await saveRecordLock(false); break;

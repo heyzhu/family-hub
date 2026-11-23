@@ -40,7 +40,8 @@ const msgTpl = require('./msgTpl');
 const SETTINGS_DEFAULTS = {
   remind_enabled: '1',
   remind_default_time: '08:00',
-  // 提前几天提醒（0-5）。0 = 当天提醒；3 = 提前 3 天。
+  // 提前几天提醒（0-29）。0 = 当天提醒；3 = 提前 3 天。
+  // ★ v4.28.10：设置界面里的「提前提醒天数」已下线，这个键只作为老数据的兜底保留。
   remind_advance_days: '0',
   tz_offset_minutes: String(config.tzOffsetMinutes),
   smtp_host: 'smtp.qq.com',
@@ -62,23 +63,92 @@ const SETTINGS_DEFAULTS = {
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
 
-/** 提前天数只允许 0-5，其它一律按 0 处理（不合法就当没设，避免提醒跑飞） */
+/** 提前天数只允许 0-29，其它一律按 0 处理（不合法就当没设，避免提醒跑飞） */
 function clampAdvanceDays(v) {
   const n = Math.round(Number(v));
-  return Number.isFinite(n) && n >= 0 && n <= 5 ? n : 0;
+  return Number.isFinite(n) && n >= 0 && n <= 29 ? n : 0;
+}
+
+/* ── v4.28.7：提前提醒支持「分钟 / 小时 / 天」 ────────────────────────────
+   ★ 这一层只做「值 + 单位 → 毫秒偏移」的换算，不碰任何发送逻辑。
+     真正的时刻计算在 localRemindMomentMs()，它把毫秒直接从墙上时刻里减掉 ——
+     所以「提前 30 分钟」是真的 30 分钟前提醒，不会像旧版那样只能按整天算。
+   ★ v4.28.11：范围按需求重新定为 分钟 1-59 / 小时 1-23 / 天 1-29。
+     上限这样卡的道理：超过 1 天的提前量再按分钟 / 小时表达没有意义（会溢出到「天」），
+     而「天」卡在 29 是因为再往前就不如直接改事项的日期了。
+     ★ 每天重复的事项不允许按天提前（一提前就跨到上一周期），前端把「天」置灰；
+       每周重复按天最多 6 —— 提前 7 天就正好压到上一次的那一天。 */
+const ADVANCE_UNIT_MS = { minute: 60000, hour: 3600000, day: 86400000 };
+const ADVANCE_UNIT_MAX = { minute: 59, hour: 23, day: 29 };
+
+function clampAdvanceUnit(u) {
+  const s = String(u || 'day');
+  return ADVANCE_UNIT_MS[s] ? s : 'day';
 }
 
 /**
- * 一条待办**实际生效**的提前天数（v4.22.0 需求 1）。
+ * 一条待办**实际生效**的提前量（值 + 单位）。
  *
- * 优先级：待办自己的 0–5 > 家庭设置。
- * -1 / 空 / 脏值 = 跟随家庭设置（老数据全是 -1，升级后行为与升级前一致）。
- * ★ 这是「单条覆盖全局」的唯一判定点：界面上的「下次提醒」与扫描器真正发信
- *   必须都走它，否则会出现「列表写着提前 2 天、实际按全局 0 天发」。
+ * 优先级：remind_advance_value/unit（>=0 才算设了）> remind_advance_days（0-29 天）
+ *        > 家庭设置（按天）。
+ * ★ 这是唯一判定点：界面「下次提醒」、扫描器发信、重扫放开必须都走它，
+ *   否则会出现「列表写提前 30 分钟、实际按 0 分钟发」。
+ */
+function advanceSpecOf(todo, fallbackDays) {
+  const v = Number(todo && todo.remind_advance_value);
+  if (Number.isInteger(v) && v >= 0) {
+    const unit = clampAdvanceUnit(todo && todo.remind_advance_unit);
+    return { value: Math.min(v, ADVANCE_UNIT_MAX[unit]), unit };
+  }
+  /* 兼容：只写过旧列的老数据（或调用方直接给出天数） */
+  const legacy = Number(todo && todo.remind_advance_days);
+  if (Number.isInteger(legacy) && legacy >= 0 && legacy <= 29) return { value: legacy, unit: 'day' };
+  return { value: clampAdvanceDays(fallbackDays), unit: 'day' };
+}
+
+/** 提前量换毫秒 —— 时刻计算唯一的入口 */
+function advanceMsOf(spec) {
+  const s = spec && typeof spec === 'object'
+    ? { value: Math.max(0, Number(spec.value) || 0), unit: clampAdvanceUnit(spec.unit) }
+    : { value: clampAdvanceDays(spec), unit: 'day' };
+  return s.value * ADVANCE_UNIT_MS[s.unit];
+}
+
+/** 「提前 5 分钟 / 提前 2 小时 / 提前 3 天」，0 返回空串（= 到点提醒） */
+function advanceLabelOf(spec) {
+  const s = spec && typeof spec === 'object'
+    ? { value: Math.max(0, Number(spec.value) || 0), unit: clampAdvanceUnit(spec.unit) }
+    : { value: clampAdvanceDays(spec), unit: 'day' };
+  if (!s.value) return '';
+  const cn = s.unit === 'minute' ? '分钟' : s.unit === 'hour' ? '小时' : '天';
+  return `提前 ${s.value} ${cn}`;
+}
+
+/** 毫秒 → 人类可读（模板变量只拿到 ms 时用；优先用 advanceLabelOf） */
+function advanceLabelOfMs(ms) {
+  const n = Math.max(0, Number(ms) || 0);
+  if (!n) return '';
+  if (n % ADVANCE_UNIT_MS.day === 0) return `提前 ${n / ADVANCE_UNIT_MS.day} 天`;
+  if (n % ADVANCE_UNIT_MS.hour === 0) return `提前 ${n / ADVANCE_UNIT_MS.hour} 小时`;
+  return `提前 ${Math.round(n / ADVANCE_UNIT_MS.minute)} 分钟`;
+}
+
+/** 提前量覆盖了几天（四舍五入到整天的上界），用于重复事项枚举候选落点 */
+function advanceSpanDays(ms) {
+  const n = Math.max(0, Number(ms) || 0);
+  return Math.ceil(n / ADVANCE_UNIT_MS.day);
+}
+
+/**
+ * 一条待办**实际生效**的提前量，折算成「整天数」（v4.22.0 需求 1；v4.28.7 起兼容分钟级）。
+ *
+ * ★ 它现在只是 advanceMsOf() 的整数天投影，专给「按天判断落点」的地方用
+ *   （bills 的日报预告、勾选落点的映射）。要算真实提醒时刻请用 advanceMsOf()，
+ *   否则「提前 30 分钟」会被当成 0 天，两者不是一回事。
  */
 function advanceOf(todo, fallback) {
-  const n = Number(todo && todo.remind_advance_days);
-  return Number.isInteger(n) && n >= 0 && n <= 5 ? n : clampAdvanceDays(fallback);
+  const ms = advanceMsOf(advanceSpecOf(todo, fallback));
+  return Math.floor(ms / ADVANCE_UNIT_MS.day);
 }
 
 /** 读取提醒相关配置（每次扫描都读，管理员改完立即生效） */
@@ -135,13 +205,24 @@ function remindWallKey(dateKey, advanceDays) {
  *   必须全部走这一个函数，否则会出现「设置里写了提前 3 天、实际还是当天才发」。
  */
 function localRemindMoment(todo, defaultTime, tzOffsetMinutes = config.tzOffsetMinutes, advanceDays = 0) {
+  return localRemindMomentMs(todo, defaultTime, tzOffsetMinutes, clampAdvanceDays(advanceDays) * ADVANCE_UNIT_MS.day);
+}
+
+/**
+ * v4.28.7：按**毫秒偏移**算提醒时刻。
+ *
+ * 和上一版唯一的区别就是「减多少」：旧版只能减整天，这一版减任意毫秒，
+ * 于是「提前 30 分钟」「提前 2 小时」都能精确落地。
+ * 跨午夜也自然成立 —— 事项 00:20、提前 5 小时，算出来就是前一天 19:20。
+ */
+function localRemindMomentMs(todo, defaultTime, tzOffsetMinutes = config.tzOffsetMinutes, advanceMs = 0) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(todo.todo_date || ''));
   if (!m) return null;
   const time = TIME_RE.test(String(todo.start_time || '')) ? todo.start_time : defaultTime;
   if (!TIME_RE.test(String(time || ''))) return null;
-  const days = clampAdvanceDays(advanceDays);
+  const ms = Math.max(0, Number(advanceMs) || 0);
   const wall = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-    - days * 86400000
+    - ms
     + Number(time.slice(0, 2)) * 3600000
     + Number(time.slice(3, 5)) * 60000;
   const d = new Date(wall - Number(tzOffsetMinutes || 0) * 60000);
@@ -165,7 +246,7 @@ function recordRemindMoment(timeIn, advanceIn, now = new Date()) {
   const tz = cfg.tzOffsetMinutes;
   const time = TIME_RE.test(String(timeIn || '')) ? String(timeIn) : cfg.remindDefaultTime;
   const n = Number(advanceIn);
-  const adv = Number.isFinite(n) && n >= 0 && n <= 5 ? Math.round(n) : cfg.remindAdvanceDays;
+  const adv = Number.isFinite(n) && n >= 0 && n <= 29 ? Math.round(n) : cfg.remindAdvanceDays;
   const today = wallDateKey(now, tz);
   const at = (key) => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ''));
@@ -268,14 +349,17 @@ function mailLayout(o) {
  *   只读 t.repeat 的话，「每天」这类只存在于新枚举的规则在邮件里会整行消失。
  */
 function todoTemplateVars(t, occKey, cfg, advIn) {
-  /* v4.22.0 需求 1：文案里的「提前 N 天」必须是这条待办**实际生效**的天数，
-     不能继续读全局 cfg.remindAdvanceDays —— 否则单条设了提前 2 天、全局 0 天时，
-     邮件里会写「到点提醒」，与实际发信时间自相矛盾。 */
-  const adv = advIn == null ? cfg.remindAdvanceDays : clampAdvanceDays(advIn);
-  const eventMoment = localRemindMoment(
+  /* v4.22.0 需求 1 / v4.28.7：文案里的提前量必须是这条待办**实际生效**的值，
+     不能继续读全局 cfg.remindAdvanceDays —— 否则单条设了提前 30 分钟、全局 0 天时，
+     邮件里会写「到点提醒」，与实际发信时间自相矛盾。
+     advIn 可以是 spec 对象（runScan 传下来的），也可以是旧的天数（老调用方）。 */
+  const spec = (advIn && typeof advIn === 'object') ? advIn : advanceSpecOf(t, cfg.remindAdvanceDays);
+  const advMs = advanceMsOf(spec);
+  const advText = advanceLabelOf(spec);
+  const eventMoment = localRemindMomentMs(
     { todo_date: occKey, start_time: t.start_time }, cfg.remindDefaultTime, cfg.tzOffsetMinutes, 0);
-  const remindMoment = localRemindMoment(
-    { todo_date: occKey, start_time: t.start_time }, cfg.remindDefaultTime, cfg.tzOffsetMinutes, adv);
+  const remindMoment = localRemindMomentMs(
+    { todo_date: occKey, start_time: t.start_time }, cfg.remindDefaultTime, cfg.tzOffsetMinutes, advMs);
   let participants = [];
   try { participants = JSON.parse(t.participants || '[]'); } catch { /* 忽略 */ }
   const rule = db.getRepeatRule(t);
@@ -284,10 +368,16 @@ function todoTemplateVars(t, occKey, cfg, advIn) {
     站名: config.siteName,
     标题: t.title,
     时间: eventMoment ? humanDate(eventMoment, cfg.tzOffsetMinutes) : occKey,
-    提前提醒: (adv > 0 && remindMoment)
-      ? `提醒：提前 ${adv} 天（${humanDate(remindMoment, cfg.tzOffsetMinutes)}）`
+    提前提醒: (advMs > 0 && remindMoment)
+      ? `提醒：${advText}（${humanDate(remindMoment, cfg.tzOffsetMinutes)}）`
       : '',
     重复: repeatLabel,
+    /* v4.28.11 需求 4：卡片右上角角标 → 推送里的对应要点。
+       「催促」和「来自记录本」以前只在网页上看得见，收到消息的人无从判断要不要马上处理。 */
+    催促: Number(t.urge_minutes) > 0
+      ? `催促：到点后每 ${Number(t.urge_minutes)} 分钟催一次（企业微信回「已完成」即停）`
+      : '',
+    来源: Number(t.record_id) > 0 ? '来源：记录本' : '',
     参与人: participants.join('、'),
     重要程度: PRIO_CN[t.priority] || '普通',
     备注: t.note || '',
@@ -296,26 +386,36 @@ function todoTemplateVars(t, occKey, cfg, advIn) {
 
 /** 默认模板的结构化 HTML 版式（自定义模板不走这里，改用 msgTpl 的品牌外壳） */
 function todoMailLayoutHtml(t, occKey, cfg, advIn) {
-  const adv = advIn == null ? cfg.remindAdvanceDays : clampAdvanceDays(advIn);
-  const eventMoment = localRemindMoment(
+  const spec = (advIn && typeof advIn === 'object') ? advIn : advanceSpecOf(t, cfg.remindAdvanceDays);
+  const advMs = advanceMsOf(spec);
+  const advText = advanceLabelOf(spec);
+  const eventMoment = localRemindMomentMs(
     { todo_date: occKey, start_time: t.start_time }, cfg.remindDefaultTime, cfg.tzOffsetMinutes, 0);
-  const remindMoment = localRemindMoment(
-    { todo_date: occKey, start_time: t.start_time }, cfg.remindDefaultTime, cfg.tzOffsetMinutes, adv);
+  const remindMoment = localRemindMomentMs(
+    { todo_date: occKey, start_time: t.start_time }, cfg.remindDefaultTime, cfg.tzOffsetMinutes, advMs);
   let participants = [];
   try { participants = JSON.parse(t.participants || '[]'); } catch { /* 忽略 */ }
   const rows = [
     { label: '时间', value: eventMoment ? humanDate(eventMoment, cfg.tzOffsetMinutes) : occKey, strong: true },
-    adv > 0 && remindMoment
-      ? { label: '提醒', value: `提前 ${adv} 天发送（${humanDate(remindMoment, cfg.tzOffsetMinutes)}）` }
+    advMs > 0 && remindMoment
+      ? { label: '提醒', value: `${advText}发送（${humanDate(remindMoment, cfg.tzOffsetMinutes)}）` }
       : null,
     db.getRepeatRule(t) ? { label: '重复', value: Repeat.label({ date: t.todo_date, repeat_rule: db.getRepeatRule(t) }) || '每年' } : null,
+    /* v4.28.11 需求 4：与卡片角标对应 —— 催促 / 来源在这里也要出现一句 */
+    Number(t.urge_minutes) > 0
+      ? { label: '催促', value: `到点后每 ${Number(t.urge_minutes)} 分钟催一次（企业微信回「已完成」即停）` }
+      : null,
+    Number(t.record_id) > 0 ? { label: '来源', value: '记录本' } : null,
     participants.length ? { label: '参与人', value: participants.join('、') } : null,
     { label: '重要程度', value: PRIO_CN[t.priority] || '普通' },
     t.note ? { label: '备注', value: t.note } : null,
   ].filter(Boolean);
   const badge = [
     db.getRepeatRule(t) ? '🔁 周期重复' : '',
-    adv > 0 ? '⏰ 提前提醒' : '',
+    advMs > 0 ? '⏰ 提前提醒' : '',
+    /* v4.28.11 需求 4：角标的三个要点在邮件头也标一下（一眼知道这封为什么现在来） */
+    Number(t.urge_minutes) > 0 ? '🔔 催促完成' : '',
+    Number(t.record_id) > 0 ? '📖 记录本' : '',
   ].filter(Boolean).join(' · ');
   return mailLayout({
     heading: t.title,
@@ -360,6 +460,50 @@ function occurrenceDone(todoId, dayKey) {
     );
     return !!row;
   } catch { return false; }
+}
+
+/**
+ * v4.28.7：这个落点是否已经「结束重复」了。
+ *
+ * 三种终止：
+ *   · repeat_ended_at 非空（按次数已经攒够，落下的终点留痕）→ 一律不再命中；
+ *   · mode=date：落点晚于 repeat_end_date → 不再命中（静态判断，不用写库）；
+ *   · mode=count：已成功推送次数 >= repeat_end_count → 不再命中。
+ *
+ * ★ 不把 repeat 规则清空来表达结束：清了之后这条事项在日历上会整个消失，
+ *   用户也看不到「它曾经是个每周提醒」。留规则 + 留终点时刻，才能既停又追溯。
+ */
+function repeatEnded(t, occKey) {
+  if (!t) return false;
+  if (String(t.repeat_ended_at || '')) return true;
+  const mode = String(t.repeat_end_mode || 'never');
+  if (mode === 'date') {
+    const end = String(t.repeat_end_date || '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(end) && String(occKey || '') > end) return true;
+  }
+  if (mode === 'count') {
+    const max = Number(t.repeat_end_count) || 0;
+    if (max > 0 && Number(t.repeat_sent_count) >= max) return true;
+  }
+  return false;
+}
+
+/**
+ * v4.28.7：重复事项成功推送一次后累加计数；攒够 repeat_end_count 就写终点。
+ * ★ 只在「真的发出去 / 已安全入队」时调用 —— 失败也计数的话，
+ *   连续几次发信失败就会把一个「提醒 10 次」的规则提前耗尽。
+ */
+function bumpRepeatSent(t, nowIso) {
+  const id = Number(t && t.id);
+  if (!id) return;
+  db.run('UPDATE todos SET repeat_sent_count = repeat_sent_count + 1 WHERE id = ?', [id]);
+  const mode = String(t.repeat_end_mode || 'never');
+  const max = Number(t.repeat_end_count) || 0;
+  if (mode !== 'count' || max <= 0) return;
+  const row = db.get('SELECT repeat_sent_count FROM todos WHERE id = ?', [id]);
+  if (row && Number(row.repeat_sent_count) >= max) {
+    db.run("UPDATE todos SET repeat_ended_at = ? WHERE id = ? AND repeat_ended_at = ''", [nowIso, id]);
+  }
 }
 
 /**
@@ -448,9 +592,9 @@ async function runScan(now = new Date()) {
 
   for (const t of oneShots) {
     out.checked++;
-    /* v4.22.0 需求 1：这一条自己设了提前天数就用它，否则跟随家庭设置 */
-    const adv = advanceOf(t, cfg.remindAdvanceDays);
-    const moment = localRemindMoment(t, cfg.remindDefaultTime, cfg.tzOffsetMinutes, adv);
+    /* v4.22.0 需求 1 / v4.28.7：这一条自己设了提前量就用它（分钟/小时/天），否则跟随家庭设置 */
+    const spec = advanceSpecOf(t, cfg.remindAdvanceDays);
+    const moment = localRemindMomentMs(t, cfg.remindDefaultTime, cfg.tzOffsetMinutes, advanceMsOf(spec));
     if (!moment) continue;
     if (now.getTime() < moment.getTime()) continue;                 // 还没到点
     if (now.getTime() - moment.getTime() > WINDOW_MS) {              // 错过窗口，不补发
@@ -458,36 +602,49 @@ async function runScan(now = new Date()) {
       out.expired++;
       continue;
     }
-    const sent = await sendOne(t, t.todo_date, moment, cfg, byName, out, nowIso, now, adv);
+    const sent = await sendOne(t, t.todo_date, moment, cfg, byName, out, nowIso, now, spec);
     if (sent === 'waiting' || sent === 'queued') out.waiting++;
   }
 
   for (const t of repeats) {
     out.checked++;
-    // ★ 先在「落点」这一侧把提前天数补回来，再来判断今天该不该发。
-    //   原因：提前 N 天时，真正到期的落点在 N 天之后，今天根本不是落点 ——
-    //   如果还按老写法只找 [昨天, 今天] 里的落点，会先 `continue` 掉，
-    //   于是提醒要么晚 N 天发、要么因超出 48 小时窗口干脆永远不发。
-    //   `shiftDateKey(今天, +N)` 正好就是「今天这一轮该发的那一次落点」；
-    //   N = 0 时它等于 [今天, 昨天]，与老行为完全一致。
-    //
-    //   occKey 本身始终是「事项真实的年度落点」（写进 remind_key 用的），
-    //   提前只作用在提醒时刻上，否则 remind_key 记的就不是今年那一次，明年会重复发。
-    const occKey = [todayKey, prevKey]
-      .map((k) => shiftDateKey(k, advanceOf(t, cfg.remindAdvanceDays)))
-      .find((k) => Repeat.isOccurrence(t, k));
-    if (!occKey) continue;
-    if (String(t.remind_key || '') === occKey) continue;             // 这一次已经发过了
-    /* v4.21.0 需求 2：这一次已经手动勾完了就别再提醒（默认模板下「提前提醒」也一样：
-       提前 N 天发出的那一轮，落点还没到，勾的是落点那天的框 —— 用 occKey 判断即可）。 */
-    if (occurrenceDone(t.id, occKey)) continue;
-    const adv = advanceOf(t, cfg.remindAdvanceDays);
-    const moment = localRemindMoment({ todo_date: occKey, start_time: t.start_time },
-      cfg.remindDefaultTime, cfg.tzOffsetMinutes, adv);
-    if (!moment) continue;
-    if (now.getTime() < moment.getTime()) continue;                  // 还没到点
-    if (now.getTime() - moment.getTime() > WINDOW_MS) continue;      // 超出余量，等明年
-    const sent = await sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, adv);
+    /* v4.28.7：提前量现在可以精确到分钟，旧写法 `shiftDateKey(今天, +N)` 只能表达
+       「提前 N 天」，分钟级会算错落点。改成**枚举候选落点**：
+       从昨天到「提前量覆盖的天数 + 1」，逐个算真实提醒时刻，取已到点、在 48h 窗口内、
+       且这一次还没发过的那一个。
+       · 提前 5 分钟 → 候选只有今天，moment = 今天 - 5min；
+       · 提前 26 小时 → 候选含明天，moment 落在今天，也正确处理。
+       排序后再 find，保证同一轮里「更早该发的那次」优先。 */
+    const spec = advanceSpecOf(t, cfg.remindAdvanceDays);
+    const advMs = advanceMsOf(spec);
+    const span = advanceSpanDays(advMs) + 1;
+    const cands = [];
+    for (let i = -1; i <= span; i++) cands.push(shiftDateKey(todayKey, i));
+    const isOcc = (k) => Repeat.isOccurrence(t, k) && !repeatEnded(t, k);
+    const pickOne = (keys) => keys
+      .filter(isOcc)
+      .map((k) => ({
+        key: k,
+        moment: localRemindMomentMs({ todo_date: k, start_time: t.start_time },
+          cfg.remindDefaultTime, cfg.tzOffsetMinutes, advMs),
+      }))
+      .filter((x) => x.moment
+        && x.moment.getTime() <= now.getTime()
+        && now.getTime() - x.moment.getTime() <= WINDOW_MS)
+      /* ★ 取**最晚**的那个合格落点，不能取最早的：候选里同时有「昨天」和「今天」时，
+         昨天那次已经发过了（remind_key 记着），按升序取会把昨天的落点再补发一遍。
+         降序后第一个就是「最近该发的那一次」。 */
+      .sort((a, b) => b.moment.getTime() - a.moment.getTime())
+      .find((x) => String(t.remind_key || '') !== x.key && !occurrenceDone(t.id, x.key));
+    /* ★ 先只看「今天及以后」。每天重复的事项，今天永远是落点 —— 今天已经勾完 /
+       已经发过，就到此为止，绝不能回头补发昨天那一次（那会表现成「都做完了还在催」）。
+       只有当「今天及以后完全没有落点」时（比如每周三的事、今天是周四），
+       才回退到昨天补发：这是真的漏发了，补一次是对的。 */
+    const forward = cands.filter((k) => k >= todayKey);
+    const backward = cands.filter((k) => k < todayKey);
+    const hit = pickOne(forward) || (forward.some(isOcc) ? null : pickOne(backward));
+    if (!hit) continue;
+    const sent = await sendOne(t, hit.key, hit.moment, cfg, byName, out, nowIso, now, spec);
     if (sent === 'waiting' || sent === 'queued') out.waiting++;
   }
 
@@ -706,6 +863,8 @@ async function sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, advIn) 
        标记只是省掉每分钟的空转。 */
     if (queued) {
       db.run('UPDATE todos SET reminded_at = ?, remind_key = ? WHERE id = ?', [nowIso, occKey, t.id]);
+      /* v4.28.7：入了发件箱等于「这条提醒已经交出去」，按次结束也要记这一次 */
+      if (db.getRepeatRule(t)) bumpRepeatSent(t, nowIso);
       out.queued = (out.queued || 0) + queued;
       return 'queued';
     }
@@ -736,6 +895,8 @@ async function sendOne(t, occKey, moment, cfg, byName, out, nowIso, now, advIn) 
     }
     if (res.errors.length) out.errors.push(...res.errors.map((e) => `「${t.title}」：${e}`));
     db.run('UPDATE todos SET reminded_at = ?, remind_key = ? WHERE id = ?', [nowIso, occKey, t.id]);
+    /* v4.28.7：按次结束重复 —— 只有真的发出去（含已安全入队的 deferred）才累加 */
+    if (db.getRepeatRule(t)) bumpRepeatSent(t, nowIso);
     out.sent++;
     out.recipients += res.mail + res.wecom + res.feishu + res.dingtalk + (res.deferred || 0);
     if (res.wecom) out.viaWecom = (out.viaWecom || 0) + res.wecom;
@@ -797,7 +958,10 @@ function rearmFutureReminders(nowMs = Date.now()) {
   const cfg = loadRemindSettings();
   const now = Number(nowMs);
   const rows = db.all(
-    "SELECT id, todo_date, start_time, repeat, repeat_rule, remind_advance_days, remind_key, reminded_at FROM todos WHERE remind = 1",
+    'SELECT id, todo_date, start_time, repeat, repeat_rule, remind_advance_days,'
+    + ' remind_advance_value, remind_advance_unit, remind_key, reminded_at,'
+    + ' repeat_end_mode, repeat_end_date, repeat_end_count, repeat_sent_count, repeat_ended_at'
+    + ' FROM todos WHERE remind = 1',
   );
   let n = 0;
   for (const t of rows) {
@@ -805,12 +969,16 @@ function rearmFutureReminders(nowMs = Date.now()) {
     // 重复事项的提醒以「记录下来的那次落点」为准；一次性待办就是它自己的日期
     const baseKey = (t.repeat || t.repeat_rule) ? t.remind_key : t.todo_date;
     if (!baseKey) continue;
-    /* ★ v4.28.0：必须用这条待办**自己**的提前天数（与 runScan / sendOne 同一口径）。
+    /* v4.28.7：已经结束重复的不再放开，否则改一次设置就把它从终点拽回来继续发。 */
+    if ((t.repeat || t.repeat_rule) && repeatEnded(t, baseKey)) continue;
+    /* ★ v4.28.0 / v4.28.7：必须用这条待办**自己**的提前量（与 runScan / sendOne 同一口径）。
        旧写法用全局值：单条设了提前 2 天、全局 0 天时，算出来的「新时刻」与真实时刻
-       差两天，于是该放开的不放开、或一改设置就把已经发过的再发一次。 */
-    const m = localRemindMoment(
+       差两天，于是该放开的不放开、或一改设置就把已经发过的再发一次。
+       现在提前量还可能是分钟级，所以统一走 spec → 毫秒。 */
+    const m = localRemindMomentMs(
       { todo_date: baseKey, start_time: t.start_time },
-      cfg.remindDefaultTime, cfg.tzOffsetMinutes, advanceOf(t, cfg.remindAdvanceDays),
+      cfg.remindDefaultTime, cfg.tzOffsetMinutes,
+      advanceMsOf(advanceSpecOf(t, cfg.remindAdvanceDays)),
     );
     if (!m || m.getTime() <= now) continue;             // 新时刻已过 → 不重发
     db.run("UPDATE todos SET reminded_at = NULL, remind_key = '' WHERE id = ?", [t.id]);
@@ -901,6 +1069,9 @@ module.exports = {
   humanDate, wallDateKey, shiftDateKey, recordRemindMoment,
   buildMailText, buildMailHtml, mailLayout, buildMail, todoTemplateVars, occurrenceDone,
   runScan, runRecordScan, resetReminders, rearmFutureReminders, sendTestMail, getStatus, start, EMAIL_RE, TIME_RE,
+  // v4.28.7：提前量「值 + 单位」与结束重复
+  localRemindMomentMs, advanceSpecOf, advanceMsOf, advanceLabelOf, advanceLabelOfMs,
+  repeatEnded, bumpRepeatSent,
   // v4.3.3 需求 2：免打扰汇总发件箱（测试与状态展示用）
   outbox,
 };

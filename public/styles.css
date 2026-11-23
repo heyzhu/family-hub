@@ -18,250 +18,15 @@
      3. 媒体查询一律放 §7，且**缩进书写**（校验脚本按行首选择器解析，缩进可避免误判）。
    ═══════════════════════════════════════════════════════════════════════ */
 
+
 /* ═══════════════════════════════════════════════════════════════════════
-   §0 设计令牌
+   ★ 设计令牌不在这里 —— 见 tokens.css（v4.28.14 起拆出）
    ---------------------------------------------------------------------
-   0.1 是「三套主题共用的尺度」，0.2~0.4 是「每套主题各自的颜色」。
-   颜色块里的顺序固定为：底色 → 表面 → 线 → 文字 → 品牌 → 语义 → 特殊。
+   index.html 里两条 link 的顺序是 tokens.css → styles.css，不能换：
+   tokens.css 定义 var(--paper) 这一类，本文件只用它们。
+   本文件从 §1 基础与重置开始，到 §7 媒体查询结束，只写组件规则。
    ═══════════════════════════════════════════════════════════════════════ */
 
-/* ── 0.1 共用尺度（与主题无关）───────────────────────────────────── */
-:root {
-  color-scheme: light;
-
-  /* 圆角：四档够用 —— 控件 12、卡片 16、浮层 22、胶囊 999。
-     图片/缩略图统一 14，避免 8/9/10/11 混排。 */
-  --r-xs: 8px;
-  --r-s: 12px;
-  --r-m: 16px;
-  --r-l: 22px;
-  --r-pill: 999px;
-  --r-media: 14px;
-
-  /* 间距（4px 基数）：页面内边距 14、卡片内边距 10/16、组件间距 6/8/12、分组 20/28 */
-  --sp-1: 4px;
-  --sp-2: 6px;
-  --sp-3: 8px;
-  --sp-4: 10px;
-  --sp-5: 12px;
-  --sp-6: 14px;
-  --sp-7: 16px;
-  --sp-8: 20px;
-  --sp-9: 24px;
-  --sp-10: 32px;
-
-  /* 字号：11 辅助 / 12 元信息 / 13 次要正文 / 14 正文 / 15 强调正文 / 17 卡片标题 / 20 页面标题 / 26 登录标题 */
-  --fs-2xs: 11px;
-  --fs-xs: 12px;
-  --fs-s: 13px;
-  --fs-m: 14px;
-  --fs-l: 15px;
-  --fs-xl: 17px;
-  --fs-2xl: 20px;
-  --fs-3xl: 26px;
-
-  --lh-body: 1.6;
-  --lh-title: 1.32;
-
-  /* 阴影：v2 的原则是「能不用就不用」—— 层次主要靠 1px 线和大圆角，
-     阴影只在浮层（弹窗 / 灯箱 / 菜单）上出现，且非常轻。 */
-  --shadow-s: 0 1px 2px rgba(24, 20, 14, .05);
-  --shadow-m: 0 10px 28px -14px rgba(24, 20, 14, .20);
-  --shadow-l: 0 28px 64px -22px rgba(24, 20, 14, .32);
-
-  /* 动效：只用于 hover / 焦点 / 入场，一律 ≤ 220ms */
-  --ease: cubic-bezier(.33, .72, .30, 1);
-  --t-fast: .14s;
-  --t-mid: .22s;
-
-  /* 结构尺寸：★ 下面几个数值同时被「5 条待办一屏」的高度预算引用（见 e2e 校验），
-     调之前先算一遍账：可用高度 = 视口高 − 顶栏 − 底部导航。 */
-  --nav-h: 60px;
-  --rail-w: 240px;
-  --safe-b: env(safe-area-inset-bottom, 0px);
-
-  /* 控件高度：小 30（行内）/ 标准 38 / 大 46 */
-  --h-sm: 30px;
-  --h-md: 38px;
-  --h-lg: 46px;
-}
-
-/* ── 0.2 主题一：青野（绿）────────────────────────────────────────────
-   取 Tailwind green / emerald 家族的中段作为品牌色（#0B7A57 ≈ 介于
-   emerald-700 #047857 与 green-700 #15803D 之间，往暖侧偏了一点，
-   在暖白底上不刺眼）；底子用带绿调的冷白，避免和米白主题撞脸。
-   辅色是陶土橘 #C97B4A —— 绿配陶土是家居配色里最稳的一组，
-   只用于「未读 / 强调标签」这类小面积。 */
-:root[data-theme="forest"] {
-  --paper: #f4f8f5;
-  --paper-2: #eaf2ed;
-  --paper-3: #e1ebe5;
-
-  --surface: #ffffff;
-  --surface-2: #f8fbf9;
-  --surface-3: #eef4f0;
-
-  --line: #dde8e2;
-  --line-strong: #c6d6cd;
-  --line-soft: #e9f1ec;
-
-  --ink: #1e2a24;
-  --ink-inverse: #ffffff;
-  --text: #1e2a24;
-  --text-2: #4f5f56;
-  --muted: #7f9187;
-
-  --primary: #0b7a57;
-  --primary-dark: #086848;
-  --primary-soft: #e3f3ec;
-  --primary-line: #b9decd;
-  --primary-ink: #075640;
-
-  --accent: #c97b4a;
-  --accent-dark: #a9602f;
-  --accent-soft: #fbede2;
-  --accent-line: #f0d5bf;
-
-  --warn: #b0761f;
-  --warn-soft: #fbf1de;
-  --warn-line: #eedcb6;
-  --warn-ink: #7a5213;
-
-  --danger: #c0503d;
-  --danger-soft: #fbeae6;
-  --danger-line: #f0cec5;
-  --danger-ink: #98392a;
-
-  --dot: #e2593f;
-  --glow-1: rgba(11, 122, 87, .12);
-  --glow-2: rgba(201, 123, 74, .12);
-  --bar-bg: rgba(244, 248, 245, .88);
-  --scrim: rgba(22, 34, 27, .40);
-  --media: #101a15;
-}
-
-/* ── 0.3 主题二：米白（奶油）──────────────────────────────────────────
-   参考中文设计圈「奶油风」的明度阶梯：基底 #FAF7F2 → 辅助 #EDE4D8
-   → 主体 #D9C7B0 → 强调 #C9B49A → 文字 #6B5644。
-   但按钮要能承载白字，所以把「可点击的主色」压深到奶咖 #8F6539
-   （#D9C7B0 那类浅驼只做分区底色，不做主色）。 */
-:root,
-:root[data-theme="paper"] {
-  --paper: #faf7f2;
-  --paper-2: #f3ece1;
-  --paper-3: #ebe2d4;
-
-  --surface: #ffffff;
-  --surface-2: #fdfaf5;
-  --surface-3: #f5efe6;
-
-  --line: #ebe2d5;
-  --line-strong: #d9cbb8;
-  --line-soft: #f2eadf;
-
-  --ink: #3b332b;
-  --ink-inverse: #fffdfa;
-  --text: #3b332b;
-  --text-2: #6b5f52;
-  --muted: #9b8e7e;
-
-  --primary: #8f6539;
-  --primary-dark: #744e28;
-  --primary-soft: #f7efe4;
-  --primary-line: #e8d8c2;
-  --primary-ink: #553a1c;
-
-  --accent: #7c9082;
-  --accent-dark: #5f7568;
-  --accent-soft: #edf2ee;
-  --accent-line: #d3e0d7;
-
-  --warn: #b0742f;
-  --warn-soft: #fbf2e2;
-  --warn-line: #eeddbc;
-  --warn-ink: #7c5115;
-
-  --danger: #b34a38;
-  --danger-soft: #fbeae5;
-  --danger-line: #f0cec4;
-  --danger-ink: #8f3626;
-
-  --dot: #d9553c;
-  --glow-1: rgba(143, 101, 57, .12);
-  --glow-2: rgba(124, 144, 130, .12);
-  --bar-bg: rgba(250, 247, 242, .9);
-  --scrim: rgba(48, 38, 28, .42);
-  --media: #17120e;
-}
-
-/* ── 0.4 主题三：澄蓝 ──────────────────────────────────────────────────
-   蓝的冷感容易「像后台管理系统」，所以：底色带一点点暖灰（#F5F8FD
-   里那点灰紫），辅色用暖杏 #E08A5B 把温度拉回来，成功态用 teal
-   #0F9C8E 与主蓝拉开色相，免得「成功/主色一片蓝」分不清。 */
-:root[data-theme="ocean"] {
-  --paper: #f5f8fd;
-  --paper-2: #e9f0fa;
-  --paper-3: #dee8f6;
-
-  --surface: #ffffff;
-  --surface-2: #f9fbff;
-  --surface-3: #eff4fc;
-
-  --line: #dfe7f3;
-  --line-strong: #c6d3e8;
-  --line-soft: #ebf1fa;
-
-  --ink: #1b2430;
-  --ink-inverse: #ffffff;
-  --text: #1b2430;
-  --text-2: #4e5c6e;
-  --muted: #8492a5;
-
-  --primary: #2563eb;
-  --primary-dark: #1d4ed8;
-  --primary-soft: #eaf1fe;
-  --primary-line: #c3d6fb;
-  --primary-ink: #1e40af;
-
-  --accent: #e08a5b;
-  --accent-dark: #c06e42;
-  --accent-soft: #fdf0e8;
-  --accent-line: #f3d8c6;
-
-  --warn: #b45309;
-  --warn-soft: #fdf3e3;
-  --warn-line: #f0ddbd;
-  --warn-ink: #7c3d06;
-
-  --danger: #d2453a;
-  --danger-soft: #fcebe9;
-  --danger-line: #f3cfcb;
-  --danger-ink: #a13128;
-
-  --dot: #e2593f;
-  --glow-1: rgba(37, 99, 235, .12);
-  --glow-2: rgba(224, 138, 91, .12);
-  --bar-bg: rgba(245, 248, 253, .9);
-  --scrim: rgba(25, 34, 48, .42);
-  --media: #0f1622;
-}
-
-/* ── 0.5 兼容别名 ─────────────────────────────────────────────────────
-   历史规则里出现过这些名字（--bg / --card / --soft / --warn-bg / --expense），
-   统一指到上面的语义色。新代码只写语义名，别名只作「老样式不崩」的保险。 */
-:root,
-:root[data-theme="forest"],
-:root[data-theme="paper"],
-:root[data-theme="ocean"] {
-  --bg: var(--paper);
-  --bg-soft: var(--paper-2);
-  --card: var(--surface);
-  --soft: var(--surface-3);
-  --warn-bg: var(--warn-soft);
-  --expense: var(--danger);
-  --income: var(--accent);
-  --ring: 0 0 0 3px var(--primary-soft);
-}
 
 /* ═══════════════════════════════════════════════════════════════════════
    §1 基础与重置
@@ -338,7 +103,10 @@ a:hover { color: var(--primary-dark); }
   background: var(--paper);
   z-index: 100;
 }
-.boot-logo { font-size: 46px; line-height: 1; animation: bootPulse 1.8s var(--ease) infinite; }
+/* v4.28.12：启动屏 / 登录页的品牌图从 🏠 emoji 换成真正的图标文件（与 PWA 图标同源）。
+   ★ 用 <img> 而不是背景图：带 alt 的空值 + 固定宽高，图片没加载完也不会撑动布局。 */
+.boot-logo { width: 52px; height: 52px; line-height: 0; animation: bootPulse 1.8s var(--ease) infinite; }
+.boot-logo img { display: block; width: 100%; height: 100%; border-radius: 14px; }
 .boot-name { font-size: var(--fs-l); color: var(--text-2); letter-spacing: .06em; }
 .boot-bar { width: 116px; height: 3px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
 .boot-bar i {
@@ -383,17 +151,17 @@ a:hover { color: var(--primary-dark); }
   border-bottom: 1px solid var(--line-soft);
 }
 .topbar-left { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+/* v4.28.12：顶栏品牌图换成图标文件（与 PWA / 登录页同源）——
+   原来这里是个 🏠 emoji + 浅色底，各家系统渲染的 emoji 长得都不一样。 */
 .topbar-logo {
-  font-size: 15px;
-  line-height: 1;
+  line-height: 0;
   width: 28px;
   height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 9px;
-  background: var(--primary-soft);
-  color: var(--primary-ink);
+  overflow: hidden;
   flex: none;
 }
 .topbar-title {
@@ -520,7 +288,7 @@ a:hover { color: var(--primary-dark); }
               color var(--t-fast) var(--ease),
               box-shadow var(--t-fast) var(--ease);
 }
-.btn-primary { background: var(--primary); color: var(--ink-inverse); box-shadow: 0 1px 2px rgba(24, 20, 14, .10); }
+.btn-primary { background: var(--primary); color: var(--ink-inverse); box-shadow: var(--shadow-s); }
 .btn-primary:hover { background: var(--primary-dark); }
 .btn-primary:active { background: var(--primary-dark); box-shadow: none; }
 .btn-ghost { background: var(--surface); color: var(--text-2); border-color: var(--line-strong); }
@@ -623,8 +391,8 @@ button:disabled:hover { background: var(--surface); }
               color var(--t-fast) var(--ease);
 }
 .chip:hover { border-color: var(--primary-line); color: var(--primary-ink); background: var(--primary-soft); }
-.chip.on { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
-.chip.on:hover { color: #fff; }
+.chip.on { background: var(--primary); border-color: var(--primary); color: var(--ink-inverse); font-weight: 600; }
+.chip.on:hover { color: var(--ink-inverse); }
 .chip.chip-edit { color: var(--muted); border-style: dashed; }
 /* v4.28.2：参与人里「不在指定可见成员名单」的家人 —— 灰掉且不可点。
    用 off 类而不是 disabled 样式（div 上 disabled 无效，但按钮上默认样式太淡），
@@ -654,10 +422,11 @@ button:disabled:hover { background: var(--surface); }
 }
 .vis-chip { line-height: 1.5; }
 /* 动态发布区的可见范围两档按钮：原来是一个开关按钮，现在并排两个 */
-.compose-vis { display: flex; gap: var(--sp-2); padding: 0 12px 8px; }
-/* v4.28.2：两档可见范围各占一半宽 —— 内容宽度不一致时（「👨‍👩‍👧 全家可见」比
-   「🔒 指定可见成员」短）若按内容分配，两个按钮会一宽一窄、看着像没对齐。 */
-.compose-vis > .btn-ghost { flex: 1 1 0; }
+/* v4.28.9 需求 6 / 7：可见范围换成与待办 / 记录本同一套 vis-pick 控件
+   （两档 segmented + 成员勾选），不再是自成一体的两个 .btn-ghost。 */
+.compose-vis { padding: 0 0 var(--sp-3); }
+.compose-vis > .segmented { width: 100%; }
+.compose-vis > .segmented button { flex: 1 1 0; min-width: 0; }
 .btn-ghost.on {
   background: var(--primary-soft);
   border-color: var(--primary-line);
@@ -772,6 +541,120 @@ select {
 .field > span .tick { color: var(--accent); font-weight: 600; }
 .field textarea { min-height: 76px; }
 .field-hint { font-size: var(--fs-xs); font-weight: 400; color: var(--muted); line-height: 1.55; }
+
+/* ── v4.28.7：文本框的浮动标签 ─────────────────────────────────
+   结构：<label class="field fld"><input class="fld-inp" placeholder="预置文字1"><span class="flab">预置文字2</span></label>
+   · 空值未聚焦：框内显示原生 placeholder（= 预置文字1），标签隐藏；
+   · 聚焦 / 已有值：placeholder 让位，标签浮到上边框并遮断一小段框线（= 预置文字2）。
+   ★ 判定只用 :placeholder-shown，不靠 JS 同步任何状态 —— 重绘、回填、程序赋值
+     （el.value = ...）都能被 CSS 立刻感知，不会出现「填了但标签没浮起来」。
+   ★ placeholder 不能留空：没有 placeholder 时 :placeholder-shown 恒不成立，
+     标签会一打开就浮起。所以每处都必须给预置文字1。 */
+/* ★ v4.28.10 需求 2：浮动标签浮起时有一半在框外（约 10px 高），
+   而 .modal-body 的行间距只有 12px —— 紧邻上一个控件时看起来就像「压住」了它。
+   给每个浮动标签控件补一档上外边距；容器本来有 gap 的地方会叠加成更透气的间距。
+   首个子元素不用补（上面没有东西可压）。 */
+.field.fld { margin-top: 6px; }
+.modal-body > .field.fld:first-child,
+.card > .field.fld:first-child,
+.set-pane > .field.fld:first-child { margin-top: 0; }
+.field.fld { position: relative; display: block; }
+.field.fld > .fld-inp {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 13px 12px 5px;
+  min-height: 44px;
+}
+.field.fld > textarea.fld-inp { min-height: 84px; padding-top: 15px; }
+.field.fld > .flab {
+  position: absolute;
+  left: 9px;
+  top: 0;
+  transform: translateY(-50%);
+  padding: 0 4px;
+  max-width: calc(100% - 18px);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--primary-ink);
+  /* ★ v4.28.10：标签要「遮断」输入框的上边框，底色必须和输入框一致
+     （输入框未聚焦是 surface-2、聚焦是 surface）。原来写 var(--card)，
+     在弹窗里与输入框有色差，浮起来像贴了一块补丁。 */
+  background: var(--surface-2);
+  border-radius: 3px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s ease;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.field.fld > .fld-inp:focus + .flab,
+.field.fld > .fld-inp:not(:placeholder-shown) + .flab { opacity: 1; }
+.field.fld > .fld-inp:focus + .flab { background: var(--surface); }
+
+/* ── v4.28.8 待办表单：待办事项 3 行、备注 1 行 ─────────────────────
+   两个框的「行数」是产品要求，不是随手给的 min-height：
+   · 待办事项 3 行（line-height 21 × 3 + 上下内边距），够写一句完整的事；
+     底部多留 26px，是为了让右下角的「记录本提醒」不压在最后一行文字上。
+   · 备注 1 行，高度锁死一行；真要写长可以自己往下拖（resize: vertical）。 */
+.field.fld.todo-title-field > textarea.fld-inp {
+  min-height: 104px;
+  line-height: 21px;
+  padding-bottom: 26px;
+  resize: vertical;
+}
+.field.fld.todo-note-field > textarea.fld-inp {
+  min-height: 44px;
+  height: 44px;
+  line-height: 20px;
+  resize: vertical;
+}
+/* 「＋ 记录本提醒」内嵌在待办事项框右下角：
+   淡边框 + 小字号，读起来像输入框自带的一个动作，而不是另一个字段。 */
+.todo-record-inline {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.todo-record-inline:hover {
+  color: var(--primary-ink);
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.todo-record-inline.hidden { display: none !important; }
+/* 结束重复的「按时间 / 按次数」两个子字段（v4.28.8 结构简化后单独成层） */
+.repeat-end-box { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+/* v4.28.7：简洁模式的「当前规则」摘要 */
+.rule-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 6px;
+  margin-top: var(--sp-3);
+  padding: 9px 11px;
+  background: var(--surface-2);
+  border-radius: var(--r-s);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  line-height: 1.6;
+}
+.rule-line i { color: var(--muted); font-style: normal; }
+.rule-line:empty { display: none; }
+.todo-mode-bar { display: flex; justify-content: flex-end; margin-top: var(--sp-2); }
+.todo-record-line { display: flex; justify-content: flex-end; margin-top: 2px; }
 .field-sm { gap: 4px; }
 .field-sm > span { font-size: var(--fs-xs); }
 .field-row { display: flex; gap: var(--sp-4); }
@@ -1005,7 +888,6 @@ select.inp-compact { padding-right: 26px; }
 /* v4.20.0（审查 W-9）：列表被 2000 条上限截断时的提示条（不用红色，它不是错误，是提醒） */
 .todo-trunc { margin-top: 10px; }
 .sec-note-box { padding: 0 16px 14px; }
-.ai-share-note { font-size: var(--fs-xs); line-height: 1.7; }
 /* v4.14.0（需求 2）：记账页「推送方式已归到我的 → 消息提醒」的说明行。
    ★ 刻意不用 .sec-note-box：账单页有一条断言「该页 sec-note-box 数量 === 0」
      （统计/设置页刻意不堆说明框），复用会把那条断言打红。 */
@@ -1064,11 +946,11 @@ select.inp-compact { padding-right: 26px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--on-solid);
   font-weight: 700;
   font-size: var(--fs-l);
   overflow: hidden;
-  box-shadow: 0 0 0 1px rgba(58, 44, 32, .06) inset;
+  box-shadow: 0 0 0 1px var(--line-soft) inset;
 }
 .avatar-btn {
   position: relative;
@@ -1241,8 +1123,9 @@ select.inp-compact { padding-right: 26px; }
 .tpl-desc { margin-top: 4px; font-size: var(--fs-xs); color: var(--muted); line-height: 1.5; }
 .tpl-card .field { margin-top: var(--sp-2); }
 .tpl-card textarea { width: 100%; font-family: inherit; line-height: 1.65; }
-.tpl-vars { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--muted); line-height: 2; }
-.tpl-vars i { font-style: normal; margin: 0 8px 0 3px; color: var(--muted); }
+.tpl-vars { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--muted); }
+/* v4.28.11：变量说明收进 title，只留一排可点的 code（原来 code + 长解释会折成好几行灰字） */
+.tpl-vars code { cursor: help; }
 /* ── 运行状态（v4.14.0 需求 3）─────────────────────────────
    原来的形态是「粗标题 + 一长串小字」若干行，行数一多就糊成一片灰字。
    现在：一行徽标说结论 → 四格指标给数字 → 需要动手的才在下面补一句。
@@ -1265,6 +1148,9 @@ select.inp-compact { padding-right: 26px; }
 .rs-pill.warn { background: var(--warn-soft); color: var(--warn-ink); }
 .rs-pill.off { background: var(--surface-3); color: var(--muted); }
 .rs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
+/* v4.28.11：格数是奇数时（内容通知删掉「生效类型」后只剩 3 格），
+   最后一格独占整行 —— 否则右下角空出半格，像少了一样东西。 */
+.rs-grid > .rs-cell:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .rs-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .rs-cell > span { font-size: var(--fs-2xs); color: var(--muted); }
 /* 值一律单行省略：日期时间比格子宽时宁可截断，也不让栅格被撑歪 */
@@ -1300,6 +1186,8 @@ select.inp-compact { padding-right: 26px; }
   /* 四格并排时不再独占整行；但仍允许折到两行 —— 桌面四等分每格约 170px，
      「待办事项、动态、记录本、评论」刚好压在临界线上，单行省略就会随机截字。 */
   .rs-cell.wide { grid-column: auto; }
+  /* 四格并排时，「奇数收尾那格独占整行」这条规则要撤回（否则它会横跨整行） */
+  .rs-grid > .rs-cell:last-child:nth-child(odd) { grid-column: auto; }
 }
 .queue-line { font-size: var(--fs-xs); color: var(--text-2); }
 .queue-line b { color: var(--text); }
@@ -1340,7 +1228,9 @@ select.inp-compact { padding-right: 26px; }
 .ai-prompt-ops {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* v4.28.12：说明文字按需求删掉后，这一行只剩「恢复默认」一个按钮 ——
+     space-between 会把单个子元素甩到最左边，改成靠右对齐，和「保存」在同一列上。 */
+  justify-content: flex-end;
   gap: var(--sp-4);
   margin-top: var(--sp-2);
 }
@@ -1407,8 +1297,13 @@ select.inp-compact { padding-right: 26px; }
 .theme-wrap { padding: 10px 14px 14px; }
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* v4.28.12：加了第四套「暖夜」—— 手机 2×2 摆开，宽屏一行四张。
+     三列时卡片宽度刚好能放三张，第四张会被挤到下一行独占三分之一，很别扭。 */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--sp-4);
+}
+@media (min-width: 560px) {
+  .theme-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 .theme-card {
   position: relative;
@@ -1434,7 +1329,7 @@ select.inp-compact { padding-right: 26px; }
   height: 40px;
   border-radius: 9px;
   overflow: hidden;
-  border: 1px solid rgba(24, 20, 14, .07);
+  border: 1px solid var(--line-soft);
 }
 .theme-swatch i { flex: 1; }
 .theme-swatch.f-forest i:nth-child(1) { background: #0b7a57; }
@@ -1446,6 +1341,9 @@ select.inp-compact { padding-right: 26px; }
 .theme-swatch.f-ocean i:nth-child(1) { background: #2563eb; }
 .theme-swatch.f-ocean i:nth-child(2) { background: #eaf1fe; }
 .theme-swatch.f-ocean i:nth-child(3) { background: #e08a5b; }
+.theme-swatch.f-night i:nth-child(1) { background: #dca36c; }
+.theme-swatch.f-night i:nth-child(2) { background: #453c39; }
+.theme-swatch.f-night i:nth-child(3) { background: #96b49d; }
 .theme-name {
   display: flex;
   align-items: center;
@@ -1491,18 +1389,25 @@ select.inp-compact { padding-right: 26px; }
 }
 .auth-brand { text-align: center; margin-bottom: var(--sp-8); }
 .auth-logo {
-  width: 52px;
-  height: 52px;
+  /* v4.28.12：换成图标文件后，56px 里「书本 + 勾选挂牌」的细节已经糊成一团，
+     放大到 64 让轮廓（屋顶 / 书本 / 挂牌）在小屏上也分得出来。 */
+  width: 64px;
+  height: 64px;
   margin: 0 auto var(--sp-4);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 26px;
-  line-height: 1;
-  border-radius: 16px;
-  background: var(--primary-soft);
-  box-shadow: 0 0 0 1px var(--primary-line) inset;
+  line-height: 0;
+  border-radius: 19px;
+  /* v4.28.12：换成图标文件后不再需要浅色底 —— 图本身就有奶油底色，
+     inset 描边反而会在圆角外圈多一道线。改用外发光式的极淡轮廓，
+     暗色主题下这块奶油色才不会「悬浮」在深色页面上。 */
+  box-shadow: 0 0 0 1px var(--line-soft), var(--shadow-s);
 }
+.auth-logo img { display: block; width: 100%; height: 100%; border-radius: 19px; }
+/* v4.28.12：顶栏 / 侧栏的品牌图也是 <img>，撑满各自的方块即可 */
+.topbar-logo img,
+.rail-brand .rb-logo img { display: block; width: 100%; height: 100%; }
 .auth-brand h1 { font-size: var(--fs-2xl); font-weight: 700; letter-spacing: .02em; }
 .auth-sub { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--muted); }
 .auth-form { margin-top: var(--sp-8); display: flex; flex-direction: column; gap: var(--sp-6); }
@@ -1516,13 +1421,13 @@ select.inp-compact { padding-right: 26px; }
   border: 0;
   padding: 0;
   font: inherit;
-  color: var(--brand);
+  color: var(--primary);
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
 }
 .auth-link:hover { opacity: .82; }
-.auth-link:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 3px; }
+.auth-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
 .auth-error {
   margin-top: var(--sp-6);
   padding: 9px 12px;
@@ -1608,13 +1513,13 @@ select.inp-compact { padding-right: 26px; }
 }
 .cal-cell.selected { background: var(--primary); }
 .cal-cell.selected .d-num,
-.cal-cell.selected .d-sub { color: #fff; }
-.cal-cell.selected.today .d-num { background: rgba(255, 255, 255, .26); color: #fff; }
+.cal-cell.selected .d-sub { color: var(--ink-inverse); }
+.cal-cell.selected.today .d-num { background: var(--on-primary-wash); color: var(--ink-inverse); }
 .dots { display: flex; gap: 2px; height: 5px; align-items: center; }
 .dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--primary); }
 .dots i.done { background: var(--line-strong); }
-.cal-cell.selected .dots i { background: #fff; }
-.cal-cell.selected .dots i.done { background: rgba(255, 255, 255, .5); }
+.cal-cell.selected .dots i { background: var(--ink-inverse); }
+.cal-cell.selected .dots i.done { background: var(--on-primary-wash); }
 .cal-tip { font-size: var(--fs-2xs); color: var(--muted); text-align: center; padding: 0 var(--sp-3) var(--sp-3); }
 /* 月份切换动画：新月份从「滑来的方向」淡入（方向与手指一致） */
 .cal-grid.anim-left { animation: calSlideLeft .28s var(--ease); }
@@ -1661,7 +1566,7 @@ select.inp-compact { padding-right: 26px; }
   padding: 0 4px;
   border-radius: var(--r-pill);
   background: var(--primary);
-  color: #fff;
+  color: var(--ink-inverse);
   font-size: 10px;
   font-weight: 600;
   line-height: 15px;
@@ -1669,7 +1574,9 @@ select.inp-compact { padding-right: 26px; }
   box-shadow: 0 0 0 1.5px var(--surface);
   pointer-events: none;
 }
-.cal-cell.selected.pcal .pcount { background: #fff; color: var(--primary-ink); }
+/* v4.28.12：白底 + --primary-ink 在暗色主题下会变成「白底浅奶咖」看不清，
+   改成跟着 --ink-inverse 翻转（浅色=白底深字，暗色=深底亮字），两边都成立。 */
+.cal-cell.selected.pcal .pcount { background: var(--ink-inverse); color: var(--primary); }
 .cal-cell.other .pcount { opacity: .5; }
 
 /* ── 5.3 待办 ────────────────────────────────────────────────────────
@@ -1677,9 +1584,13 @@ select.inp-compact { padding-right: 26px; }
      标题 18 + 元信息 16 + 备注 16 + 行间距 2×2 = 54 ≤ 68 − 2×6 = 56。 */
 .todo {
   display: flex;
+  align-items: flex-start;
   gap: 10px;
-  height: 68px;
-  padding: 6px 8px;
+  /* v4.28.7：固定 68px 会把长标题压成一行省略号。改成最小高度 + 随内容增长，
+     标题最多三行、其它信息按原样排；短标题仍保持原来的紧凑感。 */
+  min-height: 72px;
+  height: auto;
+  padding: 10px 8px 11px;
   /* v2：不再给每条待办画一圈描边 —— 列表卡片里再套一圈描边会让
      一屏出现十几个方框，密而碎。改成「留白分隔 + hover 提亮」。 */
   border: none;
@@ -1717,7 +1628,7 @@ select.inp-compact { padding-right: 26px; }
   transition: border-color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease);
 }
 .tick:hover { border-color: var(--accent); }
-.todo.done .tick { background: var(--accent); border-color: var(--accent); color: #fff; }
+.todo.done .tick { background: var(--accent); border-color: var(--accent); color: var(--ink-inverse); }
 /* 终年重复事项没有完成状态，勾选位是静态 🔁 */
 .tick-static {
   border-style: dashed;
@@ -1740,37 +1651,86 @@ select.inp-compact { padding-right: 26px; }
 }
 /* 三行永远不许被压缩：一旦被压矮，文字就会溢出自己的盒子盖到下一行 */
 .t-body > * { flex: 0 0 auto; }
+
+/* ── v4.28.11 需求 4：待办的右上角角标 ────────────────────────────────
+   「不读文字也能一眼分出类型」：催促 ⏰ / 重复 🔁 / 提前 ⏳ / 记录本 📖 /
+   重要 🚩 / 稍后 😴 / 仅自己 🔒 / 已结束 ✅。
+   它是绝对定位的，不占行高 —— 一屏五条待办不会因为角标多就变高，
+   标题也不跟着往下掉。具体数值（每几分钟催、提前几天）仍在下面 meta 行。 */
+.t-body { position: relative; }
+.todo-corner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  z-index: 1;
+}
+.tcg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 5px;
+  /* 12px 是「emoji 还认得出形状」的下限：11px 时 ⏰ 🔁 会糊成色块 */
+  font-size: 12px;
+  line-height: 1;
+  background: var(--surface-2);
+  color: var(--text-2);
+  border: 1px solid var(--line);
+}
+.tcg-more { font-size: var(--fs-2xs); color: var(--muted); }
+/* v4.28.13 需求 1：角标的「显示几个」改成断点行为，不再由 JS 切片决定。
+   手机（默认）：第 4 个起收进 +N —— 窄屏里五个角标会把标题挤成一条缝；
+   PC（≥1024）：全部铺开，+N 退场 —— 桌面一行有 800px 宽，5 个角标才 105px。 */
+.tcg-extra { display: none; }
+.tcg-high { color: var(--danger-ink); background: var(--danger-soft); border-color: var(--danger-line); }
+.tcg-urge { color: var(--warn-ink); background: var(--warn-soft); border-color: var(--warn-line); }
+.tcg-adv { color: var(--accent-dark); background: var(--accent-soft); border-color: var(--accent-line); }
+.tcg-rec { color: var(--accent-dark); background: var(--accent-soft); border-color: var(--accent-line); }
+/* 只有真的挂了角标才给标题让位，没角标的待办别白白少一截。
+   让多少按角标个数算（--cn 由渲染时写进 .t-body）：1 个 21px、3 个 63px ——
+   写死一个 62px 会让「只有一个角标」的标题白白少掉半行字。
+   --cn  = 手机上实际占位的个数（3 个 + 可能的一个 +N）
+   --cn-all = 角标总数（PC 全部铺开时用它算） */
+.todo.has-corner .t-title { padding-right: calc(var(--cn, 1) * 21px + 2px); }
 .t-title {
   font-size: var(--fs-m);
   font-weight: 600;
-  line-height: 18px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 19px;
+  /* v4.28.8：「列表项内容自动换行并完整显示」—— 去掉三行截断。
+     标题是这条待办的全部信息，被省略号吃掉半句时用户必须点进去才知道写的什么。
+     行高不变，只是允许它继续往下排（.todo 已是 height:auto）。 */
+  white-space: normal;
+  overflow: visible;
+  word-break: break-word;
 }
 .t-meta {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 0 8px;
   font-size: 11.5px;
   line-height: 16px;
   color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  /* 一行装不下时右侧 16px 渐隐：徽标被硬切一半看着像渲染坏了，
-     渐隐至少能读成「后面还有」。内容本来就短的时候这段是空白，无影响。 */
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+  white-space: normal;
+  overflow: visible;
+  /* v4.28.8：元信息也允许换行完整显示。
+     旧的「单行 + 右侧 16px 渐隐」是为了压住固定 68px 高度，
+     现在高度自适应，渐隐只会让最后一个徽标永远看着像被切掉了。 */
 }
-.t-meta span { flex: 0 0 auto; line-height: 16px; }
+.t-meta span { flex: 0 1 auto; line-height: 16px; }
 .t-note {
   font-size: var(--fs-xs);
   line-height: 16px;
   min-height: 16px;
   color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 备注保留换行（textarea 里写的分段不该被压成一行），并且不截断 */
+  white-space: pre-wrap;
+  overflow: visible;
+  word-break: break-word;
 }
 .t-tags { display: none; }
 .todo .badge { font-size: 10.5px; padding: 0 6px; }
@@ -1778,11 +1738,11 @@ select.inp-compact { padding-right: 26px; }
 .todo-repeat { border-left: 3px solid var(--accent); }
 .todo-repeat .t-title { font-weight: 600; }
 /* 独立卡片里的重复事项允许换行（要完整展示「下次提醒」），换行只会撑高、不会重叠 */
-.repeat-list-card .todo { height: auto; min-height: 68px; }
+.repeat-list-card .todo { height: auto; min-height: 72px; }
 .repeat-list-card .t-meta { flex-wrap: wrap; white-space: normal; overflow: visible; }
 .repeat-list-card .t-body { overflow: visible; }
-.day-panel .todo { height: 68px; }
-.day-panel .todo.todo-repeat { height: auto; min-height: 68px; }
+.day-panel .todo { height: auto; min-height: 72px; }
+.day-panel .todo.todo-repeat { height: auto; min-height: 72px; }
 .day-panel .todo.todo-repeat .t-meta { flex-wrap: wrap; white-space: normal; overflow: visible; }
 
 /* 「下次提醒」与提前量徽标 */
@@ -1812,24 +1772,153 @@ select.inp-compact { padding-right: 26px; }
   color: var(--text-2);
 }
 
-/* 快捷添加：一行输入 + 一个按钮（待办列表顶部最高频的动作） */
-.quick-add { display: flex; gap: var(--sp-3); margin: 3px 0 5px; }
-.quick-add input.grow {
-  flex: 1;
-  min-width: 0;
-  height: var(--h-md);
-  padding: 0 12px;
-  font-size: var(--fs-m);
-  border-radius: var(--r-s);
-  border: 1px solid var(--line-strong);
-  background-color: var(--surface-2);
-}
-.quick-add input.grow:focus { border-color: var(--primary); background-color: var(--surface); }
-/* 工具栏与列表之间必须留出间距，否则搜索框会贴在第一条上 */
+/* v4.28.7：工具栏（筛选 + 放大镜，展开搜索时还有搜索框）与列表之间留出间距，不贴死 */
 .todo-list-card .list-tools { margin-bottom: 10px; }
-.todo-list-card .quick-add { margin: 3px 0 5px; }
-.todo-view-tools .list-tools { margin-bottom: 0; }
-.todo-view-tools .seg-mini { max-width: 220px; }
+/* ── v4.28.7：列表头部只剩「筛选 + 放大镜」 ─────────────────────
+   原来这一行塞着计数、每页条数、快捷添加、筛选、搜索，手机上挤成一团，
+   最关键的动作（切筛选）反而不显眼。 */
+.todo-filter-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.todo-filter-row .segmented { flex: 0 1 auto; min-width: 0; }
+/* v4.28.8：「未完成 X / 共 Y」—— 贴在三个页签右侧的一句小字。
+   不是徽标、不占按钮位：它是一句说明，读的时候不该抢筛选按钮的注意力。 */
+.todo-count-mini {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+  white-space: nowrap;
+  letter-spacing: .01em;
+}
+/* v4.28.9：放大镜按钮升格成三模块共用的组件（待办 / 动态 / 记录本）。
+   v4.28.7 它只服务待办、叫 .todo-search-toggle；现在收敛为 .btn-icon，
+   旧类名一并列在同一组选择器里 —— 老样式与老断言都不用改。 */
+.todo-search-toggle,
+.btn-icon {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r-s);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.todo-search-toggle.on,
+.btn-icon.on { border-color: var(--primary); background: var(--primary-soft); }
+.todo-search-row { margin-bottom: 10px; min-width: 0; }
+.todo-search-row .search-bar { width: 100%; }
+
+/* 已过期徽标：只对一次性事项出现 */
+.todo .badge.expired {
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-weight: 600;
+}
+/* v4.28.8：重复系列已结束。中性灰而不是红色 —— 这是「按计划收尾了」，不是故障。 */
+.todo .badge.ended {
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+/* ── v4.28.7：窄屏横向溢出修复 ────────────────────────────────
+   根因不是某个元素写死了宽度，而是 flex 子项默认 min-width:auto ——
+   内部只要有一个「固有宽度较大」的控件（搜索框、日期、下拉），整行就被顶出屏幕。
+   这里逐层放开收缩权限，而不是用 overflow-x:hidden 把溢出藏起来：
+   藏起来只会变成裁切，既难查也难点。 */
+.card, .modal-body, .list-tools, .time-row, .section-head, .field, .row,
+.rule-line, .todo-filter-row { min-width: 0; }
+.list-tools > *, .time-row > *, .section-head > *, .row > * { min-width: 0; }
+.search-bar { min-width: 0; }
+.search-bar .sb-input { min-width: 0; width: 100%; }
+.search-bar .sb-ico, .search-bar .sb-clear { flex: none; }
+input, select, textarea { max-width: 100%; box-sizing: border-box; }
+
+@media (max-width: 390px) {
+  /* 320~390px：搜索框不再保底 150px，先让分段按钮占住位置 */
+  .list-tools .grow { min-width: 0; }
+  .todo-filter-row .segmented button { padding: 0 8px; font-size: var(--fs-xs); }
+  /* 「未完成 X / 共 Y」在 320px 上收一档，别把放大镜挤下去 */
+  .todo-count-mini { font-size: 10.5px; }
+}
+/* v4.28.8 / v4.28.9：待办双视图切换条。
+   v4.28.9 需求 1：**移动端也要铺满整行** ——
+   以前这里是「整组靠右、按钮按文字宽度」，于是左边永远留一截空白；
+   现在分段选择框吃掉剩余宽度、两项等分，`✍️ 待办` 贴在右端。 */
+.todo-view-tools .list-tools {
+  margin-bottom: 0;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  gap: var(--sp-2);
+}
+.todo-view-tools .seg-mini { flex: 1 1 auto; max-width: none; min-width: 0; }
+.todo-view-tools .seg-mini button { flex: 1 1 0; padding: 0 10px; }
+.todo-view-tools [data-act="todo-new"] { flex: none; }
+
+/* v4.28.9 需求 6 / 8：标签行、分类行 + 右侧放大镜。
+   放大镜放在**外层**（align-items: flex-start）而不是 chips 内部：
+   chips 会换行，放在里面时它会跟着跑到最后一行的末尾 ——
+   需求要的是「第一行最右侧」，只有外层布局能保证这件事。 */
+.tag-row,
+.cats-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.tag-row > .tag-filter,
+.cats-wrap > .cats-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+.tag-row > .btn-icon,
+.cats-wrap > .btn-icon { margin-left: 0; align-self: flex-start; }
+
+/* v4.28.9 需求 8：记录本工具行 —— 「当前记录 / 已归档」占满整行、两格等分，
+   「✍️ 记录」贴右。这正是原来搜索框那一行的位置。 */
+.rec-tools-row { margin-bottom: var(--sp-3); }
+.rec-tools-row > .arch-switch {
+  /* ★ v4.28.10 需求 3：.seg-wrap 全局是 width:100%，而 .list-tools 又是 flex-wrap ——
+     一路 100% 撑满就把「✍️ 记录」挤到了第二行。这里把宽度交还给 flex，
+     按钮才能稳稳待在第一行最右侧。 */
+  width: auto;
+  flex: 1 1 0;
+  min-width: 0;
+  margin-top: 0;
+}
+.rec-tools-row > [data-act="rec-new"] { flex: none; white-space: nowrap; }
+.rec-search-row { margin-top: var(--sp-3); min-width: 0; }
+.rec-search-row .search-bar { width: 100%; }
+
+/* v4.28.10 需求 6：记账明细的工具行 —— 「全家 / 只看我的」占满、导出账单贴右。
+   与记录本 .rec-tools-row 同一套解法：把 .seg-wrap 的 width:100% 交还给 flex，
+   否则导出按钮会被挤到第二行。 */
+.bill-tools-row > .bill-scope-switch {
+  width: auto;
+  flex: 1 1 0;
+  min-width: 0;
+  margin-top: 0;
+}
+.bill-tools-row > [data-act="bill-export"] { flex: none; white-space: nowrap; }
+
+/* v4.28.9：没有标题的字段行（分类 / 内容 / 图片 / 附件 / 开启提醒）。
+   .field 的 gap 是给「标签 + 控件」准备的，只剩控件时那档空隙会把无关的分组拉开距离。 */
+.field.field-bare { gap: 0; }
+
+/* 正文框：4 行起（发帖是「写一段话」，比待办事项更需要空间） */
+.field.fld.compose-text-field > textarea.fld-inp { min-height: 118px; line-height: 22px; }
 
 /* 待办双视图显隐（两种视图的 DOM 都常驻，切换不重建 → 输入态与分页进度都保留） */
 #view-calendar.todo-mode-list .cal-only { display: none; }
@@ -1858,6 +1947,11 @@ select.inp-compact { padding-right: 26px; }
 /* 展开后 textarea 与上面的标题行之间要有一点呼吸，否则像贴在按钮上 */
 #todo-note-wrap { margin-top: var(--sp-2); }
 #todo-note-wrap textarea { min-height: 68px; }
+/* v4.28.6：备注行右侧两个按钮（添加备注 / 记录本提醒）要并排且不挤掉左侧标题 */
+.todo-note-ops { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+/* 记录本提醒的候选（点一条带回待办） */
+#todo-record-wrap { margin-top: var(--sp-2); }
+#todo-record-wrap .chips { flex-wrap: wrap; }
 /* 记录本提醒：展开区与标题行之间的间距 + 时间/天数两栏 */
 #rec-remind-wrap { margin-top: var(--sp-2); }
 #rec-remind-wrap .time-row { margin-top: 0; }
@@ -1898,6 +1992,19 @@ select.inp-compact { padding-right: 26px; }
    会把 flex item 撑到超出容器，窄屏上右边那栏直接被裁掉。 */
 .todo-date-row > .field { flex: 1 1 0; min-width: 0; }
 .todo-date-row select { width: 100%; }
+/* v4.28.9 需求 3：开始日期 / 提醒时间 / 重复 / 结束重复 四件套**统一高宽与外观**。
+   以前只有 select 写了 width:100%，input[type=date] / input[type=time] 用的是
+   浏览器固有宽度 —— 同一行里两个框一个宽一个窄，换行后更明显。
+   现在四类控件一律撑满自己那一栏、高度统一走 --h-md（与全站控件同一档）。 */
+.todo-date-row > .field > input,
+.todo-date-row > .field > select,
+.field-std > select {
+  width: 100%;
+  height: var(--h-md);
+}
+/* 「可见范围」这一行不再有标题（v4.28.9 需求 7），靠 segmented 自己说话 */
+.field-vis > .segmented { width: 100%; }
+.field-vis > .segmented button { flex: 1 1 0; min-width: 0; }
 
 /* 催促间隔：挂在「提醒方式」下方的从属区块，用左侧竖线表示层级，
    不画整圈描边（弹窗里已经有一个外框，再套框会显得很挤）。 */
@@ -1921,7 +2028,7 @@ select.inp-compact { padding-right: 26px; }
   padding: 0 5px;
   margin-left: 3px;
   border-radius: var(--r-pill);
-  background: rgba(255, 255, 255, .32);
+  background: var(--on-primary-wash);
   font-size: var(--fs-2xs);
   font-weight: 600;
   line-height: 17px;
@@ -1935,22 +2042,11 @@ select.inp-compact { padding-right: 26px; }
 .post-view-switch { margin: var(--sp-4) 0 var(--sp-5); }
 
 /* 发帖面板：无边框大输入区（点进去就是「写字」，不要两层框） */
-.composer { padding: 14px 16px; }
-.composer textarea {
-  width: 100%;
-  min-height: 62px;
-  padding: 0;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  outline: none;
-  resize: none;
-  font-size: var(--fs-l);
-  line-height: 1.7;
-}
-.composer textarea:focus { border: none; box-shadow: none; background: transparent; }
-.composer textarea::placeholder { color: var(--muted); }
+/* v4.28.9：发帖搬进弹窗后，`.composer` 只是弹窗里的一个分组容器 ——
+   不再需要自己的内边距（弹窗本身有），正文框也改用统一的浮动标签控件（.fld-inp），
+   所以原来那几条「把 textarea 的边框/底色全部清空」的规则一并删除：
+   留着会把浮动标签的外框打掉，变成「有标签没框」的怪样子。 */
+.composer { padding: 0; }
 .composer-bar {
   display: flex;
   align-items: center;
@@ -2044,6 +2140,29 @@ select.inp-compact { padding-right: 26px; }
   background: var(--surface-3);
 }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+/* v4.28.11 需求 2：长按拖拽排序 —— 平时纵向滚动照旧（pan-y），
+   进入拖拽后整块禁掉手势与选中，否则移动端会一边拖一边滚、还会弹出「存储图片」菜单。 */
+.thumb { touch-action: pan-y; }
+/* v4.28.12：发帖页缩略图（data-nomenu）长按只用于排序 ——
+   禁掉 iOS 的 callout（长按弹「存储图像 / 拷贝」气泡）和文本选中。
+   ★ 只给这一处加，记录页的缩略图仍要长按弹图片菜单。 */
+#compose-imgs .thumb img {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+body.is-img-drag { -webkit-user-select: none; user-select: none; }
+body.is-img-drag .thumb { touch-action: none; }
+.thumb-drag {
+  z-index: 6;
+  opacity: .92;
+  box-shadow: var(--shadow-l);
+  border-color: var(--accent);
+  /* 跟手：绝不能让过渡拖慢它（会让图「追不上」手指） */
+  transition: none;
+  cursor: grabbing;
+}
 .thumb button {
   position: absolute;
   top: 3px;
@@ -2214,8 +2333,20 @@ select.inp-compact { padding-right: 26px; }
 .post-imgs { margin-top: var(--sp-3); display: grid; gap: 4px; }
 .post-imgs.n1 { grid-template-columns: 1fr; }
 .post-imgs.n2 { grid-template-columns: 1fr 1fr; }
-.post-imgs.n3, .post-imgs.n4 { grid-template-columns: 1fr 1fr; }
-.post-imgs.n5, .post-imgs.n6, .post-imgs.n7, .post-imgs.n8, .post-imgs.n9 { grid-template-columns: repeat(3, 1fr); }
+/* v4.28.7：3 张同排 */
+.post-imgs.n3 { grid-template-columns: repeat(3, 1fr); }
+.post-imgs.n4 { grid-template-columns: 1fr 1fr; }
+/* v4.28.7：5 张 = 上 2 张满行 + 下 3 张一排；7 张 = 2 + 2 + 3。
+   用 6 列基准 + span 表达：span 3 = 半行（2 张一行），span 2 = 三分之一（3 张一行）。
+   ★ 代价是首行图比下行图大（50% vs 33%），这是「满行」的必然结果；
+     若改成固定高度则要裁掉更多画面，这里选择保留完整画面。 */
+.post-imgs.n5 { grid-template-columns: repeat(6, 1fr); }
+.post-imgs.n5 img:nth-child(-n+2) { grid-column: span 3; }
+.post-imgs.n5 img:nth-child(n+3) { grid-column: span 2; }
+.post-imgs.n7 { grid-template-columns: repeat(6, 1fr); }
+.post-imgs.n7 img:nth-child(-n+4) { grid-column: span 3; }
+.post-imgs.n7 img:nth-child(n+5) { grid-column: span 2; }
+.post-imgs.n6, .post-imgs.n8, .post-imgs.n9 { grid-template-columns: repeat(3, 1fr); }
 .post-imgs img {
   width: 100%;
   border-radius: var(--r-media);
@@ -2485,7 +2616,7 @@ select.inp-compact { padding-right: 26px; }
   background: var(--surface);
 }
 .rec-check:hover .tick { border-color: var(--accent); }
-.rec-check.done .tick { background: var(--accent); border-color: var(--accent); color: #fff; }
+.rec-check.done .tick { background: var(--accent); border-color: var(--accent); color: var(--ink-inverse); }
 .rec-check.done .rc-text { color: var(--muted); text-decoration: line-through; }
 .rec-check .rc-text { font-size: var(--fs-s); color: var(--text-2); word-break: break-word; }
 /* 列表页的勾选框只读：不可点、不给手型与悬停反馈（防误触） */
@@ -2526,14 +2657,29 @@ select.inp-compact { padding-right: 26px; }
 }
 .rec-editor-bar .fmt-btn:hover { border-color: var(--line-strong); background: var(--surface-2); }
 .rec-editor-bar .fmt-btn:active { background: var(--primary-soft); }
+/* v4.28.9 需求 10：内容框样式参照标题框 —— 同一个边框色 / 圆角 / 底色 / 字号，
+   只剩「高度更高、可滚动」这一处必要差别。以前它用的是 --line + --r-m + --surface，
+   和上面那个标题输入框不是一套东西，并排看会觉得像两个不同产品的控件。 */
 .rec-editor-rt {
   min-height: 150px; max-height: 420px; overflow-y: auto;
-  padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-m);
-  background: var(--surface); color: var(--text);
+  padding: 12px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-s);
+  background: var(--surface-2); color: var(--text);
   font-size: var(--fs-s); line-height: 1.7; word-break: break-word;
   white-space: pre-wrap; outline: none;
 }
-.rec-editor-rt:focus { border-color: var(--primary-line); box-shadow: 0 0 0 3px var(--primary-soft); }
+.rec-editor-rt:focus {
+  border-color: var(--primary); background: var(--surface); box-shadow: var(--ring);
+}
+/* ★ v4.28.10 需求 3：记录内容框的浮动标签。
+   contenteditable 没有 :placeholder-shown，所以判据换成 :not(:empty)：
+   · 空着 → flab 隐藏，:empty::before 显示预置文字（和 input 的 placeholder 一个角色）；
+   · 有内容 / 聚焦 → flab 浮起压住上边框，预置文字自动让位。 */
+.field.fld.rec-content-field > .rec-editor-rt:empty + .flab { opacity: 0; }
+.field.fld.rec-content-field > .rec-editor-rt:not(:empty) + .flab,
+.field.fld.rec-content-field > .rec-editor-rt:focus + .flab { opacity: 1; }
+.field.fld.rec-content-field > .rec-editor-rt:focus + .flab { background: var(--surface); }
+
 /* 空编辑区显示占位文案（contenteditable 没有 placeholder，只能用 :empty::before） */
 .rec-editor-rt:empty::before {
   content: attr(data-placeholder); color: var(--muted); pointer-events: none;
@@ -2632,7 +2778,7 @@ select.inp-compact { padding-right: 26px; }
   color: var(--text-2);
   border-bottom-left-radius: 5px;
 }
-.bubble.me .bubble-text { background: var(--primary); color: #fff; border-bottom-right-radius: 5px; }
+.bubble.me .bubble-text { background: var(--primary); color: var(--ink-inverse); border-bottom-right-radius: 5px; }
 .bill-quick { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: 10px 14px 0; }
 .bill-input-row { display: flex; align-items: center; gap: var(--sp-3); padding: 10px 14px; }
 /* 输入行与快捷例句行一起钉住：滚到卡片下半截时输入框也还在 */
@@ -2708,8 +2854,8 @@ select.inp-compact { padding-right: 26px; }
   white-space: nowrap;
 }
 .cal-cell .d-cnt { font-size: 9.5px; line-height: 1.2; color: var(--text-2); }
-.cal-cell.selected .d-amt { color: #fff; }
-.cal-cell.selected .d-cnt { color: rgba(255, 255, 255, .85); }
+.cal-cell.selected .d-amt { color: var(--ink-inverse); }
+.cal-cell.selected .d-cnt { color: var(--ink-inverse); opacity: .82; }
 
 /* 草稿箱（识别草稿 / 微信草稿两张卡共用行样式） */
 .bill-drafts, .bill-sdrafts { border-left: 3px solid var(--warn-line); }
@@ -2750,6 +2896,19 @@ select.inp-compact { padding-right: 26px; }
 .stats-head { display: flex; flex-direction: column; gap: var(--sp-2); }
 .stats-head .list-tools { margin-bottom: 0; }
 .stats-hint { font-size: var(--fs-2xs); color: var(--muted); line-height: 1.6; }
+/* ★ v4.28.10 需求 6：「日期范围」那张独立卡片已删，两个日期框搬进
+   「范围合计」卡的标题行 —— 日期就是这张卡的口径，改了就刷新。 */
+.stat-range-head { flex-wrap: wrap; gap: var(--sp-2); }
+.stat-range-dates { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.stat-range-dates > input[type="date"] {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  height: var(--h-sm);
+  padding: 0 8px;
+  font-size: var(--fs-s);
+}
+.stat-range-dates > .sr-dash { color: var(--muted); flex: none; }
 /* v4.12.0 需求 3：统计页顶部的「筛选查看 / 日历查看」工具条。
    与待办页的 .todo-view-tools 同一套排布：左边分段、右边一句说明。 */
 .stats-view-tools { display: flex; flex-direction: column; gap: var(--sp-2); }
@@ -2787,8 +2946,8 @@ select.inp-compact { padding-right: 26px; }
   line-height: 18px;
   vertical-align: 1px;
 }
-.sb-badge-day { color: #fff; background: var(--primary); }
-.sb-badge-month { color: #fff; background: var(--accent); }
+.sb-badge-day { color: var(--ink-inverse); background: var(--primary); }
+.sb-badge-month { color: var(--ink-inverse); background: var(--accent); }
 .stat-range-card { border-left: 4px solid var(--primary); }
 .range-extra { margin-top: var(--sp-3); }
 
@@ -3202,12 +3361,44 @@ select.inp-compact { padding-right: 26px; }
 .modal-foot {
   flex: 0 0 auto;
   display: flex;
+  /* ★ v4.28.10 需求 5 / 7：操作按钮一律靠右（取消在左、主操作在最右）。
+     原来没写 justify-content，按钮全挤在左边 —— 「保存修改」「确认修改」「添加」
+     这些主操作反而离手指最远。需要「删除留在左边」的弹窗自己插 .spacer。 */
+  justify-content: flex-end;
   gap: var(--sp-3);
   padding: 12px 16px;
   background: var(--surface);
   border-top: 1px solid var(--line);
 }
 .modal-foot .spacer { flex: 1; }
+
+/* ── v4.28.11 需求 1：移动端长表单直接全屏（待办 / 发帖 / 记录） ─────────
+   这三张表单的控件会随选择增减（提醒类型切「提前」多两行、重复类型一换
+   「结束重复」整块出现或消失、上传图片多一张多一行…），弹窗高度也跟着变，
+   背后整页就跟着上下跳 —— 手指正按着的地方直接跑掉。
+   全屏把高度钉死，变化只发生在正文滚动区内部；PC 端不动（居中卡片更好读）。
+   ★ 高度用 --modal-h（由 JS 按 visualViewport 写），没有时回落到 100dvh：
+     iOS 键盘弹起不改变 layout viewport，只写 100dvh 会让输入框被键盘盖住。 */
+@media (max-width: 640px) {
+  .modal-layer.is-fullscreen { align-items: stretch; }
+  .modal-layer.is-fullscreen .modal {
+    max-width: none;
+    height: 100vh;
+    height: var(--modal-h, 100dvh);
+    max-height: none;
+    border-radius: 0;
+    /* 安全区交给 .modal-foot 自己加（否则底部会多出一截空白） */
+    padding-bottom: 0;
+    animation: fadeIn var(--t-fast) var(--ease);
+  }
+  .modal-layer.is-fullscreen .modal-head {
+    padding-top: calc(15px + env(safe-area-inset-top, 0px));
+  }
+  .modal-layer.is-fullscreen .modal-body { padding-bottom: 20px; }
+  /* 高度钉死之后，内容只能用滚动解决 —— 不许把子元素压扁（编辑框、图片格子被压扁更难用） */
+  .modal-layer.is-fullscreen .modal-body > * { flex-shrink: 0; }
+  .modal-layer.is-fullscreen .modal-foot { padding-bottom: calc(12px + var(--safe-b)); }
+}
 .part-add { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); }
 .part-add input { flex: 1; min-width: 0; height: var(--h-md); padding: 0 11px; }
 
@@ -3230,7 +3421,9 @@ select.inp-compact { padding-right: 26px; }
   padding: 9px 18px;
   border-radius: var(--r-pill);
   background: rgba(45, 38, 31, .94);
-  color: var(--ink-inverse);
+  /* v4.28.12：toast 底色恒为深色（与主题无关），字色用恒定的 --on-solid ——
+     跟着 --ink-inverse 走的话，暗色主题会变成深底深字。 */
+  color: var(--on-solid);
   font-size: var(--fs-s);
   box-shadow: var(--shadow-m);
   animation: toastIn var(--t-mid) var(--ease);
@@ -3343,8 +3536,8 @@ select.inp-compact { padding-right: 26px; }
   height: 36px;
   border-radius: 50%;
   border: none;
-  background: rgba(255, 255, 255, .92);
-  color: var(--text);
+  background: var(--glass);
+  color: var(--glass-ink);
   font-size: var(--fs-m);
   cursor: pointer;
   box-shadow: var(--shadow-m);
@@ -3360,8 +3553,8 @@ select.inp-compact { padding-right: 26px; }
   height: 44px;
   border-radius: 50%;
   border: none;
-  background: rgba(255, 255, 255, .9);
-  color: var(--text);
+  background: var(--glass);
+  color: var(--glass-ink);
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
@@ -3590,18 +3783,17 @@ body.kb-active .main { padding-bottom: calc(var(--kb, 0px) + 40px); }
 @media (max-width: 767px) {
   .ocr-items { max-height: 52dvh; }
   .oi-amt { width: 76px; }
-  /* v4.28.1 需求 3：手机上搜索框与「全部 / 未完成 / 已完成」排在同一行。
-     原来 .list-tools 是 flex-wrap，两者宽度加起来略超一行就换行 ——
-     搜索框被挤到下面独占一整条，看着像「多出来的一块」。
-     改成两列栅格：分段按钮按内容取宽，剩下的宽度全归搜索框。 */
+  /* v4.28.1 需求 3：手机上一行放「全部 / 未完成 / 已完成」+ 计数 + 放大镜。
+     v4.28.8：搜索框已收进放大镜，这一行不再需要「剩下宽度全给搜索框」的两列网格；
+     用 nowrap 的 flex 一行排开，计数用 flex:none 固定，放大镜保持贴右。 */
   .todo-list-card .list-tools {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    display: flex;
+    flex-wrap: nowrap;
     gap: var(--sp-2);
+    align-items: center;
   }
-  .todo-list-card .list-tools .segmented { width: auto; }
+  .todo-list-card .list-tools .segmented { width: auto; flex: 0 1 auto; }
   .todo-list-card .list-tools .segmented button { padding: 0 8px; font-size: var(--fs-xs); }
-  .todo-list-card .list-tools .search-bar { min-width: 0; }
 }
 
 /* 移动端视频封面叠层：只在窄屏/触屏打开（桌面原生控件本来就正常，叠一层会挡控件） */
@@ -3697,21 +3889,25 @@ body.kb-active .main { padding-bottom: calc(var(--kb, 0px) + 40px); }
     margin-bottom: 10px;
     border-bottom: 1px solid var(--line);
   }
+  /* v4.28.13 需求 2：桌面侧栏品牌图从 34px 放大到 40px。
+     34px 是当初「emoji 底 + 圆角」时定的尺寸，换成图标文件后显得偏小；
+     放大到 40px 仍留得下 192 − 50 = 142px 给「我们一家」（15px 字号约 60px），
+     侧栏宽度 240px 不用动，所以不会挤掉下面的菜单或版权行。 */
   .rail-brand .rb-logo {
-    width: 34px;
-    height: 34px;
+    width: 40px;
+    height: 40px;
     flex: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
-    line-height: 1;
-    border-radius: 11px;
-    background: var(--primary);
+    line-height: 0;
+    border-radius: 13px;
+    overflow: hidden;
     color: var(--ink-inverse);
   }
   .rail-brand .rb-name {
-    font-size: var(--fs-m);
+    /* v4.28.13：字号从 14px 跟到 15px —— 40px 的图标配 14px 文字头重脚轻 */
+    font-size: var(--fs-l);
     font-weight: 700;
     color: var(--text);
     letter-spacing: .02em;
@@ -3760,9 +3956,20 @@ body.kb-active .main { padding-bottom: calc(var(--kb, 0px) + 40px); }
     background: var(--primary);
   }
   .tabbar button.has-dot::after { top: 10px; left: auto; right: 12px; margin-left: 0; }
+  /* v4.28.13 需求 1：桌面端角标全部铺开（手机仍是 3 个 + N）。
+     标题让位改按角标总数算 —— 8 个封顶也就 168px，正文列有 800px 以上，
+     不会出现「标题被角标压到没有字」的情况。 */
+  .tcg-extra { display: inline-flex; }
+  .todo-corner .tcg-more { display: none; }
+  .todo.has-corner .t-title { padding-right: calc(var(--cn-all, 1) * 21px + 2px); }
   .post-imgs.n1 img { max-height: 520px; }
 }
 
+
+/* v4.28.8 曾在 ≥1024px 把待办页放宽到 1320px；v4.28.9 需求 1 把它撤回 ——
+   「PC 端待办页宽度与其他模块页面统一」，于是这里不再有任何页签例外，
+   全站统一回到下面那条 .main 的阅读宽度。
+   ★ 保留 body[data-tab] 这个事实来源（render() 每次同步），以后要再分页调宽度直接用。 */
 
 /* 大屏再宽一点：正文行宽别拉太长（中文单行超过 ~40 字开始难读） */
 @media (min-width: 1280px) {
@@ -3797,7 +4004,7 @@ body.kb-active .main { padding-bottom: calc(var(--kb, 0px) + 40px); }
   min-width: 138px; padding: 5px;
   display: flex; flex-direction: column; gap: 1px;
   background: var(--surface); border: 1px solid var(--line);
-  border-radius: 12px; box-shadow: 0 10px 28px rgba(20, 40, 30, .16);
+  border-radius: var(--r-s); box-shadow: var(--shadow-m);
 }
 .post-menu-item {
   text-align: left; border: 0; background: transparent; cursor: pointer;

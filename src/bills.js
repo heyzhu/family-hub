@@ -1282,6 +1282,29 @@ function todoPreviewFor(userId, todayKey) {
     + ' ORDER BY start_time, id',
     [day, Number(userId), `,${Number(userId)},`],
   );
+  return shapeTodoPreview(rows, day).slice(0, 20);
+}
+
+/**
+ * v4.28.6：**群机器人**（飞书 / 钉钉）的待办预告。
+ *
+ * 群是一个全家共用的群，把某个人的私密事项写进去等于把他的一天广播给全家
+ * （这与「催促只发本人、绝不群发全家」是同一条原则）。所以这里只取 `visibility='family'`，
+ * 其余判定与个人预告完全同源（落点 / 提前天数 / 已完成标记）。
+ */
+function familyTodoPreview(todayKey) {
+  const day = String(todayKey || '').slice(0, 10);
+  if (!DATE_RE.test(day)) return [];
+  const rows = db.all(
+    "SELECT * FROM todos WHERE (todo_date = ? OR repeat != '' OR repeat_rule != '')"
+    + " AND visibility = 'family' ORDER BY start_time, id",
+    [day],
+  );
+  return shapeTodoPreview(rows, day).slice(0, 20);
+}
+
+/** 把候选行按「这一天要不要做」筛成预告（个人 / 家庭两条入口共用，口径只此一处） */
+function shapeTodoPreview(rows, day) {
   /* 已经勾过「完成」的落点不再预告：勾选表示「这一天不做了 / 不再提醒」，
      与待办列表、企业微信「今日待办」保持同一口径。窗口取 [这一天, +5]：
      提前提醒最多 5 天，落点最多在这之后的第 5 天。 */
@@ -1308,7 +1331,6 @@ function todoPreviewFor(userId, todayKey) {
       if (Repeat.isOccurrence(r, day)) return !marks.has(day);
       return false;
     })
-    .slice(0, 20)
     .map((r) => ({ title: String(r.title || '').slice(0, 80), time: String(r.start_time || '') }));
 }
 
@@ -1331,10 +1353,13 @@ function reportPushText(m) {
   const text = msgTpl.render('bill_report', {
     站名: config.siteName,
     报表标题: String(m.heading || ''),
-    范围: '全家',
+    范围: String(m.scope || '全家'),
     副标题: String(m.badge || ''),
     明细: reportSectionLines(m.sections),
-    待办: '',
+    /* ★ v4.28.6：群发渠道也要带待办预告 —— 与邮件**同一套组装**，不再出现
+       「邮件里有今日待办、企业微信里没有」的两份正文。
+       传的是什么由调用方决定：企业微信按人给（本人视角），群机器人按家庭给（只含全家可见）。 */
+    待办: m.todos ? reportTodoBlock({ todos: m.todos, todoLabel: m.todoLabel, todoEmpty: m.todoEmpty }) : '',
   }).text;
   return text.replace(/\n{3,}/g, '\n\n').trim();
 }
@@ -1467,7 +1492,7 @@ async function sendReports(opts) {
   const o = opts || {};
   const cfg = loadSettings();
   const rem = reminders.loadRemindSettings();
-  const out = { mails: 0, recipients: 0, wecom: 0, feishu: 0, dingtalk: 0, errors: [], skipped: '' };
+  const out = { mails: 0, recipients: 0, wecom: 0, feishu: 0, dingtalk: 0, total: 0, errors: [], skipped: '' };
   /* v4.5.0 需求 5：两条通道各自独立。
      ★ 旧版在这里「没配 SMTP 就直接 return」，等于把企业微信推送一起堵死了 ——
        很多家庭根本没配发件邮箱，正是最需要企业微信这条通道的场景。
@@ -1574,6 +1599,7 @@ async function sendReports(opts) {
       });
       out.mails++;
       out.recipients += 1;
+      out.total++;
       log(u, 'mail', true, msg.subject, note || '');
       return true;
     } catch (err) {
@@ -1642,11 +1668,18 @@ async function sendReports(opts) {
       }
       let subject = String((familyMail && familyMail.heading) || '');
       try {
-        const content = reportPushText(familyMail);
+        /* v4.28.6：群机器人的待办预告只放「全家可见」的事项（私密日程不进群），
+           其余与邮件正文同源 —— 渠道之间不再有一份正文有、一份没有的差异。 */
+        const content = reportPushText({
+          ...familyMail,
+          todos: cfg.attachTodo ? familyTodoPreview(attachDay) : null,
+          todoLabel,
+          todoEmpty,
+        });
         const res = await mod.sendText(hcfg, { content });
         if (!res || res.ok === false) throw new Error((res && (res.errorText || res.error)) || `${label}发送失败`);
         out[chName] = (out[chName] || 0) + 1;
-        for (const p of list) { p.ok = true; log(p.u, chName, true, subject, p.degradeWhy || ''); }
+        for (const p of list) { p.ok = true; out.total++; log(p.u, chName, true, subject, p.degradeWhy || ''); }
       } catch (err) {
         const why = (err && err.message) || String(err);
         out.errors.push(`${label}：${why}`);
@@ -1660,21 +1693,31 @@ async function sendReports(opts) {
       if (!viaWecom) {
         for (const p of wxList) p.failWhy = whyNot('wecom', p);
       } else {
-        const tos = wxList.filter((p) => p.wx).map((p) => p.wx);
         for (const p of wxList) if (!p.wx) p.failWhy = whyNot('wecom', p);
-        if (tos.length) {
-          let subject = String((familyMail && familyMail.heading) || '');
-          try {
-            const content = reportPushText(familyMail);
-            const res = await wecom.sendText(wxCfg, { toUser: tos.join('|'), content });
-            if (!res || res.ok === false) throw new Error((res && (res.errorText || res.error)) || '企业微信发送失败');
-            out.wecom = (out.wecom || 0) + 1;
-            for (const p of wxList) if (p.wx) { p.ok = true; log(p.u, 'wecom', true, subject, p.degradeWhy || ''); }
-          } catch (err) {
-            const why = (err && err.message) || String(err);
-            out.errors.push(`企业微信：${why}`);
-            for (const p of wxList) {
-              if (!p.wx) continue;
+        if (wxList.some((p) => p.wx)) {
+          const subject = String((familyMail && familyMail.heading) || '');
+          /* ★ v4.28.6：企业微信**按人各发一条**（toUser 单人），
+             这样正文里的待办预告就是收件人自己的那一份，与邮件完全一致。
+             旧版一条群发内容发给所有人 —— 想带待办就只能带全家的，等于把某人的日程推给全家。 */
+          for (const p of wxList) {
+            if (!p.wx) continue;
+            try {
+              const content = reportPushText({
+                ...familyMail,
+                todos: todosOf(p.u),
+                todoLabel,
+                todoEmpty,
+              });
+              // eslint-disable-next-line no-await-in-loop
+              const res = await wecom.sendText(wxCfg, { toUser: p.wx, content });
+              if (!res || res.ok === false) throw new Error((res && (res.errorText || res.error)) || '企业微信发送失败');
+              out.wecom = (out.wecom || 0) + 1;
+              out.total++;
+              p.ok = true;
+              log(p.u, 'wecom', true, subject, p.degradeWhy || '');
+            } catch (err) {
+              const why = (err && err.message) || String(err);
+              out.errors.push(`企业微信（${p.name}）：${why}`);
               p.failWhy = `${p.name}：企业微信发送失败（${why}）`;
               log(p.u, 'wecom', false, subject, why);
             }
@@ -1860,6 +1903,8 @@ module.exports = {
   buildDailyReport, buildMonthlyReport, reportText, reportHtml,
   // v4.2.0 需求 5：合并邮件（个人 + 家庭一封）与今日待办预告
   mergeReportText, mergeReportHtml, todoPreviewFor,
+  /* v4.28.6：群机器人用的「全家可见」待办预告（私密事项不进群） */
+  familyTodoPreview,
   // v4.21.0 需求 1：标题 / 正文 / HTML 一次取全（模板化后的唯一出口）
   reportMail, reportPushText, reportVars,
   sendReports, duePlan, tick, start, getStatus,

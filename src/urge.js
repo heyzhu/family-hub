@@ -48,6 +48,9 @@ const reminders = require('./reminders');
 const mailer = require('./mailer');
 /* v4.28.5：催促按「待办类」的通道偏好走，kind 必须与 push.KIND_CHANNEL_KEY 对齐 */
 const userprefs = require('./userprefs');
+/* ★ v4.28.6：重复事项（每天 / 每周 / 每月…）也要能催。
+   落点判定与待办列表 / 提醒 / 日报预告共用 public/repeat.js，绝不在这里另写一套日期规则。 */
+const Repeat = require('../public/repeat.js');
 
 /** 到点之后最多催这么久就自动停 —— 防失控的硬顶（不可配），与 urge_max_count 是主备两层 */
 const MAX_URGE_HOURS = 24;
@@ -106,6 +109,17 @@ function defaultUrgeTime() {
 function urgeDueAt(todo, tzOffsetMinutes, defTime) {
   const date = String((todo && todo.todo_date) || '');
   if (!date) return null;
+  return urgeDueAtOn(todo, date, tzOffsetMinutes, defTime);
+}
+
+/**
+ * v4.28.6：**指定落点日期**的起催时刻。
+ * 重复事项的 todo_date 是「基准日」（可能是几年前建的那天），拿它算时刻等于永远算在过去；
+ * 每天 / 每周的催促必须锚在**今天这个落点**上，时刻仍取 urge_start_at → start_time → 默认值。
+ */
+function urgeDueAtOn(todo, dateKey, tzOffsetMinutes, defTime) {
+  const date = String(dateKey || '');
+  if (!date) return null;
   const fallback = TIME_RE.test(String(defTime || '')) ? String(defTime) : defaultUrgeTime();
   const explicit = String((todo && todo.urge_start_at) || '');
   const time = TIME_RE.test(explicit)
@@ -120,6 +134,35 @@ function deadlineAt(todo, tzOffsetMinutes) {
   const end = getEndDate(todo);
   if (!end) return NaN;
   return wallTime(end, String((todo && todo.end_time) || '') , tzOffsetMinutes);
+}
+
+/**
+ * v4.28.6：重复事项**这一个落点**的截止时刻。
+ * 每天的事项今天 23:59 收口，明天重新开始 —— 不能拿基准日的日期当截止。
+ * 系列结束日（end_date）早于今天时返回 NaN 之外还要由调用方按「系列已结束」处理。
+ */
+function occurrenceDeadlineAt(todo, occDate, tzOffsetMinutes) {
+  const date = String(occDate || '');
+  if (!date) return NaN;
+  const seriesEnd = String((todo && todo.end_date) || '');
+  if (seriesEnd && date > seriesEnd) return NaN;      // 这一轮已超出「重复到哪天」
+  return wallTime(date, String((todo && todo.end_time) || ''), tzOffsetMinutes);
+}
+
+/** 当前墙上日期（YYYY-MM-DD），与 reminders.wallDateKey 同口径 */
+function wallToday(now, tzOffsetMinutes) {
+  const tz = Number(tzOffsetMinutes == null ? config.tzOffsetMinutes : tzOffsetMinutes) || 0;
+  return new Date(now.getTime() + tz * 60000).toISOString().slice(0, 10);
+}
+
+/** 这条待办的重复规则（'' = 一次性） */
+function repeatRuleOf(todo) {
+  return Repeat.rule(todo || {});
+}
+
+/** 某一天这个落点是否已经勾完（老库没有这张表时按未完成） */
+function occurrenceDone(todoId, dayKey) {
+  return reminders.occurrenceDone(todoId, dayKey);
 }
 
 /** 当前本地 HH:MM（按 tz_offset_minutes 显式偏移，不依赖进程时区） */
@@ -145,7 +188,8 @@ function wecomIdOf(cfg, username) {
 
 /** 截止时间的人话写法（文档 5.10.2-4 的四条规则，跨天必须按这套写，不准统一写「今天」） */
 function deadlineText(todo, now, tzOffsetMinutes) {
-  const end = getEndDate(todo);
+  /* v4.28.6：重复事项的截止是「今天这个落点」的结束时刻，不是基准日（可能是几年前） */
+  const end = String((todo && todo._occ) || '') || getEndDate(todo);
   const time = TIME_RE.test(String(todo.end_time || '')) ? todo.end_time : '23:59';
   const todayKey = (() => {
     const tz = Number(tzOffsetMinutes == null ? config.tzOffsetMinutes : tzOffsetMinutes) || 0;
@@ -163,7 +207,7 @@ function urgeText(todo, now, tzOffsetMinutes) {
   const lines = [`⏰ 催一下：「${todo.title}」`, `截止：${deadlineText(todo, now, tzOffsetMinutes)}`];
   // 跨天且今天不是结束日 → 额外告诉对方「这是持续的事，进行到第几天」
   const start = String(todo.todo_date || '');
-  const end = getEndDate(todo);
+  const end = String((todo && todo._occ) || '') || getEndDate(todo);
   if (end && end !== start && end !== deadlineTodayKey(now, tzOffsetMinutes)) {
     const total = Math.round((Date.parse(end + 'T00:00:00Z') - Date.parse(start + 'T00:00:00Z')) / 86400000) + 1;
     const passed = Math.round((Date.parse(deadlineTodayKey(now, tzOffsetMinutes) + 'T00:00:00Z')
@@ -205,8 +249,9 @@ function mailUrgeText(items, now, tzOffsetMinutes) {
     lines.push(`⏰ 催一下：「${items[0].title}」`);
     lines.push(`截止：${deadlineText(items[0], now, tzOffsetMinutes)}`);
     const start = String(items[0].todo_date || '');
-    const end = getEndDate(items[0]);
-    if (end && end !== start) {
+    const end = String((items[0] && items[0]._occ) || '') || getEndDate(items[0]);
+    /* 重复事项不写「第 X/Y 天」：那套文案是给跨天持续事项的，每天的事项写出来是「第 365/365 天」 */
+    if (end && end !== start && !repeatRuleOf(items[0])) {
       const day = Math.round((Date.parse(deadlineTodayKey(now, tzOffsetMinutes) + 'T00:00:00Z')
         - Date.parse(start + 'T00:00:00Z')) / 86400000) + 1;
       const total = Math.round((Date.parse(end + 'T00:00:00Z') - Date.parse(start + 'T00:00:00Z')) / 86400000) + 1;
@@ -252,7 +297,51 @@ function smtpOf() {
 }
 
 /**
- * 扫一轮：把该催的都催掉（v4.10.0 状态机版；v4.16.0 起支持纯邮件）。
+ * v4.28.6：跨天复位重复事项的催促计数。
+ *
+ * 为什么必须单独一步：`urge_count` / `urge_status` 是**行级**的，而「每天」是一条行、
+ * 每天一个新落点。不清零的话，第二天的 `urge_count` 已经等于 urge_max_count、
+ * `urge_status` 还停在 stopped_by_max_count —— 主查询只扫 pending/active/paused，
+ * 于是「每天重复 + 催促」只在第一天响过、之后永远静默。
+ *
+ * 只复位「落点相关」的终态（截止 / 催满 / 回已完成），
+ * `stopped_by_manual`（用户自己关掉的）不因跨天自动复活。
+ * ★ 必须在主查询之前调用：终态进不了主查询，事后补就来不及了。
+ */
+function rollRepeatUrge(now, tzOffsetMinutes) {
+  const today = wallToday(now, tzOffsetMinutes);
+  const rows = db.all(
+    `SELECT id, todo_date, end_date, repeat, repeat_rule, urge_status, urge_occ_date,
+            repeat_end_mode, repeat_end_date, repeat_end_count, repeat_sent_count, repeat_ended_at
+       FROM todos
+      WHERE done = 0 AND urge_minutes > 0 AND (repeat != '' OR repeat_rule != '')`,
+    [],
+  );
+  for (const t of rows) {
+    /* v4.28.8：系列已经结束（按时间到期 / 按次数发够 / 手动结束）→ 催促也必须停。
+       旧版只认 end_date，于是「结束重复」之后提醒停了、催促却每天复位继续发，
+       用户收到的是「明明结束了还在催」。end_date 的判断保留在后面，作为老数据兜底。 */
+    if (reminders.repeatEnded(t, today)) {
+      stopUrge(t.id, 'stopped_by_deadline');
+      continue;
+    }
+    if (String(t.urge_occ_date || '') === today) continue;   // 今天已经复位过
+    if (!Repeat.isOccurrence(t, today)) continue;            // 今天不是落点，等下次
+    if (String(t.urge_status || '') === 'stopped_by_manual') continue;
+    if (String(t.end_date || '') && String(t.end_date) < today) {
+      stopUrge(t.id, 'stopped_by_deadline');                 // 系列已结束，别再空扫
+      continue;
+    }
+    db.run(
+      `UPDATE todos SET urge_status = 'pending', urge_count = 0, urge_last_at = '', urge_occ_date = ?
+        WHERE id = ?`,
+      [today, t.id],
+    );
+  }
+}
+
+/**
+ * 扫一轮：把该催的都催掉（v4.10.0 状态机版；v4.16.0 起支持纯邮件；v4.28.6 起含重复事项）。
  * @param {{now?:Date, tzOffsetMinutes?:number}} [opts] now 仅供测试注入
  * @returns {Promise<{sent:number, nags:number, errors:string[], skipped:string, tried:number,
  *                     stopped:number, paused:number}>}
@@ -276,17 +365,25 @@ async function tickUrge(opts) {
     return out;
   }
 
-  /* 重复事项不参与催促：它们不进入「完成」状态，催了也永远完结不了（repeat / repeat_rule 任一非空都算）。
-     J2 查询条件：urge_status IN ('pending','active','paused') —— 终态不再扫。 */
+  /* ★ v4.28.6：重复事项**也参与催促**。
+     旧版这里写死 `t.repeat='' AND t.repeat_rule=''`，理由是「重复事项不会被完成，催了也完结不了」——
+     但重复事项的完成态是「这一天的落点」（todo_done_marks），本来就可以被勾掉，
+     于是「每天重复 + 开了催促」的待办一次都不会响 —— 这正是本轮要修的 bug。
+     现在按落点催：每天 0 点后把计数清零重来（rollRepeatUrge），当天勾掉即停，明天照常开始。 */
+  rollRepeatUrge(now, tz);
+  /* J2 查询条件：urge_status IN ('pending','active','paused') —— 终态不再扫
+     （重复事项的终态会在跨天时由 rollRepeatUrge 复位）。 */
   const rows = db.all(
     `SELECT t.id, t.user_id, t.title, t.todo_date, t.end_date, t.end_time, t.start_time,
+            t.repeat, t.repeat_rule, t.urge_occ_date,
+            t.repeat_end_mode, t.repeat_end_date, t.repeat_end_count,
+            t.repeat_sent_count, t.repeat_ended_at,
             t.urge_minutes, t.urge_last_at, t.urge_status, t.urge_count,
             t.urge_max_count, t.urge_window_start, t.urge_window_end, t.urge_start_at,
             u.username, u.push_channel, u.push_fallback, u.notify_email
        FROM todos t JOIN users u ON u.id = t.user_id
       WHERE t.done = 0 AND t.urge_minutes > 0
         AND t.urge_status IN ('pending','active','paused')
-        AND t.repeat = '' AND t.repeat_rule = ''
         AND t.todo_date IS NOT NULL AND t.todo_date <> ''
       ORDER BY t.todo_date ASC, t.start_time ASC LIMIT 500`,
     [],
@@ -297,13 +394,34 @@ async function tickUrge(opts) {
   /* v4.15.0 需求 7：「没填开始时间」的默认时刻这一轮只取一次库 */
   const defTime = defaultUrgeTime();
   for (const t of rows) {
-    const dl = deadlineAt(t, tz);
+    const isRepeat = !!repeatRuleOf(t);
+    /* 重复事项只在「今天确实是一个落点」时催；今天不是落点（如每周三的事项今天周二）就跳过，
+       不推进任何状态 —— 不能因为今天没轮到它就把它标成 stopped。 */
+    let occ = '';
+    if (isRepeat) {
+      occ = wallToday(now, tz);
+      if (!Repeat.isOccurrence(t, occ)) continue;
+      /* v4.28.8：系列已收口 → 今天不再催，并且把状态落成终态，
+         免得下一轮又被 rollRepeatUrge 复位。 */
+      if (reminders.repeatEnded(t, occ)) {
+        stopUrge(t.id, 'stopped_by_deadline');
+        out.stopped++;
+        continue;
+      }
+      // 跨天还没复位（理论上下面的 rollRepeatUrge 已处理）→ 本轮先不催，下一轮一定复位
+      if (String(t.urge_occ_date || '') !== occ) continue;
+      // 今天这个落点已经勾完 → 今天不再催，明天由 rollRepeatUrge 复位
+      if (occurrenceDone(t.id, occ)) continue;
+    }
+    const dl = isRepeat ? occurrenceDeadlineAt(t, occ, tz) : deadlineAt(t, tz);
     if (Number.isFinite(dl) && now.getTime() > dl) {
       stopUrge(t.id, 'stopped_by_deadline');
       out.stopped++;
       continue;
     }
-    if (now.getTime() - urgeDueAt(t, tz, defTime).getTime() > MAX_URGE_HOURS * 3600000) {
+    const startAt = isRepeat ? urgeDueAtOn(t, occ, tz, defTime) : urgeDueAt(t, tz, defTime);
+    if (!startAt) continue;
+    if (now.getTime() - startAt.getTime() > MAX_URGE_HOURS * 3600000) {
       // 24 小时硬顶：都是「时间到了自动停」，归入 stopped_by_deadline
       stopUrge(t.id, 'stopped_by_deadline');
       out.stopped++;
@@ -327,11 +445,11 @@ async function tickUrge(opts) {
       db.run("UPDATE todos SET urge_status = 'active' WHERE id = ? AND urge_status = 'paused'", [t.id]);
     }
 
-    const startAt = urgeDueAt(t, tz, defTime);
-    if (!startAt || now.getTime() < startAt.getTime()) continue;   // 还没到 urge_start_at
+    if (now.getTime() < startAt.getTime()) continue;   // 还没到 urge_start_at
     const gap = Math.max(1, Number(t.urge_minutes) || 1) * 60000;
     const last = t.urge_last_at ? Date.parse(t.urge_last_at) : NaN;
     if (Number.isFinite(last) && now.getTime() - last < gap) continue;
+    if (occ) t._occ = occ;          // 文案里的「截止」按今天的落点写
     due.push(t);
   }
 
@@ -369,12 +487,15 @@ async function tickUrge(opts) {
     const claimed = [];
     for (const t of items) {
       const seq = Number(t.urge_count) || 0;
+      /* ★ v4.28.6：占位键带上落点日期 —— 重复事项每天 nag_seq 都从 0 开始，
+         不带日期的话第二天那次会被唯一键判成「已经发过」直接 IGNORE。 */
+      const occDate = String(t._occ || '');
       const r = db.run(
-        `INSERT OR IGNORE INTO todo_nag_logs (todo_id, user_id, nag_seq, channel, msg_type, delivered)
-         VALUES (?,?,?,?,'urge','pending')`,
-        [t.id, uid, seq, channel],
+        `INSERT OR IGNORE INTO todo_nag_logs (todo_id, user_id, nag_seq, channel, occ_date, msg_type, delivered)
+         VALUES (?,?,?,?,?,'urge','pending')`,
+        [t.id, uid, seq, channel, occDate],
       );
-      if (r && r.changes > 0) claimed.push({ todo: t, seq });
+      if (r && r.changes > 0) claimed.push({ todo: t, seq, occ: occDate });
     }
     if (!claimed.length) continue;
 
@@ -413,8 +534,8 @@ async function tickUrge(opts) {
       /* 首选不可用而走了兜底时，流水要记**实际**通道，不能留占位时的首选值 */
       if (used !== channel) {
         for (const c of claimed) {
-          db.run('UPDATE todo_nag_logs SET channel = ? WHERE todo_id = ? AND user_id = ? AND nag_seq = ? AND channel = ?',
-            [used, c.todo.id, uid, c.seq, channel]);
+          db.run('UPDATE todo_nag_logs SET channel = ? WHERE todo_id = ? AND user_id = ? AND nag_seq = ? AND channel = ? AND occ_date = ?',
+            [used, c.todo.id, uid, c.seq, channel, c.occ]);
         }
       }
       out.nags += commitUrge(claimed, used, now, out);
@@ -446,8 +567,8 @@ function commitUrge(claimed, channel, now, out) {
       [now.toISOString(), c.todo.id, c.seq],
     );
     const delivered = adv && adv.changes > 0 ? 'success' : 'dedup';
-    db.run('UPDATE todo_nag_logs SET delivered = ? WHERE todo_id = ? AND nag_seq = ? AND channel = ?',
-      [delivered, c.todo.id, c.seq, channel]);
+    db.run('UPDATE todo_nag_logs SET delivered = ? WHERE todo_id = ? AND nag_seq = ? AND channel = ? AND occ_date = ?',
+      [delivered, c.todo.id, c.seq, channel, c.occ]);
     if (delivered === 'success') n++;
   }
   return n;
@@ -456,8 +577,8 @@ function commitUrge(claimed, channel, now, out) {
 /** 发送失败：流水标 fail、计数照常 +1（5.10.7-1），下个周期继续催 */
 function failUrge(claimed, channel, err, now, out) {
   for (const c of claimed) {
-    db.run('UPDATE todo_nag_logs SET delivered = ?, error_code = ? WHERE todo_id = ? AND nag_seq = ? AND channel = ?',
-      ['fail', String(err).slice(0, 60), c.todo.id, c.seq, channel]);
+    db.run('UPDATE todo_nag_logs SET delivered = ?, error_code = ? WHERE todo_id = ? AND nag_seq = ? AND channel = ? AND occ_date = ?',
+      ['fail', String(err).slice(0, 60), c.todo.id, c.seq, channel, c.occ]);
     db.run(
       `UPDATE todos SET urge_count = urge_count + 1, urge_last_at = ?, urge_status = 'active'
         WHERE id = ? AND urge_count = ? AND urge_status IN ('pending','active','paused')`,
@@ -487,7 +608,8 @@ function stopUrge(id, status) {
  *   ① 正在被催的（urge_status='active'，其次 urge_last_at 非空）—— 用户回「已完成」十有八九是回它；
  *   ② 今天及以前、已经开始到点的 —— 顺手把过期未完成的收掉；
  *   ③ 最近的一条未完成。
- * 重复事项排除在外（它们不会被完成）。
+ * 重复事项也参与（v4.28.6）：只认「今天确实是落点、且今天还没勾完」的那条，
+ *   回「已完成」= 勾掉今天的落点，明天照常再来（写 todo_done_marks，而不是把整条规则完成掉）。
  *
  * @returns {object|null} 命中的 todo 行
  */
@@ -497,9 +619,10 @@ function pickToComplete(username, opts) {
   const uname = String(username || '').trim();
   if (!uname) return null;
   const rows = db.all(
-    `SELECT t.id, t.title, t.todo_date, t.end_date, t.end_time, t.start_time, t.urge_minutes, t.urge_last_at
+    `SELECT t.id, t.title, t.todo_date, t.end_date, t.end_time, t.start_time,
+            t.repeat, t.repeat_rule, t.urge_minutes, t.urge_last_at, t.urge_status
        FROM todos t JOIN users u ON u.id = t.user_id
-      WHERE u.username = ? AND t.done = 0 AND t.repeat = '' AND t.repeat_rule = ''
+      WHERE u.username = ? AND (t.done = 0 OR t.repeat != '' OR t.repeat_rule != '')
         AND t.todo_date IS NOT NULL AND t.todo_date <> ''
       ORDER BY (t.urge_status = 'active') DESC, (t.urge_last_at <> '') DESC,
                t.todo_date ASC, t.start_time ASC, t.id ASC
@@ -507,18 +630,30 @@ function pickToComplete(username, opts) {
     [uname],
   );
   if (!rows.length) return null;
-  const urged = rows.find((r) => r.urge_status === 'active') || rows.find((r) => String(r.urge_last_at || ''));
+  /* 重复事项必须先过「今天是不是落点 / 今天是否已勾完」两道门，
+     否则会把「每周三」的事项在周四当成候选，勾了也没意义。 */
+  const today = wallToday(now, o.tzOffsetMinutes);
+  const usable = rows.filter((r) => {
+    if (!repeatRuleOf(r)) return true;
+    if (!Repeat.isOccurrence(r, today)) return false;
+    return !occurrenceDone(r.id, today);
+  });
+  if (!usable.length) return null;
+  const urged = usable.find((r) => r.urge_status === 'active') || usable.find((r) => String(r.urge_last_at || ''));
   if (urged) return urged;
   const defTime = defaultUrgeTime();
-  const started = rows.find((r) => {
-    const due = urgeDueAt(r, o.tzOffsetMinutes, defTime);
+  const started = usable.find((r) => {
+    const due = repeatRuleOf(r) ? urgeDueAtOn(r, today, o.tzOffsetMinutes, defTime) : urgeDueAt(r, o.tzOffsetMinutes, defTime);
     return due && due.getTime() <= now.getTime();
   });
-  return started || rows[0];
+  return started || usable[0];
 }
 
 /**
  * 标记完成（v4.10.0：状态机停催，**不清 urge_minutes** —— 文档 5.10.4-3 点名要求）。
+ *
+ * ★ v4.28.6：重复事项走「勾掉今天这个落点」——
+ *   写 todo_done_marks，绝不把 todos.done 置 1（那会让整条每天事项从列表和日历里消失）。
  * @param {number} id
  * @param {{via?:string}} [opts] via 'wecom' → done_by_reply；缺省（网页）→ stopped_by_manual
  */
@@ -526,6 +661,22 @@ function markDone(id, opts) {
   const o = opts || {};
   const now = o.now instanceof Date ? o.now : new Date();
   const status = o.via === 'wecom' ? 'done_by_reply' : 'stopped_by_manual';
+  const row = db.get('SELECT * FROM todos WHERE id = ?', [Number(id)]);
+  if (row && repeatRuleOf(row)) {
+    const today = wallToday(now, o.tzOffsetMinutes);
+    if (Repeat.isOccurrence(row, today)) {
+      db.run(
+        'INSERT INTO todo_done_marks (todo_id, occ_date, user_id, done_at) VALUES (?,?,?,?)'
+        + ' ON CONFLICT(todo_id, occ_date) DO UPDATE SET user_id = excluded.user_id, done_at = excluded.done_at',
+        [Number(id), today, Number(row.user_id) || 0, now.toISOString()],
+      );
+    }
+    db.run(
+      'UPDATE todos SET urge_status = ?, urge_last_at = ?, urge_occ_date = ? WHERE id = ?',
+      [status, now.toISOString(), today, Number(id)],
+    );
+    return db.get('SELECT * FROM todos WHERE id = ?', [Number(id)]);
+  }
   db.run(
     'UPDATE todos SET done = 1, urge_status = ?, urge_last_at = ?, updated_at = ? WHERE id = ?',
     [status, now.toISOString(), now.toISOString(), Number(id)],
@@ -577,6 +728,12 @@ module.exports = {
   MERGE_MAX,
   ACTIVE_STATUSES,
   urgeDueAt,
+  /* v4.28.6：重复事项按「今天的落点」起催 / 截止，跨天复位计数 */
+  urgeDueAtOn,
+  occurrenceDeadlineAt,
+  rollRepeatUrge,
+  repeatRuleOf,
+  wallToday,
   deadlineAt,
   getEndDate,
   localHHMM,

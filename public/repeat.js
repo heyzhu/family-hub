@@ -203,6 +203,41 @@
     return out;
   }
 
+  /**
+   * v4.28.8：这条重复系列是否已经收口。
+   *
+   * 三种终止，与 src/reminders.js 的 repeatEnded() 完全同口径：
+   *   · repeatEndedAt 非空（按次数攒够 / 手动结束）→ 整个系列不再有落点；
+   *   · 按时间 → 传入的日期晚于结束日期；
+   *   · 按次数 → 已成功推送次数 >= 设定次数。
+   *
+   * ★ 字段同时认 camelCase（/api/todos 下发的形状）与 snake_case（数据库行）：
+   *   本文件既跑在浏览器里，也被 reminders.js require —— 两边的数据形状不一样，
+   *   但判断必须只有一份，否则「日历上还有、列表里没了」这种错位迟早出现。
+   */
+  function endState(todo) {
+    var t = todo || {};
+    var pick = function (camel, snake) {
+      return t[camel] != null ? t[camel] : t[snake];
+    };
+    return {
+      endedAt: String(pick('repeatEndedAt', 'repeat_ended_at') || ''),
+      mode: String(pick('repeatEndMode', 'repeat_end_mode') || 'never'),
+      endDate: String(pick('repeatEndDate', 'repeat_end_date') || ''),
+      need: Number(pick('repeatEndCount', 'repeat_end_count')) || 0,
+      sent: Number(pick('repeatSentCount', 'repeat_sent_count')) || 0,
+    };
+  }
+
+  function isEnded(todo, dateKey) {
+    var e = endState(todo);
+    if (e.endedAt) return true;
+    if (e.mode === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(e.endDate)
+      && String(dateKey || '') > e.endDate) return true;
+    if (e.mode === 'count' && e.need > 0 && e.sent >= e.need) return true;
+    return false;
+  }
+
   /** 某个公历日期是不是该重复事项的落点（含基准日当天那一次） */
   function isOccurrence(todo, dateKey) {
     var date = baseDate(todo);
@@ -210,6 +245,7 @@
     if (REPEATS.indexOf(rule(todo)) < 0) return false;
     var key = String(dateKey || '');
     if (!parseKey(key)) return false;
+    if (isEnded(todo, key)) return false;
     if (key === date) return true;
     return occurrencesInYear(todo, Number(key.slice(0, 4))).indexOf(key) >= 0;
   }
@@ -226,15 +262,15 @@
     if (REPEATS.indexOf(rule(todo)) < 0) return '';
     var from = parseKey(fromKey);
     if (!from) return '';
-    // 基准日（原事项自己）还没过去，那它本身就是下一次
-    if (date >= String(fromKey)) return date;
+    // 基准日（原事项自己）还没过去，那它本身就是下一次 —— 除非系列已经结束
+    if (date >= String(fromKey)) return isEnded(todo, date) ? '' : date;
     var base = parseKey(date);
     if (!base) return '';
     // 从 fromKey 那年往后找；上限 2100 与农历表的覆盖范围一致
     for (var y = from.y; y <= base.y + 200 && y <= 2100; y++) {
       var occ = occurrencesInYear(todo, y);
       for (var i = 0; i < occ.length; i++) {
-        if (occ[i] >= String(fromKey)) return occ[i];
+        if (occ[i] >= String(fromKey) && !isEnded(todo, occ[i])) return occ[i];
       }
     }
     return '';
@@ -274,6 +310,8 @@
     rule: rule,
     occurrencesInYear: occurrencesInYear,
     isOccurrence: isOccurrence,
+    // v4.28.8：结束重复的判定（前端日历 / 列表 / 服务端调度唯一口径）
+    isEnded: isEnded,
     nextOccurrence: nextOccurrence,
     label: label,
     // v1.9.0：把规则清单与中文名也导出，前后端不再各写一份（避免「加了规则但界面不认」）

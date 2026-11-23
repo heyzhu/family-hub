@@ -179,7 +179,7 @@ function userCount() {
    这样以后加主题只要改前端两处（色板 + 选择卡片），不用动数据库。
    ★ 白名单校验：脏值一律拒（400），免得前端拿到一个没有对应色板的类名、
      整页退化成无色可用的默认样式。 */
-const THEMES = ['forest', 'paper', 'ocean'];
+const THEMES = ['forest', 'paper', 'ocean', 'night'];
 const DEFAULT_THEME = 'paper';
 
 function publicUser(row) {

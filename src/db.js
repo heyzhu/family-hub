@@ -134,7 +134,20 @@ function todosColumns(opts) {
     /* v4.22.0：这两列必须写进列清单，否则任何一次 todos 重建都会把它们吞掉
        （重建是按「目标列清单」搬数据的，清单里没有的列会静默丢）。 */
     ['remind_advance_days', 'INTEGER NOT NULL DEFAULT -1'],
+    /* v4.28.7：提前量单位 / 结束重复 / 已推送次数。同理必须进清单，
+       否则将来任何一次重建都会把用户设的「提前 30 分钟」和「按 10 次结束」静默清零。 */
+    ['remind_advance_value', 'INTEGER NOT NULL DEFAULT -1'],
+    ['remind_advance_unit', "TEXT    NOT NULL DEFAULT 'day'"],
+    ['repeat_end_mode', "TEXT    NOT NULL DEFAULT 'never' CHECK (repeat_end_mode IN ('never','date','count'))"],
+    ['repeat_end_date', "TEXT    NOT NULL DEFAULT ''"],
+    ['repeat_end_count', 'INTEGER NOT NULL DEFAULT 0'],
+    ['repeat_sent_count', 'INTEGER NOT NULL DEFAULT 0'],
+    ['repeat_ended_at', "TEXT    NOT NULL DEFAULT ''"],
     ['quick', 'INTEGER NOT NULL DEFAULT 0'],
+    /* v4.28.11 需求 3：这条待办是从记录本哪条记录带进来的（0 = 不是）。
+       只用于卡片右上角的「记录本」角标与推送里点一句来源，不参与任何调度判断。
+       ★ 必须进列清单：重建只搬清单里的列，漏了就是「来源凭空消失」。 */
+    ['record_id', 'INTEGER NOT NULL DEFAULT 0'],
   ];
   /* 第二次重建（v2.0.0）时这三列已经在表里了 —— v1.2/v1.3 之后补的，
      重建漏掉它们就是「已提醒过的又提醒一遍」，所以这里是显式列出来的。 */
@@ -189,6 +202,10 @@ function rebuildTodos(opts) {
  * 必须与 schema.sql 完全一致，老流水一行都不能丢。
  */
 function rebuildNagLogs() {
+  /* v4.28.6：occ_date = 这条流水属于「哪一天的落点」。重复事项每天都会把 urge_count 清零，
+     nag_seq 随之从 0 重新数 —— 不带落点日期的唯一键会把第二天的那次直接判成重复而丢掉。
+     ★ 重建时按源表实际有没有这一列决定搬什么，老库（v4.28.5 及以前）搬成空串。 */
+  const hasOcc = engine.all('PRAGMA table_info(todo_nag_logs)', []).some((r) => r.name === 'occ_date');
   engine.exec('BEGIN IMMEDIATE');
   try {
     engine.exec(`CREATE TABLE todo_nag_logs_mig (
@@ -197,15 +214,16 @@ function rebuildNagLogs() {
   user_id    INTEGER NOT NULL,
   nag_seq    INTEGER NOT NULL,
   channel    TEXT    NOT NULL CHECK (channel IN ('wecom','email','feishu','dingtalk')),
+  occ_date   TEXT    NOT NULL DEFAULT '',
   msg_type   TEXT    NOT NULL DEFAULT '',
   sent_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   delivered  TEXT    NOT NULL DEFAULT 'pending' CHECK (delivered IN ('pending','success','fail','dedup')),
   error_code TEXT    NOT NULL DEFAULT '',
-  UNIQUE (todo_id, user_id, nag_seq, channel)
+  UNIQUE (todo_id, user_id, nag_seq, channel, occ_date)
 )`);
     engine.exec(`INSERT INTO todo_nag_logs_mig
-      (id, todo_id, user_id, nag_seq, channel, msg_type, sent_at, delivered, error_code)
-      SELECT id, todo_id, user_id, nag_seq, channel, msg_type, sent_at, delivered, error_code
+      (id, todo_id, user_id, nag_seq, channel, occ_date, msg_type, sent_at, delivered, error_code)
+      SELECT id, todo_id, user_id, nag_seq, channel, ${hasOcc ? 'occ_date' : "''"}, msg_type, sent_at, delivered, error_code
         FROM todo_nag_logs`);
     engine.exec('DROP TABLE todo_nag_logs');
     engine.exec('ALTER TABLE todo_nag_logs_mig RENAME TO todo_nag_logs');
@@ -335,6 +353,12 @@ function migrate() {
     }
     engine.run("INSERT INTO settings (key, value) VALUES ('nag_channel_split_4285', '1') "
       + 'ON CONFLICT(key) DO UPDATE SET value = excluded.value', []);
+  }
+  /* v4.28.6：重复事项的催促每天复用 nag_seq（跨天计数清零），唯一键必须把「落点日期」算进去，
+     否则第二天的第一次会被当成「已经发过」直接 IGNORE —— 表现就是「每天的事项只响第一天」。 */
+  if (!columnExists('todo_nag_logs', 'occ_date')) {
+    rebuildNagLogs();
+    done.push('催促流水按落点日期去重（重复事项跨天复用 nag_seq）');
   }
   /* 旧版 todos.todo_date 是 NOT NULL，SQLite 不支持直接改列约束，需重建表。
      ★ W-8：重建的具体动作（DDL / 搬数据 / 事务 / 建索引）统一在 rebuildTodos() 里，
@@ -499,6 +523,54 @@ function migrate() {
     engine.exec("ALTER TABLE todos ADD COLUMN urge_start_at TEXT NOT NULL DEFAULT ''");
     done.push('todos.urge_start_at');
   }
+  /* v4.28.6：重复事项的催促要按「落点」计数 —— 这里只记这一天是哪天，跨天清零由 urge.js 做。
+     和上面几个 urge_* 一样走 ALTER：它们都在两次 rebuildTodos() 之后补上。 */
+  if (!columnExists('todos', 'urge_occ_date')) {
+    engine.exec("ALTER TABLE todos ADD COLUMN urge_occ_date TEXT NOT NULL DEFAULT ''");
+    done.push('todos.urge_occ_date（重复事项催促计数所属的落点日期）');
+  }
+  /* v4.28.7：提前提醒的数值 + 单位。为什么不再复用 remind_advance_days：
+     它只装得下「天」，而这一版要支持「提前 30 分钟 / 2 小时」。
+     value=-1 时仍然回落到 remind_advance_days（再回落到家庭设置），老数据行为不变。 */
+  if (!columnExists('todos', 'remind_advance_value')) {
+    engine.exec('ALTER TABLE todos ADD COLUMN remind_advance_value INTEGER NOT NULL DEFAULT -1');
+    /* ★ 单位列必须在回填 UPDATE 之前就存在，否则 UPDATE 引用的列还没建，整段迁移直接抛错。
+       两列是同一件事的两个半边，一起加。 */
+    engine.exec("ALTER TABLE todos ADD COLUMN remind_advance_unit TEXT NOT NULL DEFAULT 'day'");
+    /* 一次性回填：老库里自己设过天数的（>=0）原样搬到新列，单位按天。
+       之后这两列就是唯一真相，remind_advance_days 只留给家庭默认用。 */
+    engine.run(
+      "UPDATE todos SET remind_advance_value = remind_advance_days, remind_advance_unit = 'day'"
+      + ' WHERE remind_advance_days >= 0', []);
+    done.push('todos.remind_advance_value');
+    done.push('todos.remind_advance_unit（提前量支持分钟/小时/天）');
+  }
+  if (!columnExists('todos', 'remind_advance_unit')) {
+    engine.exec("ALTER TABLE todos ADD COLUMN remind_advance_unit TEXT NOT NULL DEFAULT 'day'");
+
+  }
+  /* v4.28.7：结束重复的三种终止条件。重建设表时 CHECK 已带上，老库走 ALTER 补列。 */
+  if (!columnExists('todos', 'repeat_end_mode')) {
+    engine.exec("ALTER TABLE todos ADD COLUMN repeat_end_mode TEXT NOT NULL DEFAULT 'never'"
+      + " CHECK (repeat_end_mode IN ('never','date','count'))");
+    done.push('todos.repeat_end_mode（结束重复：永不 / 按日期 / 按次数）');
+  }
+  if (!columnExists('todos', 'repeat_end_date')) {
+    engine.exec("ALTER TABLE todos ADD COLUMN repeat_end_date TEXT NOT NULL DEFAULT ''");
+    done.push('todos.repeat_end_date');
+  }
+  if (!columnExists('todos', 'repeat_end_count')) {
+    engine.exec('ALTER TABLE todos ADD COLUMN repeat_end_count INTEGER NOT NULL DEFAULT 0');
+    done.push('todos.repeat_end_count');
+  }
+  if (!columnExists('todos', 'repeat_sent_count')) {
+    engine.exec('ALTER TABLE todos ADD COLUMN repeat_sent_count INTEGER NOT NULL DEFAULT 0');
+    done.push('todos.repeat_sent_count');
+  }
+  if (!columnExists('todos', 'repeat_ended_at')) {
+    engine.exec("ALTER TABLE todos ADD COLUMN repeat_ended_at TEXT NOT NULL DEFAULT ''");
+    done.push('todos.repeat_ended_at');
+  }
   /* ★ v4.22.0 需求 1 / 2：两列必须放在上面两次 rebuildTodos() **之后**。
      rebuildTodos 按 todosColumns() 建新表再 DROP 旧表 —— 先 ALTER 再加重建，
      新列会被重建直接吞掉（本项目踩过「重建表吞列」）。 */
@@ -509,6 +581,12 @@ function migrate() {
   if (!columnExists('todos', 'quick')) {
     engine.exec('ALTER TABLE todos ADD COLUMN quick INTEGER NOT NULL DEFAULT 0');
     done.push('todos.quick（一句话添加的待办）');
+  }
+  /* v4.28.11 需求 3：待办记下「来自记录本哪一条」。只做来源标记（卡片角标 / 推送一句话），
+     不派生提醒逻辑 —— 日期、时间、提醒类型都还是这条待办自己的。 */
+  if (!columnExists('todos', 'record_id')) {
+    engine.exec('ALTER TABLE todos ADD COLUMN record_id INTEGER NOT NULL DEFAULT 0');
+    done.push('todos.record_id（从记录本带进来的待办记来源）');
   }
   /* 老数据回落：升级前就在催的待办（urge_minutes>0 且未完成、非重复）直接视作「等待催促」，
      否则升级瞬间它们会被状态机当成 idle 而停摆。只跑一次（列刚加上时）。 */
