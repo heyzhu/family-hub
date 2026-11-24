@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <!-- 催促：到点闹钟；stroke 纯黑仅供 CSS mask 取 alpha，实际颜色由 currentColor 注入 -->
+<rect x="4.4" y="6.4" width="15.2" height="13.6" rx="3.4"/><path d="M12 10.2v3.3l2.5 1.5"/><path d="M7.6 3.4 5.8 5.2M16.4 3.4l1.8 1.8"/>
+</svg>

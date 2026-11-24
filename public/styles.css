@@ -300,6 +300,96 @@ a:hover { color: var(--primary-dark); }
 .btn-block { width: 100%; min-height: var(--h-lg); font-size: var(--fs-l); }
 .btn-sm { min-height: var(--h-sm); padding: 0 11px; font-size: var(--fs-s); border-radius: 9px; gap: 4px; }
 .btn-more { width: 100%; margin-top: var(--sp-3); }
+
+/* ── 统一线性图标（方案 A）────────────────────────────────────────────
+   ★ 存在的理由：emoji 的字形由系统字体决定，同一枚 ✍️ 在 Windows / macOS /
+   安卓上笔画粗细、颜色、尺寸都不一样，暗色主题下发虚。SVG 是路径，跨平台逐像素一致。
+
+   规格：24×24 网格 / 1.8px 描边 / round 端点与转角 / 无填充 / 单色。
+   实现：CSS mask 取 SVG 的 alpha，background-color: currentColor 上色 ——
+         所以图标自动继承按钮文字色，四套主题 + 暗色零特例，也不需要两套文件。
+   ★ mask 路径写成相对 CSS 的相对路径：网关部署 BASE_PATH=/app/xxx 时浏览器
+     会按 /app/xxx/icons/ui/xxx.svg 请求，不需要 JS 拼 assetUrl()，也不会 404。
+   ★ 尺寸钉死 px 而非 em：图标跟着字号缩放正是「同一图标在不同页面大小不一」的成因。
+   ★ 这里不定义 --ico 之类的局部变量：令牌只住 tokens.css（_token-lint 第 3 条）。 */
+.ico {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  vertical-align: -3px;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+.ico-todo-new { -webkit-mask-image: url('icons/ui/todo-new.svg'); mask-image: url('icons/ui/todo-new.svg'); }
+.ico-post-new { -webkit-mask-image: url('icons/ui/post-new.svg'); mask-image: url('icons/ui/post-new.svg'); }
+.ico-rec-new  { -webkit-mask-image: url('icons/ui/rec-new.svg');  mask-image: url('icons/ui/rec-new.svg'); }
+
+/* 待办角标 8 种：颜色继承 .tcg-* 的语义色（danger/warn/accent…），暗色零特例。
+   ★ 角标只有 18px，图标压到 12px 且去掉水平 padding，否则会把标题挤窄。 */
+.ico-tcg-urge   { -webkit-mask-image: url('icons/ui/tcg-urge.svg');   mask-image: url('icons/ui/tcg-urge.svg'); }
+.ico-tcg-repeat { -webkit-mask-image: url('icons/ui/tcg-repeat.svg'); mask-image: url('icons/ui/tcg-repeat.svg'); }
+.ico-tcg-adv    { -webkit-mask-image: url('icons/ui/tcg-adv.svg');    mask-image: url('icons/ui/tcg-adv.svg'); }
+.ico-tcg-rec    { -webkit-mask-image: url('icons/ui/tcg-rec.svg');    mask-image: url('icons/ui/tcg-rec.svg'); }
+.ico-tcg-high   { -webkit-mask-image: url('icons/ui/tcg-high.svg');   mask-image: url('icons/ui/tcg-high.svg'); }
+.ico-tcg-low    { -webkit-mask-image: url('icons/ui/tcg-low.svg');    mask-image: url('icons/ui/tcg-low.svg'); }
+.ico-tcg-priv   { -webkit-mask-image: url('icons/ui/tcg-priv.svg');   mask-image: url('icons/ui/tcg-priv.svg'); }
+.ico-tcg-ended  { -webkit-mask-image: url('icons/ui/tcg-ended.svg');  mask-image: url('icons/ui/tcg-ended.svg'); }
+/* ★ 写双类提高优先级：.tcg 原规则在本文件后面，只写 .tcg-ico 会被它覆盖回 4px */
+.tcg.tcg-ico { padding: 0 2px; }
+.tcg.tcg-ico .ico { width: 12px; height: 12px; vertical-align: 0; }
+
+/* 搜索 / 设置 */
+.ico-search   { -webkit-mask-image: url('icons/ui/search.svg');   mask-image: url('icons/ui/search.svg'); }
+.ico-settings { -webkit-mask-image: url('icons/ui/settings.svg'); mask-image: url('icons/ui/settings.svg'); }
+
+/* 记账三视图与空状态 */
+.ico-bill-chat  { -webkit-mask-image: url('icons/ui/bill-chat.svg');  mask-image: url('icons/ui/bill-chat.svg'); }
+.ico-bill-list  { -webkit-mask-image: url('icons/ui/bill-list.svg');  mask-image: url('icons/ui/bill-list.svg'); }
+.ico-bill-stats { -webkit-mask-image: url('icons/ui/bill-stats.svg'); mask-image: url('icons/ui/bill-stats.svg'); }
+.ico-receipt    { -webkit-mask-image: url('icons/ui/receipt.svg');    mask-image: url('icons/ui/receipt.svg'); }
+.ico-trend-up   { -webkit-mask-image: url('icons/ui/trend-up.svg');   mask-image: url('icons/ui/trend-up.svg'); }
+.ico-trend-down { -webkit-mask-image: url('icons/ui/trend-down.svg'); mask-image: url('icons/ui/trend-down.svg'); }
+.ico-wallet     { -webkit-mask-image: url('icons/ui/wallet.svg');     mask-image: url('icons/ui/wallet.svg'); }
+
+/* AI 截图识别：常态相机，识别中换扫描框 + 呼吸动画（⏳ 原本就是功能反馈，不能换成静态图就完事） */
+.ico-camera   { -webkit-mask-image: url('icons/ui/camera.svg');   mask-image: url('icons/ui/camera.svg'); }
+.ico-ocr-scan { -webkit-mask-image: url('icons/ui/ocr-scan.svg'); mask-image: url('icons/ui/ocr-scan.svg'); }
+/* 可见范围设置：全家 / 指定成员两档按钮与私密徽章共用这一组图形。
+   锁形与 12px 角标 tcg-priv 同源 —— 同一语义全站只认一个形状。
+   badge 里缩到 12px（三分类选择器，优先级高于 .ico，不会被覆盖）。 */
+.ico-vis-family  { -webkit-mask-image: url('icons/ui/vis-family.svg');  mask-image: url('icons/ui/vis-family.svg'); }
+.ico-vis-private { -webkit-mask-image: url('icons/ui/vis-private.svg'); mask-image: url('icons/ui/vis-private.svg'); }
+.badge.priv .ico-vis-private { width: 12px; height: 12px; vertical-align: -2px; }
+/* 第五批：我的页分区 / 个人资料 / 记录本上锁。锁与家庭图标复用已定的 vis-private / vis-family。 */
+.ico-user     { -webkit-mask-image: url('icons/ui/user.svg');     mask-image: url('icons/ui/user.svg'); }
+.ico-bell     { -webkit-mask-image: url('icons/ui/bell.svg');     mask-image: url('icons/ui/bell.svg'); }
+.ico-mail     { -webkit-mask-image: url('icons/ui/mail.svg');     mask-image: url('icons/ui/mail.svg'); }
+.ico-tag      { -webkit-mask-image: url('icons/ui/tag.svg');      mask-image: url('icons/ui/tag.svg'); }
+.ico-database { -webkit-mask-image: url('icons/ui/database.svg'); mask-image: url('icons/ui/database.svg'); }
+.ico-info     { -webkit-mask-image: url('icons/ui/info.svg');     mask-image: url('icons/ui/info.svg'); }
+.ico-image    { -webkit-mask-image: url('icons/ui/image.svg');    mask-image: url('icons/ui/image.svg'); }
+.ico-at       { -webkit-mask-image: url('icons/ui/at.svg');       mask-image: url('icons/ui/at.svg'); }
+.ico-key      { -webkit-mask-image: url('icons/ui/key.svg');      mask-image: url('icons/ui/key.svg'); }
+.ico-palette  { -webkit-mask-image: url('icons/ui/palette.svg');  mask-image: url('icons/ui/palette.svg'); }
+/* 容器内的实际尺寸：34px 资料格放 18px、锁屏放 44px、账目锁标放 12px */
+.pi-ico .ico { width: 18px; height: 18px; }
+.lock-card .lock-icon .ico { width: 44px; height: 44px; vertical-align: 0; }
+.br-lock .ico { width: 12px; height: 12px; vertical-align: -2px; }
+.ico-scanning { animation: ico-scan 1.1s ease-in-out infinite; }
+@keyframes ico-scan { 0%, 100% { opacity: .42; } 50% { opacity: 1; } }
+
+/* 尺寸变体：空状态 26px / 分区标题 20px，仍然钉死 px 不用 em */
+.empty .em .ico { width: 26px; height: 26px; }
+.sec-ico .ico { width: 20px; height: 20px; vertical-align: -4px; }
+/* ★ 双类：.sec-ico 的 grayscale(1) 写在后面，单类覆盖不了 */
+.sec-ico.sec-ico-svg { filter: none; opacity: .78; }
+
 button:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
 button:disabled:hover { background: var(--surface); }
 
@@ -1639,6 +1729,17 @@ select.inp-compact { padding-right: 26px; }
   cursor: default;
 }
 .tick-static:hover { border-color: var(--accent); }
+/* v4.28.15：按结束条件收口的重复事项 —— 勾是实心的（确实是「已完成」），
+   但不是可点按钮：明天不会再回来，也没什么可取消的。 */
+.tick-closed {
+  border-style: solid;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--ink-inverse);
+  font-size: var(--fs-xs);
+  cursor: default;
+}
+.tick-closed:hover { border-color: var(--accent); }
 
 .t-body {
   flex: 1;
@@ -1681,6 +1782,21 @@ select.inp-compact { padding-right: 26px; }
   background: var(--surface-2);
   color: var(--text-2);
   border: 1px solid var(--line);
+  /* ★ v4.28.15：角标现在是 <button>（手机上点它才能展开含义）。
+     按钮自带字体族与外观，不重置的话 +N 那格会用系统 UI 字体、字重也不一样；
+     appearance 不关掉时 iOS 会给它加一层圆角高光。 */
+  font-family: inherit;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+  /* 手指点 18px 的小方块容易点偏：纵向把命中区撑到 28px（视觉尺寸不变，
+     横向不撑 —— 角标彼此只隔 3px，横着撑会和邻居的命中区打架） */
+  position: relative;
+}
+.tcg::after {
+  content: '';
+  position: absolute;
+  inset: -5px 0;
 }
 .tcg-more { font-size: var(--fs-2xs); color: var(--muted); }
 /* v4.28.13 需求 1：角标的「显示几个」改成断点行为，不再由 JS 切片决定。
@@ -3401,6 +3517,33 @@ body.is-img-drag .thumb { touch-action: none; }
 }
 .part-add { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); }
 .part-add input { flex: 1; min-width: 0; height: var(--h-md); padding: 0 11px; }
+
+/* ── v4.28.15 需求 2：右上角角标的说明卡 ──────────────────────────────
+   手机上点任意角标弹出它（.modal-layer 在手机上本来就是底部升起），
+   把这条待办的**全部**角标与含义一次列清楚 —— title 悬浮提示在触屏上不存在。
+   一行 = 「图标 + 名字 + 一句说明」，图标用与列表完全相同的 .tcg / .ico，
+   用户能把它和刚才点的那一排对上号。 */
+.corner-legend { display: flex; flex-direction: column; gap: 10px; }
+.cl-cap { font-size: var(--fs-s); color: var(--text-2); }
+.cl-cap b { color: var(--text); font-weight: 700; }
+.cl-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-m);
+  background: var(--surface-2);
+}
+.cl-row .tcg { flex: 0 0 auto; min-width: 26px; height: 26px; cursor: default; }
+/* 说明卡里的图标比列表里大一号（这里没有 12px 的拥挤问题，认得出更重要）。
+   四类选择器胜过 .tcg.tcg-ico .ico（三个类）。 */
+.cl-row .tcg.tcg-ico .ico { width: 15px; height: 15px; }
+/* 说明卡里的角标不可点，去掉为「手指点击」准备的加宽命中区 */
+.cl-row .tcg::after { content: none; }
+.cl-body { min-width: 0; }
+.cl-name { font-size: var(--fs-m); font-weight: 600; line-height: 1.3; }
+.cl-desc { font-size: var(--fs-s); color: var(--text-2); line-height: 1.45; margin-top: 2px; }
 
 /* ── 4.2 提示条（toast）：一条胶囊，成功/失败换底色 ─────────────────── */
 .toast-root {

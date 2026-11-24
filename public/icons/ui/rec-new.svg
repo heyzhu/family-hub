@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <!-- 新建记录：折角文档 + 两条正文线。折角是这一族的唯一识别点，不带加号 -->
+  <path d="M6 3.6h7.4l4.6 4.6v11.6a1.1 1.1 0 0 1-1.1 1.1H6a1.1 1.1 0 0 1-1.1-1.1V4.7A1.1 1.1 0 0 1 6 3.6Z"/>
+  <path d="M13.4 3.7v4.5H18"/>
+  <path d="M8.6 12.4h6.5M8.6 15.9h4.6"/>
+</svg>

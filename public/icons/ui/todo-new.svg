@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <!-- 新建待办：圆角复选框 + 勾。stroke 用纯黑只为 CSS mask 取 alpha，颜色由 currentColor 注入 -->
+  <rect x="3.6" y="3.6" width="16.8" height="16.8" rx="4.2"/>
+  <path d="M8 12.1l2.7 2.7L16.2 9.3"/>
+</svg>

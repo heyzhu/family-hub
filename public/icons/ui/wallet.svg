@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <!-- 钱包：预算空状态；stroke 纯黑仅供 CSS mask 取 alpha，实际颜色由 currentColor 注入 -->
+<rect x="3.5" y="6" width="17" height="13" rx="2.6"/><path d="M3.5 9.6h17"/><path d="M16 14h2.4"/>
+</svg>

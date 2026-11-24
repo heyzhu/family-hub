@@ -361,6 +361,9 @@ const shapeTodo = (r, me, ctx) => {
     /* v4.28.8：系列是否已收口（按时间 / 按次数 / 手动结束）。
        前端据此把「下次提醒」换成「已结束」，日历也不再画它的落点。 */
     repeatEnded: false,
+    /* v4.28.15：按结束条件收口（设了按时间 / 按次数，且已满足）——
+       这一类要移出「周期提醒」卡、进「已完成」列表。详见下方赋值处的注释。 */
+    repeatClosed: false,
     /* v4.28.7：一次性事项「已过期」= 过了提醒时刻仍未完成。
        ★ 重复事项恒为 false —— 它们每天重置，标「已过期」只会每天闪一次。 */
     expired: false,
@@ -409,6 +412,15 @@ const shapeTodo = (r, me, ctx) => {
      ★ 与 reminders.repeatEnded() 同一实现 —— 列表显示、日历落点、发信调度
        必须都认这一个判断，否则会出现「列表说已结束、后台还在发」。 */
   out.repeatEnded = !!ruleName && reminders.repeatEnded(r, ctx ? ctx.todayKey : '');
+  /* v4.28.15：这条重复系列是否**按结束条件**收口了（= 设置了「按时间 / 按次数」且已经满足）。
+     ★ 与 repeatEnded 的区别只在「有没有结束条件」：
+       · repeatEnded   —— 只要不再发（含手动「结束重复」）就是 true；
+       · repeatClosed  —— 只有「设了结束条件、并且系统已经按条件把该推的都推完了」才是 true。
+     前端据此把这一类从「周期提醒」卡里移出去、放进「已完成」列表 ——
+     用户的原话是「结束条件满足了就该算完成，而不是永远挂在重复列表里」。
+     ★ 手动结束（repeat_end_mode='never' + repeat_ended_at）**不算** closed：
+       它没有结束条件可满足，留在周期提醒卡里带 ✅ 徽标，用户还能回进去改条件或恢复。 */
+  out.repeatClosed = out.repeatEnded && out.repeatEndMode !== 'never';
   /* v4.28.7：过期判定 —— 只针对一次性事项。
      截止点 = (end_date || todo_date) + (end_time || start_time || 默认提醒时间)。
      用服务端算而不是前端算：时区口径必须跟发信一致，否则「已过期」和「还会提醒」会打架。 */

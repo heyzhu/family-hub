@@ -606,7 +606,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        点了清除、词没了按钮该消失，重绘同样被跳过 → 按钮赖着不走。
        常驻 + 就地切 hidden 之后，显隐只由 syncSearchBar() 一处决定。 */
     return `<div class="search-bar${o.grow === false ? '' : ' grow'}${on ? ' filled' : ''}">
-        <span class="sb-ico" aria-hidden="true">🔍</span>
+        <span class="sb-ico" aria-hidden="true"><span class="ico ico-search" aria-hidden="true"></span></span>
         <input class="sb-input" type="search" placeholder="${esc(o.placeholder)}"
                data-preserve="${esc(o.preserve)}" value="${esc(v)}" data-act="${esc(o.act)}"${o.id ? ` id="${esc(o.id)}"` : ''}>
         <button type="button" class="sb-clear" data-act="${esc(o.clearAct)}"${on ? '' : ' hidden'}
@@ -945,9 +945,13 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     if (Number.isNaN(t.getTime())) return '草稿已保存';
     return `草稿已保存 · ${pad(t.getHours())}:${pad(t.getMinutes())}`;
   }
-  const DRAFT_HINT_SEL = { rec: '#rec-draft-hint', post: '#post-draft-hint', todo: '#todo-draft-hint' };
+  /* v4.28.15：加了第四种 'pe'（post edit）—— 编辑动态与「新建动态」是两张不同的表单，
+     共用 'post' 这个 key 的话，编辑页会顶着一条「新建草稿已保存」的时间，纯属误导。 */
+  const DRAFT_HINT_SEL = {
+    rec: '#rec-draft-hint', post: '#post-draft-hint', todo: '#todo-draft-hint', pe: '#post-edit-draft-hint',
+  };
   function paintDraftHint(kind) {
-    const k = kind === 'rec' ? 'rec' : (kind === 'todo' ? 'todo' : 'post');
+    const k = draftKeyOf(kind);
     const selector = DRAFT_HINT_SEL[k];
     const text = draftHintText(k);
     const pending = !!(((state.draftState || {})[k]) || {}).pending;
@@ -958,7 +962,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     });
   }
   /** 输入中：先把「正在保存」点亮，落盘后再变成具体时间 */
-  const draftKeyOf = (kind) => (kind === 'rec' ? 'rec' : (kind === 'todo' ? 'todo' : 'post'));
+  const draftKeyOf = (kind) => (kind === 'rec' || kind === 'todo' || kind === 'pe' ? kind : 'post');
   function markDraftPending(kind) {
     const k = draftKeyOf(kind);
     const cur = state.draftState || {};
@@ -1244,7 +1248,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             ${!lunar || !lunar.festival ? (term ? `<span class="tag-fest">${esc(term)}</span>` : '') : ''}
             ${isToday ? '<span class="badge date">今天</span>' : ''}
           </div>
-          <button type="button" class="btn-primary btn-sm" data-act="todo-new" data-date="${key}">✍️ 待办</button>
+          <button type="button" class="btn-primary btn-sm" data-act="todo-new" data-date="${key}"><span class="ico ico-todo-new" aria-hidden="true"></span>待办</button>
         </div>
         ${list.length
           ? list.map((t) => todoHtml(t, { showDate: false, dayKey: key })).join('')
@@ -1254,8 +1258,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   /* v4.21.0 需求 2：完成状态统一口径 ——
      一次性待办看 todos.done；重复事项看「今天这次」（doneToday，服务端按落点日算）。
-     只写一处，列表筛选、计数、排序、日历圆点都引用它，避免同一个概念四种写法。 */
+     v4.28.15：按结束条件收口的重复事项（repeatClosed）一律算完成 ——
+     这是「结束条件满足了就进已完成列表」的唯一判据，列表筛选、计数、排序都引用它。 */
   function todoDoneOf(t) {
+    if (t.repeatClosed) return true;
     return Repeat.rule(t) ? !!t.doneToday : !!t.done;
   }
 
@@ -1268,6 +1274,97 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       if (da !== db2) return da ? 1 : -1;
       if (da) return dk(b).localeCompare(dk(a)) || b.id - a.id;
       return dk(a).localeCompare(dk(b)) || (a.startTime || '99:99').localeCompare(b.startTime || '99:99') || a.id - b.id;
+    });
+  }
+
+  /* ── v4.28.15 需求 2：这条待办右上角有哪些角标 ────────────────────────
+     返回 [{ key, label, desc }]：
+       key   → 同时是 CSS 类名 .tcg-<key> 与图标文件 icons/ui/tcg-<key>.svg
+       label → 角标的一句话名字（说明卡里的小标题）
+       desc  → 具体含义（悬浮 title / 说明卡里的说明）
+
+     历史（v4.28.11 需求 4）：角标 = 这条待办的「属性一览」——
+       ① 纯标签型的信息（重要 / 稍后 / 仅自己）从 meta 行搬上来，
+          不再和日期、参与人挤在一行；
+       ② 角标是索引不是清单：具体数值（每几分钟催、提前几天、下次哪天）
+          仍留在 meta 行；
+       ③ 手机上最多显示 3 个，多出来的折成 +N；PC（≥1024px）全部铺开。
+          ★ 渲染层一律输出全部，谁显示谁隐藏交给 CSS 断点 ——
+            用 JS 按窗口宽度切片会在缩放 / 转屏后失效（还要监听 resize）。
+
+     ★ 唯一实现：todoHtml() 画角标、openCornerSheet() 展开说明都调它。
+       分成两处各写一套，迟早出现「说明卡里说 6 个、列表里只有 5 个」。 */
+  function todoCorners(t) {
+    const list = [];
+    if (t.urgeMinutes > 0) {
+      list.push({ key: 'urge', label: '催促完成', desc: `到点后每 ${t.urgeMinutes} 分钟催一次，直到你勾掉它` });
+    }
+    if (t.repeatRule || t.repeat) {
+      list.push({
+        key: 'repeat',
+        label: '重复事项',
+        desc: `按「${repeatRuleLabel(t) || Repeat.RULE_LABEL[t.repeatRule || t.repeat] || '重复'}」自动排下一次`,
+      });
+    }
+    if (Number(t.advanceDays) > 0 || String(t.advanceText || '').trim()) {
+      list.push({ key: 'adv', label: '提前提醒', desc: t.advanceText || `提前 ${t.advanceDays} 天提醒` });
+    }
+    if (Number(t.recordId) > 0) {
+      list.push({ key: 'rec', label: '记录本来源', desc: '从「记录本」里带进来的事项' });
+    }
+    /* ★ 挑图标的标准是「18px 里认得出形状」：❗ 在 Windows 上是细红杠 → 用旗；
+       💤 在 18px 会糊成色块 → 用月亮。线描 SVG 不再受各系统字体字形影响。 */
+    if (t.priority === 'high') list.push({ key: 'high', label: '重要', desc: '标成了重要事项，列表里排在最前' });
+    if (t.priority === 'low') list.push({ key: 'low', label: '稍后再说', desc: '标成了「稍后」，不催也不排在前面' });
+    if (t.visibility === 'private') list.push({ key: 'priv', label: '可见范围', desc: visBadgeText(t) });
+    if (t.repeatEnded) {
+      list.push({
+        key: 'ended',
+        label: '已结束',
+        desc: t.repeatClosed
+          ? '结束条件已满足，该推的提醒都推完了，不会再响'
+          : '这串重复已经结束，不会再提醒',
+      });
+    }
+    return list;
+  }
+
+  /**
+   * v4.28.15 需求 2：点任意角标 → 一次把这条待办的**全部**角标与含义列出来。
+   *
+   * ★ 为什么不是「只解释被点的那个」：
+   *   手机上没有 hover，title 永远不会显示；而用户点 ⏰ 的时候，多数是想知道
+   *   「这一排图标到底都在说什么」。只解释一个，等于让他一个个点过去。
+   * ★ 关闭交互按移动端设计（这是需求里明确要求的一半）：
+   *   ① 底部升起 —— .modal-layer 在手机上本来就是 align-items:flex-end；
+   *   ② 点遮罩关闭用 click 而不是 mousedown：触摸合成的 click 各浏览器都派发，
+   *      mousedown 在部分移动浏览器里不派发（那样「点外面没反应」）；
+   *   ③ 头部 ✕ 与底部「知道了」两个大按钮，都在拇指可达的位置；
+   *   ④ Esc 也能关（桌面 / 键盘用户）—— 见 keydown 委托里的处理。
+   */
+  function openCornerSheet(t) {
+    const list = todoCorners(t);
+    if (!list.length) return;
+    openModal({
+      title: '右上角小图标说明',
+      body: `
+        <div class="corner-legend" data-corner-for="${Number(t.id) || 0}">
+          <div class="cl-cap">这条待办右上角一共有 <b>${list.length}</b> 个小图标，含义如下：</div>
+          ${list.map((c) => `
+            <div class="cl-row" data-corner="${esc(c.key)}">
+              <span class="tcg tcg-${c.key} tcg-ico"><span class="ico ico-tcg-${c.key}" aria-hidden="true"></span></span>
+              <div class="cl-body">
+                <div class="cl-name">${esc(c.label)}</div>
+                <div class="cl-desc">${esc(c.desc)}</div>
+              </div>
+            </div>`).join('')}
+        </div>`,
+      foot: `${Number(t.id) ? `<button type="button" class="btn-ghost" data-act="todo-corner-edit" data-id="${Number(t.id)}">编辑这条待办</button><div class="spacer"></div>` : ''}
+        <button type="button" class="btn-primary" data-act="modal-close">知道了</button>`,
+      onMount: (layer) => {
+        /* 点遮罩（= 弹窗外的暗色区域）关闭。移动端友好，且不必依赖 mousedown。 */
+        layer.addEventListener('click', (ev) => { if (ev.target === layer) closeModal(); });
+      },
     });
   }
 
@@ -1284,9 +1381,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const tickDay = String(o.dayKey || (useRowKey ? t.rowOccDate : todayKey())).slice(0, 10);
     const repeatTickable = isRepeat && Repeat.isOccurrence(t, tickDay)
       && (useRowKey || tickDay <= todayKey());
-    const doneNow = isRepeat
+    const doneNow = t.repeatClosed ? true : (isRepeat
       ? (useRowKey ? !!t.doneToday : (tickDay === todayKey() && !!t.doneToday))
-      : !!t.done;
+      : !!t.done);
     const noTick = o.noTick != null ? o.noTick : (isRepeat && !repeatTickable);
     const meta = [];
     /* v4.28.7：一次性事项过了提醒时刻还没勾 → 标「已过期」。
@@ -1317,10 +1414,16 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
            ① 🔁 规则（每天 / 每周公历 星期三 / 每年公历 5月20日…）
            ② 🕐 提醒时间（本条单独设的，或跟随「待办提醒」默认时间）
            ③ ⏰ 下次提醒的具体日期与时刻（上面那条） */
+    /* v4.28.7：结束重复只在重复事项上有意义 */
       const ruleName = t.repeatRule || Repeat.rule(t);
       const ruleText = repeatRuleLabel(t) || Repeat.RULE_LABEL[ruleName] || '重复';
       meta.push(`<span class="badge repeat" title="重复规则：${esc(ruleText)}，到点自动提醒">🔁 ${esc(ruleText)}</span>`);
-      if (t.remind) {
+      /* v4.28.15：系列已经收口（不再有下一次）时，别再写「提醒时间 08:00」——
+         那条信息在一条永远不会再响的事项上只会误导人。角标 ✅ 已给出结论，
+         这里补一句「已结束」，让它在「已完成」列表里读起来是一条完成的记录。 */
+      if (t.repeatEnded) {
+        meta.push('<span class="rep-time off">🔕 已结束，不会再提醒</span>');
+      } else if (t.remind) {
         const rt = t.remindTime || t.nextRemindTime || '';
         if (rt) {
           meta.push(`<span class="rep-time" title="${esc(t.remindTimeIsDefault
@@ -1356,51 +1459,37 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        它们和日期、参与人挤在同一行时，一屏五条待办全是小色块，反而看不出重点。
        角标是不占布局的，挪上去腾出这一行只放「什么时候、谁」。 */
 
-    /* ── v4.28.11 需求 4：右上角角标 = 这条待办的「属性一览」 ──────────────
-       用户的原话是「用右上角角标区分催促、重复、提前、记录本、重要、仅自己等类型」。
-       所以：① 纯标签型的信息（重要 / 稍后 / 仅自己）从下面那行 meta 里搬上来，
-                不再和日期、参与人挤在一行；
-             ② 角标只放图标 + title，具体数值（每几分钟催、提前几天、下次哪天）
-                仍留在 meta —— 角标是索引，不是清单；
-             ③ 手机上最多显示 3 个，多出来的折成 +N（悬浮能看到全部），
-                否则六个角标会把标题挤成一条缝；
-             ④ v4.28.13：PC 端（≥1024px）角标全部铺开、不再折 +N ——
-                桌面一行有 800px 宽，5 个角标只占 105px，没必要藏。
-                ★ 这里**一律渲染全部**，谁显示谁隐藏交给 CSS 的断点决定：
-                  用 JS 按窗口宽度切片会在缩放/转屏后失效（还要监听 resize），
-                  而且 .tcg-extra / .tcg-more 的显隐本来就是纯样式问题。 */
-    const corners = [];
-    if (t.urgeMinutes > 0) corners.push(['urge', '⏰', `到点后每 ${t.urgeMinutes} 分钟催一次`]);
-    if (t.repeatRule || t.repeat) {
-      corners.push(['repeat', '🔁',
-        `重复：${repeatRuleLabel(t) || Repeat.RULE_LABEL[t.repeatRule || t.repeat] || '重复'}`]);
-    }
-    if (Number(t.advanceDays) > 0 || String(t.advanceText || '').trim()) {
-      corners.push(['adv', '⏳', `提前提醒：${t.advanceText || `提前 ${t.advanceDays} 天`}`]);
-    }
-    if (Number(t.recordId) > 0) corners.push(['rec', '📖', '从记录本带进来的事项']);
-    /* ★ v4.28.11：这里挑图标的标准是「在 18px 的小方块里也认得出来」。
-       ❗（U+2757）在 Windows 上会渲染成一根细红杠（字形本身就是竖条），
-       放进角标像一根红棍子，所以「重要」改用 🚩 —— 同样是红，但形状清楚。 */
-    if (t.priority === 'high') corners.push(['high', '🚩', '重要']);
-    /* 💤 在 18px 里会糊成一块深蓝，「稍后再说」改用 😴（同义，形状清楚） */
-    if (t.priority === 'low') corners.push(['low', '😴', '稍后再说']);
-    if (t.visibility === 'private') corners.push(['priv', '🔒', visBadgeText(t)]);
-    if (t.repeatEnded) corners.push(['ended', '✅', '这串重复已经结束，不会再提醒']);
+    /* ★ v4.28.15 需求 2：角标的「是什么 / 为什么」统一由 todoCorners() 产出 ——
+       列表渲染与「点角标看全部含义」的说明卡共用同一份数据，
+       否则两边各写一套，迟早出现「卡里说 6 个、列表只有 5 个」。 */
+    const corners = todoCorners(t);
     /* 手机：前 3 个常显、其余折叠；PC：全部常显（靠 .tcg-extra 的断点显隐）。
-       +N 只在「确实被折起来」时渲染，PC 上由 CSS 隐藏。 */
+       +N 只在「确实被折起来」时渲染，PC 上由 CSS 隐藏。
+       ★ v4.28.15 需求 2：每个角标都是 <button data-act="todo-corner">——
+         手机上「悬浮看 title」根本不存在，点击才是唯一能展开含义的动作。
+         桌面点它也会打开同一张说明（比原来「点角标 = 打开编辑」更符合预期：
+         看到图标想问「这是什么」的人，要的不是编辑表单）。标题 / 备注 / 空白区仍是「打开编辑」。 */
     const cornerShown = corners.slice(0, 3);
     const cornerMore = corners.slice(3);
     const cornerHtml = corners.length ? `<div class="todo-corner">${
-      corners.map(([k, ico, tip], i) => `<span class="tcg tcg-${k}${i >= 3 ? ' tcg-extra' : ''}" title="${esc(tip)}">${ico}</span>`).join('')
-    }${cornerMore.length ? `<span class="tcg tcg-more" title="${esc(cornerMore.map((c) => c[2]).join('；'))}">+${cornerMore.length}</span>` : ''}</div>` : '';
+      corners.map((c, i) => `<button type="button" class="tcg tcg-${c.key} tcg-ico${i >= 3 ? ' tcg-extra' : ''}"
+        data-act="todo-corner" data-id="${t.id}"
+        title="${esc(c.label)}：${esc(c.desc)}" aria-label="${esc(c.label)}：${esc(c.desc)}"
+        ><span class="ico ico-tcg-${c.key}" aria-hidden="true"></span></button>`).join('')
+    }${cornerMore.length ? `<button type="button" class="tcg tcg-more" data-act="todo-corner" data-id="${t.id}"
+        title="还有 ${cornerMore.length} 个角标：${esc(cornerMore.map((c) => c.label).join('、'))}"
+        aria-label="还有 ${cornerMore.length} 个角标">+${cornerMore.length}</button>` : ''}</div>` : '';
 
-    const tick = noTick
-      ? '<span class="tick tick-static" title="重复事项：只有它到点的那一天才能勾选完成">🔁</span>'
-      : (isRepeat
-        ? `<button type="button" class="tick" data-act="todo-day-toggle" data-id="${t.id}" data-date="${esc(tickDay)}"
-                   title="${doneNow ? '取消今天的完成' : '标记今天完成：今天不再提醒（明天/下个周期照常）'}">✓</button>`
-        : `<button type="button" class="tick" data-act="todo-toggle" data-id="${t.id}" title="标记完成">✓</button>`);
+    /* v4.28.15：按结束条件收口的给一个「静态已完成」勾 ——
+       它不再是可勾的落点（明天不会回来），也不该继续显示 🔁（那是「还要重复」的意思）。 */
+    const tick = t.repeatClosed
+      ? '<span class="tick tick-static tick-closed" title="这串重复已按结束条件完成，不会再提醒">✓</span>'
+      : noTick
+        ? '<span class="tick tick-static" title="重复事项：只有它到点的那一天才能勾选完成">🔁</span>'
+        : (isRepeat
+          ? `<button type="button" class="tick" data-act="todo-day-toggle" data-id="${t.id}" data-date="${esc(tickDay)}"
+                     title="${doneNow ? '取消今天的完成' : '标记今天完成：今天不再提醒（明天/下个周期照常）'}">✓</button>`
+          : `<button type="button" class="tick" data-act="todo-toggle" data-id="${t.id}" title="标记完成">✓</button>`);
 
     /* 三行固定结构（标题 / 元信息 / 备注）：备注为空也占位，这样每条待办高度完全一致，
        默认 5 条能稳稳落在一屏内。超出部分由 CSS 单行省略。 */
@@ -1434,7 +1523,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
    */
   function mainTodos() {
     const todayRepeats = state.todos.filter((t) => Repeat.rule(t) && t.rowOccDate && !t.doneToday);
-    return onceTodos().concat(todayRepeats);
+    /* v4.28.15 需求 1：按结束条件收口的重复事项**进主列表**（= 进「已完成」筛选）。
+       它已经不在「周期提醒」卡里了（见 repeatTodos / repeatListHtml），
+       若不在这里接住，这条事项会从界面上彻底消失 —— 用户既看不到它曾经提醒过，
+       也没法回进去改结束条件或恢复。
+       ★ 它不会是 todayRepeats 的一员：系列收口后 Repeat.isOccurrence 一律 false，
+         rowOccDate 恒为空，两者不可能重复。 */
+    const closedRepeats = state.todos.filter((t) => t.repeatClosed && !t.quick);
+    return onceTodos().concat(todayRepeats, closedRepeats);
   }
 
   /** 重复事项：单独列出，不参与完成筛选（它们本来就没有完成状态） */
@@ -1445,6 +1541,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         if (!Repeat.rule(t)) return false;
         /* v4.22.0 需求 2：一句话添加的待办只在「待办列表」里，不进周期提醒卡 */
         if (t.quick) return false;
+        /* v4.28.15 需求 1：按结束条件收口的已经算「完成」，从这张卡里退出（去主列表） */
+        if (t.repeatClosed) return false;
         if (!q) return true;
         const hay = [t.title, t.note, t.date, t.participants.join(' ')].join(' ').toLowerCase();
         return hay.includes(q);
@@ -1478,7 +1576,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <button type="button" data-view="list" class="${state.todoView !== 'calendar' ? 'on' : ''}">待办列表</button>
             <button type="button" data-view="calendar" class="${state.todoView === 'calendar' ? 'on' : ''}">日历查看</button>
           </div>
-          <button type="button" class="btn-primary btn-sm" data-act="todo-new">✍️ 待办</button>
+          <button type="button" class="btn-primary btn-sm" data-act="todo-new"><span class="ico ico-todo-new" aria-hidden="true"></span>待办</button>
         </div>
       </div>`;
   }
@@ -1507,7 +1605,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           </div>
           <span class="todo-count-mini" title="全部 ${all.length} 条，其中 ${undone} 条还没完成">未完成 ${undone} / 共 ${all.length}</span>
           <button type="button" class="btn-icon todo-search-toggle${searchOpen ? ' on' : ''}"
-                  data-act="todo-search-toggle" title="搜索待办" aria-label="搜索待办">🔍</button>
+                  data-act="todo-search-toggle" title="搜索待办" aria-label="搜索待办"><span class="ico ico-search" aria-hidden="true"></span></button>
         </div>
         ${searchOpen ? `<div class="todo-search-row">${searchBarHtml({
           act: 'todo-search', clearAct: 'todo-q-clear', preserve: 'todo-q',
@@ -1536,9 +1634,12 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   function repeatListHtml() {
     /* v4.10.0：周期判定改走 repeat.js 的统一读取（repeat_rule 优先、repeat 回落），
        「每天」这种只存在于 repeat_rule 的规则也能进周期区块。
-       v4.28.8：**已结束的也留在这里**，但带「已结束」徽标 ——
-       它是用户找回一条停掉的重复提醒的唯一入口（主列表按落点走，结束后就没有它了）。 */
-    const all = state.todos.filter((t) => !!Repeat.rule(t) && !t.quick);
+       v4.28.8：**手动结束的也留在这里**，但带「已结束」徽标 ——
+       它是用户找回一条停掉的重复提醒的唯一入口（主列表按落点走，结束后就没有它了）。
+       v4.28.15：**按结束条件收口的不留在这里**（repeatClosed）——
+       条件满足了就该算完成，已经移到主列表的「已完成」里；这里的计数也不能再算它，
+       否则卡片会一直写着「周期提醒 3 条」，点开却只剩 2 条。 */
+    const all = state.todos.filter((t) => !!Repeat.rule(t) && !t.quick && !t.repeatClosed);
     if (!all.length) return '';
     const open = state.repeatOpen;
     const list = repeatTodos();
@@ -1547,7 +1648,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const body = open
       ? (list.length
         ? list.map((t) => todoHtml(t, { noTick: true })).join('')
-        : '<div class="empty" style="padding:14px"><span class="em">🔍</span>没有匹配的周期提醒事项</div>')
+        : '<div class="empty" style="padding:14px"><span class="em"><span class="ico ico-search" aria-hidden="true"></span></span>没有匹配的周期提醒事项</div>')
       : '';
     return `
       <div class="card card-pad repeat-list-card list-only${open ? ' open' : ''}">
@@ -1727,7 +1828,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         `<button type="button" class="chip${state.postTag === t ? ' on' : ''}" data-act="post-tag" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')
       + `</div>`
       + `<button type="button" class="btn-icon post-search-toggle${postSearchOpen ? ' on' : ''}"
-              data-act="post-search-toggle" title="搜索动态" aria-label="搜索动态">🔍</button>`
+              data-act="post-search-toggle" title="搜索动态" aria-label="搜索动态"><span class="ico ico-search" aria-hidden="true"></span></button>`
       + `</div>`;
     const q = state.postQuery.trim().toLowerCase();
     const all = state.posts;
@@ -1764,7 +1865,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           <div class="post-head">
             ${avatarHtml(p.ownerName)}
             <div class="post-who">
-              <b>${esc(p.ownerName)}</b>${p.visibility === 'private' ? ` <span class="badge priv">${visBadgeText(p)}</span>` : ''}
+              <b>${esc(p.ownerName)}</b>${visBadgeHtml(p)}
               <div class="when">发布于 ${esc(fmtTime(p.publishedAt || p.createdAt))}</div>
             </div>
             <!-- v4.23.0 需求 3：原来这里常驻「一起写 / 编辑 / 删除」三个按钮，
@@ -1800,7 +1901,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <button type="button" data-view="calendar" class="${state.postView === 'calendar' ? 'on' : ''}">按日历看</button>
           </div>
           <button type="button" class="btn-primary btn-sm pt-compose-btn" data-act="post-compose">
-            ✍️ 动态${draftCount ? ` <span class="pt-draft">${draftCount}</span>` : ''}
+            <span class="ico ico-post-new" aria-hidden="true"></span>动态${draftCount ? ` <span class="pt-draft">${draftCount}</span>` : ''}
           </button>
         </div>
         ${state.postView === 'feed' ? `
@@ -1824,7 +1925,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     }
 
     return toolsCard +
-      `${feed || `<div class="card empty"><span class="em">${q ? '🔍' : '🖼️'}</span>${
+      `${feed || `<div class="card empty"><span class="em">${q ? '<span class="ico ico-search" aria-hidden="true"></span>' : '🖼️'}</span>${
         q ? `没有匹配「${esc(state.postQuery.trim())}」的动态` : '还没有动态，发布第一条吧'}</div>`}`;
   }
 
@@ -1946,7 +2047,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         ${list.length
           ? list.map((p) => `
             <div class="cal-post">
-              <div class="cal-post-head">${avatarHtml(p.ownerName)}<b>${esc(p.ownerName)}</b>${p.visibility === 'private' ? ` <span class="badge priv">${visBadgeText(p)}</span>` : ''}<span class="c-time">${esc(fmtTime(p.publishedAt || p.createdAt))}</span></div>
+              <div class="cal-post-head">${avatarHtml(p.ownerName)}<b>${esc(p.ownerName)}</b>${visBadgeHtml(p)}<span class="c-time">${esc(fmtTime(p.publishedAt || p.createdAt))}</span></div>
               ${p.content ? `<div class="post-content">${esc(p.content)}</div>` : ''}
               ${p.images.length
                 ? `<div class="post-imgs n${Math.min(p.images.length, 9)}" data-gal="${esc(JSON.stringify(p.images))}">${p.images
@@ -2000,7 +2101,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     if (recordsLocked()) {
       return `
         <div class="card card-pad lock-card">
-          <div class="lock-icon">🔒</div>
+          <div class="lock-icon"><span class="ico ico-vis-private" aria-hidden="true"></span></div>
           <div class="lock-title">记录本已上锁</div>
           <div class="lock-hint">这里保存着重要信息，输入访问密码后查看<br>（自定义访问密码或登录密码均可）</div>
           <input type="password" id="lock-pass" maxlength="64" placeholder="访问密码 / 登录密码" autocomplete="off">
@@ -2034,14 +2135,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <button type="button" data-arch="0" class="${state.recShowArchived ? '' : 'on'}">当前记录</button>
             <button type="button" data-arch="1" class="${state.recShowArchived ? 'on' : ''}">已归档</button>
           </div>
-          <button type="button" class="btn-primary btn-sm" data-act="rec-new">✍️ 记录</button>
+          <button type="button" class="btn-primary btn-sm" data-act="rec-new"><span class="ico ico-rec-new" aria-hidden="true"></span>记录</button>
         </div>
         <div class="cats-wrap">
           <div class="chips cats-row">
             ${cats}
           </div>
           <button type="button" class="btn-icon rec-search-toggle${searchOpen ? ' on' : ''}"
-                  data-act="rec-search-toggle" title="搜索记录本" aria-label="搜索记录本">🔍</button>
+                  data-act="rec-search-toggle" title="搜索记录本" aria-label="搜索记录本"><span class="ico ico-search" aria-hidden="true"></span></button>
         </div>
         ${searchOpen ? `<div class="rec-search-row">${searchBarHtml({
           act: 'rec-query', clearAct: 'rec-q-clear', preserve: 'rec-q',
@@ -2310,7 +2411,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <div class="rec-foot">
           <span class="badge cat">${esc(r.category)}</span>
           ${atts.length ? `<span class="badge att-badge" title="${esc(atts.map((a) => a.name).join('、'))}">📎 ${atts.length} 个附件</span>` : ''}
-          ${r.visibility === 'private' ? `<span class="badge priv">${visBadgeText(r)}</span>` : ''}
+          ${visBadgeHtml(r)}
           ${r.remind ? `<span class="badge rec-remind" title="到 ${esc(r.remindTime || '跟随系统')} 提醒我${r.remindedAt ? '（已提醒过）' : ''}">🔔 ${r.remindedAt ? '已提醒' : '待提醒'}</span>` : ''}
           <span>${esc(r.ownerName)} · ${esc(fmtTime(r.updatedAt))}</span>
         </div>
@@ -2329,7 +2430,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const badges = [
       `<span class="badge cat">${esc(r.category)}</span>`,
       r.pinned ? '<span class="badge p-high">★ 置顶</span>' : '',
-      r.visibility === 'private' ? `<span class="badge priv">${visBadgeText(r)}</span>` : '',
+      visBadgeHtml(r),
     ].filter(Boolean).join('');
     /* v4.17.0 需求 2/3：整页可看的图（正文内联 + 图片附件）合成**一个灯箱图组**，
        挂在 .rec-view 根上 —— 正文图、附件图点开都能左右翻到彼此；
@@ -2418,7 +2519,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   /* v4.12.0 需求 3：日历并入「统计」 —— 顶部分段只剩 记账 / 明细 / 统计 / 设置，
      日历是统计里的第二个子视图（与待办页「待办列表 / 日历」同一种交互）。 */
-  const BILL_VIEWS = [['chat', '💬 记账'], ['list', '📋 明细'], ['stats', '📊 统计']];
+  const BILL_VIEWS = [['chat', '<span class="ico ico-bill-chat" aria-hidden="true"></span>记账'], ['list', '<span class="ico ico-bill-list" aria-hidden="true"></span>明细'], ['stats', '<span class="ico ico-bill-stats" aria-hidden="true"></span>统计']];
   /* ★ v2.0.2 只记支出：收入相关的页签、分类列、示例句全部下线。
      历史收入数据保留在库里（服务端 list 已强制只返回 expense），界面上不再有任何入口。 */
   const BILL_KIND_CN = { expense: '支出' };
@@ -2586,7 +2687,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       </div>`).join('');
     return `
       <div class="card card-pad bill-drafts bill-sdrafts">
-        <div class="sec-head"><span class="sec-ico">💬</span>
+        <div class="sec-head"><span class="sec-ico sec-ico-svg" aria-hidden="true"><span class="ico ico-bill-chat" aria-hidden="true"></span></span>
           <span class="sec-title">微信草稿箱（${state.billServerDrafts.length}）</span>
           <span class="sec-note">微信里「存草稿」的账，改好一笔提交一笔</span></div>
         ${rows}
@@ -2648,7 +2749,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <div class="bill-input-row">
           <button type="button" class="bill-ocr-btn${ocrOn ? '' : ' off'}" data-act="bill-ocr"
             ${ocrOn && !state.billOcrBusy ? '' : 'disabled'} title="${ocrOn
-              ? '上传账单截图自动识别' : '图片识别不可用 ' + esc(ocrHint)}">${state.billOcrBusy ? '⏳' : '📷'}</button>
+              ? '上传账单截图自动识别' : '图片识别不可用 ' + esc(ocrHint)}" aria-busy="${state.billOcrBusy ? 'true' : 'false'}">${state.billOcrBusy ? '<span class="ico ico-scanning ico-ocr-scan" aria-hidden="true"></span>' : '<span class="ico ico-camera" aria-hidden="true"></span>'}</button>
           <input type="text" class="bill-input" placeholder="说一句话，例如：今天买菜 30 元"
                  data-preserve="bill-text" data-act="bill-text" maxlength="200">
           <button type="button" class="btn-primary btn-sm" data-act="bill-send" ${state.billSending ? 'disabled' : ''}>${state.billSending ? '…' : '发送'}</button>
@@ -2727,7 +2828,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         ${b.mine ? `<div class="br-ops">
           <button type="button" class="btn-ghost btn-sm" data-act="bill-edit" data-id="${b.id}">编辑</button>
           <button type="button" class="btn-ghost btn-sm" data-act="bill-del" data-id="${b.id}">删除</button>
-        </div>` : '<span class="br-lock" title="只能编辑自己记的账">🔒</span>'}
+        </div>` : '<span class="br-lock" title="只能编辑自己记的账"><span class="ico ico-vis-private" aria-hidden="true"></span></span>'}
       </div>`).join('');
 
     /* v4.28.10 需求 6：
@@ -2747,7 +2848,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <div class="cats-wrap">
           <div class="chips cats-row">${chips}</div>
           <button type="button" class="btn-icon bill-search-toggle${billSearchOpen ? ' on' : ''}"
-                  data-act="bill-search-toggle" title="搜索账单" aria-label="搜索账单">🔍</button>
+                  data-act="bill-search-toggle" title="搜索账单" aria-label="搜索账单"><span class="ico ico-search" aria-hidden="true"></span></button>
         </div>
         ${billSearchOpen ? `<div class="rec-search-row">${searchBarHtml({
           act: 'bill-query', clearAct: 'bill-q-clear', preserve: 'bill-q',
@@ -2755,7 +2856,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         })}</div>` : ''}
       </div>
       <div class="card bill-list">
-        ${rows || `<div class="empty"><span class="em">🧾</span>${
+        ${rows || `<div class="empty"><span class="em"><span class="ico ico-receipt" aria-hidden="true"></span></span>${
           state.billQuery.trim() || state.billCategory !== '全部' ? '没有匹配的账单' : '还没有账单，去「记账」说一句话试试'}</div>`}
       </div>`;
   }
@@ -2843,7 +2944,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         </div>
         <div class="cal-week">${WEEK_CN.map((w, i) => `<span class="${i === 0 ? 'wk' : ''}">${w}</span>`).join('')}</div>
         <div class="cal-grid" data-cal="bill">${cells.join('')}</div>
-        ${data && !data.days.length ? '<div class="empty" style="padding:14px 0 4px"><span class="em">🧾</span>这个月还没有记账，去「💬 记账」说一句话试试</div>' : ''}
+        ${data && !data.days.length ? '<div class="empty" style="padding:14px 0 4px"><span class="em"><span class="ico ico-receipt" aria-hidden="true"></span></span>这个月还没有记账，去「记账」说一句话试试</div>' : ''}
       </div>
       ${state.billCalDay ? `
       <div class="card card-pad bill-cal-day">
@@ -2868,7 +2969,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
               ${b.mine ? `<div class="br-ops">
                 <button type="button" class="btn-ghost btn-sm" data-act="bill-edit" data-id="${b.id}">编辑</button>
                 <button type="button" class="btn-ghost btn-sm" data-act="bill-del" data-id="${b.id}">删除</button>
-              </div>` : '<span class="br-lock" title="只能编辑自己记的账">🔒</span>'}
+              </div>` : '<span class="br-lock" title="只能编辑自己记的账"><span class="ico ico-vis-private" aria-hidden="true"></span></span>'}
             </div>`).join('')
           : (dayBills ? '<div class="empty" style="padding:12px 0"><span class="em">🗒️</span>这一天没有记账</div>' : '')}
       </div>` : ''}`;
@@ -2928,7 +3029,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const st = state.billStats;
     const today = todayKey();
     const monthFirst = today.slice(0, 8) + '01';
-    if (!st) return '<div class="card empty"><span class="em">📊</span>正在统计…</div>';
+    if (!st) return '<div class="card empty"><span class="em"><span class="ico ico-bill-stats" aria-hidden="true"></span></span>正在统计…</div>';
     const rg = st.range;
     const fromV = state.billStatFrom || (rg && rg.from) || monthFirst;
     const toV = state.billStatTo || (rg && rg.to) || today;
@@ -2940,7 +3041,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return `
       <div class="card card-pad stat-range-card">
         <div class="sec-head stat-range-head">
-          <span class="sec-ico">📈</span>
+          <span class="sec-ico sec-ico-svg" aria-hidden="true"><span class="ico ico-trend-up" aria-hidden="true"></span></span>
           <div class="stat-range-dates">
             <input type="date" value="${esc(fromV)}" data-act="bill-stat-from" aria-label="起始日期">
             <span class="sr-dash">~</span>
@@ -2962,8 +3063,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <span class="rk-name">${esc(r.category)}</span>
             <span class="rk-bar"><i style="width:${Math.max(3, Math.round(r.amountCents / topMax * 100))}%"></i></span>
             <span class="rk-val">¥${fmtYuan(r.amountCents)}</span>
-          </div>`).join('') : '<div class="empty" style="padding:12px"><span class="em">📉</span>这个范围还没有支出</div>'}
-        ` : '<div class="empty" style="padding:12px"><span class="em">📉</span>正在统计…</div>'}
+          </div>`).join('') : '<div class="empty" style="padding:12px"><span class="em"><span class="ico ico-trend-down" aria-hidden="true"></span></span>这个范围还没有支出</div>'}
+        ` : '<div class="empty" style="padding:12px"><span class="em"><span class="ico ico-trend-down" aria-hidden="true"></span></span>正在统计…</div>'}
       </div>
       <div class="card card-pad">
         <div class="sec-head"><span class="sec-ico">🏷️</span><span class="sec-title">${esc(st.month)} 支出分类</span>
@@ -2974,7 +3075,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <span class="rk-bar"><i style="width:${Math.max(3, Math.round(r.amountCents / max * 100))}%"></i></span>
             <span class="rk-val">¥${fmtYuan(r.amountCents)}</span>
           </div>`).join('')
-          : '<div class="empty" style="padding:16px"><span class="em">📉</span>这个月还没有支出</div>'}
+          : '<div class="empty" style="padding:16px"><span class="em"><span class="ico ico-trend-down" aria-hidden="true"></span></span>这个月还没有支出</div>'}
       </div>`;
   }
 
@@ -3281,7 +3382,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <div class="budget-list">
           ${withBudget.length
             ? withBudget.map((c) => budgetRow(c, bmap.get(c))).join('')
-            : '<div class="empty" style="padding:14px 0"><span class="em">💰</span>还没有设置任何预算</div>'}
+            : '<div class="empty" style="padding:14px 0"><span class="em"><span class="ico ico-wallet" aria-hidden="true"></span></span>还没有设置任何预算</div>'}
           ${pick ? budgetRow(pick, null) : ''}
         </div>
         <div class="budget-add">
@@ -4530,12 +4631,15 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        本来就不是「每个人自己那一摊事」。
      ★ 折叠 ≠ 藏信息：收起时标题条上有摘要（昵称/账号、开启与否、成员数、通道状态…），
        不展开也能确认「现在是什么状态」。 */
-  function meFold(key, icon, title, note, inner, extraCls) {
-    const open = !!(state.meOpen && state.meOpen[key]);
-    return `
-      <section class="card sec me-fold${open ? ' open' : ''}${extraCls ? ' ' + extraCls : ''}">
-        <button type="button" class="fold-head" data-act="me-fold" data-key="${key}" aria-expanded="${open ? 'true' : 'false'}">
-          <span class="sec-ico" aria-hidden="true">${icon}</span>
+function meFold(key, icon, title, note, inner, extraCls) {
+const open = !!(state.meOpen && state.meOpen[key]);
+/* 图标已经是 HTML（<span class="ico ...">）时给容器加 sec-ico-svg：
+   .sec-ico 默认 grayscale(1)+opacity .55，单类覆盖不了那两条，必须双类。 */
+const svgIcon = /^<span class="ico /.test(icon);
+return `
+<section class="card sec me-fold${open ? ' open' : ''}${extraCls ? ' ' + extraCls : ''}">
+<button type="button" class="fold-head" data-act="me-fold" data-key="${key}" aria-expanded="${open ? 'true' : 'false'}">
+<span class="sec-ico${svgIcon ? ' sec-ico-svg' : ''}" aria-hidden="true">${icon}</span>
           <span class="sec-title">${esc(title)}</span>
           <span class="sec-note">${esc(note)}</span>
           <span class="fold-caret">${open ? '收起' : '展开'}<i>${open ? '⌃' : '⌄'}</i></span>
@@ -4571,7 +4675,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
                      title="查看 ${esc(m.display_name)} 的全部参数">${avatarHtml(m.display_name)}</button>`
           : avatarHtml(m.display_name)}
         <div class="r-label">
-          <b>${esc(m.display_name)}${m.id === me.id ? ' <span class="badge">我</span>' : ''}${m.is_admin ? ' <span class="badge cat">管理员</span>' : ''}${m.record_lock_enabled ? ' <span class="badge priv">🔒 记录本已上锁</span>' : ''}</b>
+          <b>${esc(m.display_name)}${m.id === me.id ? ' <span class="badge">我</span>' : ''}${m.is_admin ? ' <span class="badge cat">管理员</span>' : ''}${m.record_lock_enabled ? ' <span class="badge priv"><span class="ico ico-vis-private" aria-hidden="true"></span>记录本已上锁</span>' : ''}</b>
           <small>@${esc(m.username)}</small>
         </div>
         ${me.is_admin && m.id !== me.id ? `
@@ -4599,7 +4703,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     /* 分区标题统一走 .sec-head（图标 + 标题 + 右侧备注）—— 现在由 meFold 统一产出，
        高度在 CSS 里写成同一个值，不会有的高有的矮。 */
     const secHead = (icon, title, note) => `<div class="sec-head">
-        <span class="sec-ico" aria-hidden="true">${icon}</span>
+        <span class="sec-ico${/^<span class="ico /.test(icon) ? ' sec-ico-svg' : ''}" aria-hidden="true">${icon}</span>
         <span class="sec-title">${esc(title)}</span>
         ${note ? `<span class="sec-note">${note}</span>` : ''}
       </div>`;
@@ -4627,22 +4731,22 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <div class="prof">
           <div class="prof-cap">账号</div>
           <div class="prof-list">
-            ${profItem({ ico: '👤', act: 'me-rename', label: '昵称',
+            ${profItem({ ico: '<span class="ico ico-user" aria-hidden="true"></span>', act: 'me-rename', label: '昵称',
               val: esc(me.display_name), sub: '家人看到的称呼，改完立即生效' })}
-            ${profItem({ ico: '🖼️', act: 'me-avatar', label: '头像',
+            ${profItem({ ico: '<span class="ico ico-image" aria-hidden="true"></span>', act: 'me-avatar', label: '头像',
               val: me.avatar ? '自定义' : '默认',
               sub: me.avatar ? '已使用自定义头像' : '默认使用昵称首字' })}
-            ${profItem({ ico: '@', act: 'me-username', label: '登录账号',
+            ${profItem({ ico: '<span class="ico ico-at" aria-hidden="true"></span>', act: 'me-username', label: '登录账号',
               val: `当前：@${esc(me.username)}`, sub: '改完用新账号登录' })}
           </div>
           <div class="prof-cap">安全</div>
           <div class="prof-list">
-            ${profItem({ ico: '🔑', act: 'record-lock', label: '记录本访问密码',
+            ${profItem({ ico: '<span class="ico ico-key" aria-hidden="true"></span>', act: 'record-lock', label: '记录本访问密码',
               badge: `<span class="pi-badge${lockOn ? ' on' : ''}">${lockOn ? '已开启' : '未开启'}</span>`,
               sub: lockOn
                 ? `${me.record_lock_custom ? '自定义密码' : '复用登录密码'} · 登录密码同样能解锁`
                 : '可复用登录密码，也可以单独设一个' })}
-            ${profItem({ ico: '🔒', act: 'me-password', label: '修改密码',
+            ${profItem({ ico: '<span class="ico ico-vis-private" aria-hidden="true"></span>', act: 'me-password', label: '修改密码',
               sub: '改完本机退出，需要重新登录' })}
           </div>
           <button type="button" class="btn-ghost prof-exit" data-act="me-logout">退出登录</button>
@@ -4844,7 +4948,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
                  比原来一句「@mama · 管理员」更容易扫读。 -->
             <div class="me-sub"><span class="me-handle">@${esc(me.username)}</span>${me.is_admin
               ? '<span class="badge cat">管理员</span>' : ''}${lockOn
-              ? '<span class="badge priv">🔒 记录本已上锁</span>' : ''}</div>
+              ? '<span class="badge priv"><span class="ico ico-vis-private" aria-hidden="true"></span>记录本已上锁</span>' : ''}</div>
           </div>
           <button type="button" class="btn-ghost btn-sm" data-act="me-rename">改昵称</button>
         </div>
@@ -4853,7 +4957,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       <!-- ① 外观主题：**唯一不折叠**的分区（需求原文）。
            三张卡片直接给出「另外两套长什么样」，看得见才好选。 -->
       <section class="card sec">
-        ${secHead('🎨', '外观主题')}
+        ${secHead('<span class="ico ico-palette" aria-hidden="true"></span>', '外观主题')}
         <div class="theme-wrap">
           <div class="theme-grid">
             ${THEMES.map((t) => `
@@ -4867,10 +4971,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         </div>
       </section>
 
-      ${meFold('profile', '👤', '个人资料',
+      ${meFold('profile', '<span class="ico ico-user" aria-hidden="true"></span>', '个人资料',
         `${esc(me.display_name)} · @${esc(me.username)}`, profileBody)}
 
-      ${meFold('members', '👨‍👩‍👧', '家庭设置和成员', `${state.members.length} 人`, `
+      ${meFold('members', '<span class="ico ico-vis-family" aria-hidden="true"></span>', '家庭设置和成员', `${state.members.length} 人`, `
         ${me.is_admin && s ? `
         <div class="sub-head">家庭设置</div>
         <div class="row-list">
@@ -4885,19 +4989,19 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           me.is_admin ? '<span class="sub-head-hint">点击成员头像查看参数</span>' : ''}</div>
         <div class="row-list">${members}</div>`)}
 
-      ${meFold('notify', '🔔', '消息推送设置',
+      ${meFold('notify', '<span class="ico ico-bell" aria-hidden="true"></span>', '消息推送设置',
         `${pushChannelSummary(me)} · 待办提醒${sysRemindOn ? '开' : '关'} · 内容通知${sysNotifyOn ? '开' : '关'}`,
         notifyBody)}
 
-      ${me.is_admin ? meFold('push', '📮', '推送渠道设置', pushConfigSummary(), pushBody) : ''}
+      ${me.is_admin ? meFold('push', '<span class="ico ico-mail" aria-hidden="true"></span>', '推送渠道设置', pushConfigSummary(), pushBody) : ''}
 
-      ${me.is_admin ? meFold('ai', '🔍', 'AI 参数设置', billAiSummary(), billAiBodyHtml()) : ''}
+      ${me.is_admin ? meFold('ai', '<span class="ico ico-settings" aria-hidden="true"></span>', 'AI 参数设置', billAiSummary(), billAiBodyHtml()) : ''}
 
-      ${meFold('cat', '🏷️', '记账分类与预算', billCatSummary(), billCatBodyHtml())}
+      ${meFold('cat', '<span class="ico ico-tag" aria-hidden="true"></span>', '记账分类与预算', billCatSummary(), billCatBodyHtml())}
 
-      ${me.is_admin ? meFold('backup', '💾', '数据备份', '导出 / 恢复', backupBody) : ''}
+      ${me.is_admin ? meFold('backup', '<span class="ico ico-database" aria-hidden="true"></span>', '数据备份', '导出 / 恢复', backupBody) : ''}
 
-      ${meFold('system', 'ℹ️', '系统状态', `v${esc((state.config && state.config.version) || '?')}`, systemStatusHtml(s, g, cfg))}
+      ${meFold('system', '<span class="ico ico-info" aria-hidden="true"></span>', '系统状态', `v${esc((state.config && state.config.version) || '?')}`, systemStatusHtml(s, g, cfg))}
 
       <div class="app-foot">${brandFootHtml()}</div>`;
   }
@@ -5082,9 +5186,18 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        不在这里兜一次的话，用户「敲完最后一句直接点取消/关掉」就白写了 ——
        0.8 秒的 debounce 还没到，DOM 已经没了，什么都读不到。
        `recCommitted` 由「保存成功 / 主动丢弃草稿」两条路径置位，
-       避免刚保存完又把同一条存回草稿。 */
-    if (el && el.dataset.recMode === 'new' && el.dataset.recCommitted !== '1') {
+       避免刚保存完又把同一条存回草稿。
+       v4.28.15：**编辑态也算**（原来只认 new）—— 用户的要求是「编辑内容时
+       自动保存草稿，退出或刷新后可恢复」，点取消/✕ 正是最常见的退出方式。
+       三张表单各存各的键（见 editDraftKey），互不干扰。 */
+    if (el && el.dataset.recCommitted !== '1') {
       try { saveRecordDraftNow(); } catch { /* 存草稿失败不能挡住关闭 */ }
+    }
+    if (el && el.dataset.todoCommitted !== '1') {
+      try { saveTodoDraftNow(); } catch { /* 同上 */ }
+    }
+    if (el && el.dataset.postCommitted !== '1') {
+      try { savePostEditDraftNow(); } catch { /* 同上 */ }
     }
     if (el) el.remove();
     recViewId = null;           // 查看页随弹窗一起结束
@@ -5523,7 +5636,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     menu.id = 'img-menu';
     menu.setAttribute('data-gal', JSON.stringify(Array.isArray(gallery) && gallery.length ? gallery : [src]));
     menu.innerHTML = `
-      <button type="button" data-act="img-menu-view" data-src="${esc(src)}">🔍 查看大图</button>
+      <button type="button" data-act="img-menu-view" data-src="${esc(src)}"><span class="ico ico-search" aria-hidden="true"></span>查看大图</button>
       <button type="button" data-act="img-menu-save" data-src="${esc(src)}">⬇️ 保存图片</button>
       <button type="button" data-act="img-menu-cancel">取消</button>`;
     document.body.appendChild(menu);
@@ -6267,8 +6380,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       : '<span class="field-hint">家里还没有其他成员</span>';
     return `
       <div class="segmented" data-act="vis-pick">
-        <button type="button" data-vis="family" class="${priv ? '' : 'on'}">👨‍👩‍👧 全家可见</button>
-        <button type="button" data-vis="private" class="${priv ? 'on' : ''}">🔒 指定可见成员</button>
+        <button type="button" data-vis="family" class="${priv ? '' : 'on'}"><span class="ico ico-vis-family" aria-hidden="true"></span>全家可见</button>
+        <button type="button" data-vis="private" class="${priv ? 'on' : ''}"><span class="ico ico-vis-private" aria-hidden="true"></span>指定可见成员</button>
       </div>
       <div class="vis-members${priv ? '' : ' hidden'}" data-vis-box>
         <div class="chips">${chips}</div>
@@ -6283,11 +6396,16 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return { visibility, visibleTo: visibility === 'private' ? ids : [] };
   }
 
-  /** 可见性徽章文案：全家可见 / 指定 N 人 / 仅自己可见 */
+  /** 可见性徽章文案（纯文本，给角标 title 等无障碍属性用）：全家可见 / 指定 N 人 / 仅自己可见 */
   function visBadgeText(t) {
     if (!t || t.visibility !== 'private') return '';
     const n = (t.visibleTo || []).length;
-    return n ? `🔒 指定 ${n} 人可见` : '🔒 仅自己可见';
+    return n ? `指定 ${n} 人可见` : '仅自己可见';
+  }
+  /** 徽章 HTML：与「指定可见成员」按钮同一把锁，全家可见时不渲染（与旧行为一致） */
+  function visBadgeHtml(t) {
+    const txt = visBadgeText(t);
+    return txt ? `<span class="badge priv"><span class="ico ico-vis-private" aria-hidden="true"></span>${esc(txt)}</span>` : '';
   }
 
   /**
@@ -6390,6 +6508,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   async function openTodoForm(todo) {
     const isEdit = !!todo;
     try { await refreshMembers(); } catch { /* 拉不到就用现有列表兜底，不阻断填写 */ }
+    /* v4.28.15 需求 3：编辑态也认草稿 —— 「改了一半就关掉 / 刷新」不该白改。
+       只认这一条的键（fh-todo-draft-edit-<id>），不会和新建草稿或别的待办串内容。 */
+    const editDraft = isEdit ? readEditDraft('todo', todo) : null;
     const t = (() => {
       const base = todo || {
         title: '', note: '', date: state.selected, endDate: '', endTime: '',
@@ -6405,9 +6526,20 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         advanceValue: -1, advanceUnit: 'minute',
         repeatEndMode: 'never', repeatEndDate: '', repeatEndCount: 0,
       };
-      /* v4.28.10 需求 4：新建时把上次没写完的草稿当**初值**合并进来。
-         放在这里而不是 onMount 回填，模板就能一次性渲染成草稿的样子。 */
-      if (todo) return base;
+      /* 草稿一律当**初值**合并进来（不做事后回填 DOM）：
+         模板能一次性渲染成草稿的样子，syncRemind / syncRepeatEnd 之类的
+         派生状态也跟着初值走，不会出现「看着是草稿、保存出来的却不是」。 */
+      if (todo) {
+        if (!editDraft) return base;
+        return Object.assign({}, base, editDraft, {
+          id: todo.id,
+          updatedAt: todo.updatedAt,
+          /* ★ 必须清掉 repeatRule：Repeat.rule() 是「repeatRule 优先、repeat 回落」，
+             留着库里那条旧规则的话，草稿里改的「重复」永远不会生效。 */
+          repeatRule: '',
+          _draftRestored: true,
+        });
+      }
       const d = readTodoDraft();
       return d ? Object.assign({}, base, d, { _draftRestored: true }) : base;
     })();
@@ -6439,8 +6571,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const legacyAdv = Number.isFinite(legacyRaw) && legacyRaw > 0 && legacyRaw <= 29 ? legacyRaw : -1;
     const ownAdv = hasNewAdv ? advRaw : legacyAdv;
     /* v4.28.10 需求 4：草稿里记了用户手选的提醒类型就以它为准 ——
-       只按 remind/urge/提前量反推的话，「提前提醒 + 提前 0 天」这种组合会还原成「到点提醒」。 */
-    const remindMode = (!todo && t.remindMode)
+       只按 remind/urge/提前量反推的话，「提前提醒 + 提前 0 天」这种组合会还原成「到点提醒」。
+       v4.28.15：编辑草稿同样带 remindMode，所以这里不再限制「只有新建才认」。 */
+    const remindMode = t.remindMode
       ? String(t.remindMode)
       : (t.remind === false ? 'none' : (urgeOn ? 'urge' : (ownAdv > 0 ? 'advance' : 'system')));
     /* v4.28.7：新建默认「提前 5 分钟」；编辑时按库里存的单位回填 */
@@ -6478,7 +6611,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       return s;
     };
     /* v4.28.7：新建默认简洁视图（只填「做什么」）；编辑默认详细，否则看不到已有设置 */
-    const startDetail = isEdit;
+    /* v4.28.15：新建草稿里如果记着「详细」，就按详细打开 ——
+       否则恢复出来的日期 / 重复 / 提醒设置全在隐藏区里，一保存就被「一句话待办」覆盖掉。 */
+    const startDetail = isEdit || t.viewMode === 'detail';
     const repEndMode = String(t.repeatEndMode || 'never');
     /* v4.28.8：提醒时间不再在标签上写括号说明 —— 输入框里直接显示具体时刻
        （用户设过用他的，没设过用管理员的），来源由摘要那一句话交代。 */
@@ -6488,6 +6623,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       title: isEdit ? '编辑待办' : '添加待办',
       fullscreen: true,
       body: `
+        ${t._draftRestored ? `<div class="draft-bar">
+          <span class="grow">📝 已恢复上次未保存的内容</span>
+          <button type="button" class="drop" data-act="todo-draft-drop" data-id="${isEdit ? t.id : ''}">丢弃草稿</button>
+        </div>` : ''}
         <!-- ① 可见范围置顶（v4.28.8：选「指定可见成员」时列出全部用户，本人恒选中且不可取消）
              v4.28.9 需求 7：去掉「可见范围」这个标题 —— 两个按钮本身就说明了它在问什么。 -->
         <div class="field field-vis">
@@ -6639,8 +6778,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
              重复事项本来就没有完成状态，没有这个按钮的话它只会永久留在库里每天提醒一次。 -->
         ${isEdit && Repeat.rule(t) ? `<button type="button" class="btn-ghost btn-sm" data-act="todo-end-repeat" data-id="${t.id}">结束重复</button>` : ''}
         <div class="spacer"></div>
-        <!-- v4.28.10 需求 4：草稿保存状态（新建时才有草稿，编辑态不显示） -->
-        ${isEdit ? '' : '<span class="draft-hint hidden" id="todo-draft-hint"></span>'}
+        <!-- v4.28.10 需求 4：草稿保存状态（v4.28.15 起编辑态也有草稿，所以两种态都显示） -->
+        <span class="draft-hint hidden" id="todo-draft-hint"></span>
         ${isEdit && !Repeat.rule(t) ? `<button type="button" class="btn-ghost" data-act="todo-done" data-id="${t.id}">${t.done ? '标为未完成' : '标为已完成'}</button>` : ''}
         <!-- v4.28.8：一句话 / 详细 的切换放在保存按钮左侧 ——
              它改变的是「这个表单有多少字段」，属于提交前最后一次选择，
@@ -6651,14 +6790,20 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         ${isEdit ? '' : '<button type="button" class="btn-ghost btn-sm" data-act="todo-mode-toggle">切换详细待办</button>'}
         <button type="button" class="btn-primary" data-act="todo-save" data-id="${isEdit ? t.id : ''}">保存</button>`,
       onMount: (layer) => {
-        /* v4.28.10 需求 4：只有「新建」才存草稿（编辑态存草稿会串内容，见 readTodoDraft 注释） */
+        /* v4.28.15 需求 3：新建与编辑都存草稿，键按条目分（见 editDraftKey） */
         layer.dataset.todoMode = isEdit ? 'edit' : 'new';
+        layer.dataset.todoId = isEdit ? String(t.id) : '';
+        /* 打开时库里的版本号：恢复草稿前先比对，别人改过就不覆盖 */
+        layer.dataset.draftUpdatedAt = isEdit ? String(t.updatedAt || '') : '';
+        if (isEdit && Number(t.recordId) > 0) layer.dataset.recordId = String(Number(t.recordId));
         layer.dataset.participants = JSON.stringify(Array.from(chosen));
         layer.dataset.priority = t.priority;
         layer.dataset.visibility = t.visibility;
         layer.dataset.repeat = curRule || '';
         /* v4.28.7：视图模式。新建默认简洁（只填「做什么」），编辑默认详细（否则看不到已有设置） */
         layer.dataset.mode = startDetail ? 'detail' : 'simple';
+        /* v4.13.0：草稿提示的初始状态（恢复过草稿就把「已保存」的时间亮出来） */
+        if (t._draftRestored) paintDraftHint('todo');
 
         const $mk = (k) => layer.querySelector(`[data-mk="${k}"]`);
         const val = (k) => { const el = $mk(k); return el ? String(el.value || '') : ''; };
@@ -6910,10 +7055,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           syncRepeatEnd(); syncRemind(); syncMode(); syncRuleLine();
         };
 
-        /* v4.28.10 需求 4：待办草稿的自动保存（只在新建态生效）。
+        /* v4.28.10 需求 4：待办草稿的自动保存。
+           v4.28.15：新建与编辑都存（scheduleTodoDraft 自己按 todoMode 选键）。
            文本 / 下拉走 input + change，按钮型控件（参与人 / 重要程度 / 可见范围）
            走下面的 click 委托 —— 它们只改 class 与 dataset，不触发 input。 */
-        const draftTouch = () => { if (layer.dataset.todoMode === 'new') scheduleTodoDraft(); };
+        const draftTouch = () => { scheduleTodoDraft(); };
         layer.addEventListener('change', (ev) => {
           const mk = ev.target && ev.target.dataset ? ev.target.dataset.mk : '';
           if (mk === 'repeat') {
@@ -6995,7 +7141,13 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         syncPartChips(layer);
         /* v4.28.10：打开时若内容来自草稿，直接把「草稿已保存」点亮 ——
            否则用户看不出眼前这些字是上次写了一半自动存下来的。 */
-        if (!isEdit && t._draftRestored) markDraftSaved('todo');
+        if (t._draftRestored) markDraftSaved('todo');
+        /* v4.28.15 需求 3：记下「打开时是什么样」——
+           编辑态关闭时与它一致就说明用户没改，不必留一份看不出差别的草稿。
+           ★ 必须放在 syncMode / syncRemind 之后：它们会补默认值（日期、时间），
+             早记一步会把「补默认值」也算成用户改动。 */
+        layer.dataset.draftBase = draftSigOf(todoDraftPayload());
+        if (t._draftRestored) layer.dataset.draftRestored = '1';
         const first = layer.querySelector('[data-mk="title"]');
         if (first) setTimeout(() => first.focus(), 60);
       },
@@ -7102,8 +7254,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     try {
       if (id) await api('/api/todos/' + id, { method: 'PATCH', body });
       else await api('/api/todos', { method: 'POST', body });
-      /* v4.28.10 需求 4：存成功就清掉草稿 —— 不然下次新建又带出这条已经存过的内容 */
-      if (!id) { dropDraft(TODO_DRAFT_KEY); clearDraftHint('todo'); }
+      /* v4.28.10 需求 4：存成功就清掉草稿 —— 不然下次打开又带出这条已经存过的内容。
+         v4.28.15：编辑态清的是这一条自己的键（fh-todo-draft-edit-<id>）。 */
+      layer.dataset.todoCommitted = '1';     // 别再被 closeModal 写回来
+      dropDraft(id ? editDraftKey('todo', id) : TODO_DRAFT_KEY);
+      clearDraftHint('todo');
       closeModal();
       await refreshTodos();
       // 提醒对象是参与人：勾了提醒却没选参与人，等于不会发信，必须说清楚
@@ -8106,6 +8261,20 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         if (t) await openTodoForm(t);
         break;
       }
+      /* v4.28.15 需求 2：点右上角任意角标 → 列出这条待办**全部**角标与含义。
+         手机上 title 不显示，点击是唯一能看懂的入口；桌面也走这里（比误开编辑表单合适）。 */
+      case 'todo-corner': {
+        const t = state.todos.find((x) => x.id === id);
+        if (t) openCornerSheet(t);
+        break;
+      }
+      /* 说明卡里的「编辑这条待办」：先收起说明卡，再开编辑表单 */
+      case 'todo-corner-edit': {
+        closeModal();
+        const t = state.todos.find((x) => x.id === id);
+        if (t) await openTodoForm(t);
+        break;
+      }
       case 'todo-toggle': toggleTodo(id); break;
       /* v4.21.0 需求 2：重复事项勾的是「这一天」 */
       case 'todo-day-toggle': await toggleTodoDay(id, el.dataset.date); break;
@@ -8116,6 +8285,12 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         if (!window.confirm('确定删除这条待办吗？删除后无法恢复。')) return;
         try {
           await api('/api/todos/' + id, { method: 'DELETE' });
+          /* v4.28.15：条目没了，它的编辑草稿也没有意义 —— 留着只会在下次
+             打开「编号恰好相同」的新条目时冒出来（虽然概率低，但那是纯脏数据）。
+             todoCommitted 先挡住 closeModal 里那一次补存。 */
+          const lay = $('#modal-layer');
+          if (lay) lay.dataset.todoCommitted = '1';
+          dropDraft(editDraftKey('todo', id));
           closeModal();
           await refreshTodos();
           toast('已删除', 'ok');
@@ -8137,6 +8312,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         if (!window.confirm('结束这条重复提醒吗？\n结束后不再按周期提醒，但它会留在「周期提醒」里并标上「已结束」，随时可以点开重新打开。')) return;
         try {
           await api(`/api/todos/${id}/end-repeat`, { method: 'POST' });
+          /* v4.28.15：结束重复 = 表单里那些改动已经落库，草稿一律作废 */
+          const lay = $('#modal-layer');
+          if (lay) lay.dataset.todoCommitted = '1';
+          dropDraft(editDraftKey('todo', id));
           closeModal();
           await refreshTodos();
           toast('已结束重复提醒', 'ok');
@@ -8243,6 +8422,19 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         const dbar = document.querySelector('#modal-layer .draft-bar');
         if (dbar) dbar.remove();
         render();
+        toast('草稿已丢弃', 'ok');
+        break;
+      }
+      /* v4.28.15 需求 3：丢弃「编辑动态」的草稿 → 重开这张表单，内容回到库里那一版 */
+      case 'post-draft-drop-edit': {
+        const pid = Number(id);
+        dropDraft(editDraftKey('post', pid));
+        clearDraftHint('pe');
+        const lay = $('#modal-layer');
+        if (lay) lay.dataset.postCommitted = '1';    // 别再被 closeModal 写回来
+        const post = state.posts.find((x) => x.id === pid) || null;
+        closeModal();
+        if (post) openPostForm(post);
         toast('草稿已丢弃', 'ok');
         break;
       }
@@ -8369,6 +8561,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         state.postMenu = 0;
         if (!window.confirm('确定删除这条动态吗？其下评论也会一起删除。')) return;
         try {
+          dropDraft(editDraftKey('post', id));   // v4.28.15：动态没了，编辑草稿也作废
           await api('/api/posts/' + id, { method: 'DELETE' });
           await refreshPosts();
           toast('已删除', 'ok');
@@ -8625,13 +8818,32 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
       /* 记录本 */
       case 'rec-new': openRecordForm(null); break;
-      /* v4.3.3 需求 6：丢弃记录本草稿 → 清掉本地那份，再原地重开一个空白表单 */
+      /* v4.3.3 需求 6：丢弃记录本草稿 → 清掉本地那份，再原地重开表单。
+         v4.28.15：编辑态清这一条自己的键，重开的也是这条记录（回到库里那一版），
+         不会退化成一张「新建记录」的空表。 */
       case 'rec-draft-drop': {
-        dropDraft(REC_DRAFT_KEY);
+        const recId = Number(id) || 0;
+        dropDraft(recId ? editDraftKey('record', recId) : REC_DRAFT_KEY);
+        clearDraftHint('rec');
         const lay = $('#modal-layer');
         if (lay) lay.dataset.recCommitted = '1';   // 别再被 closeModal 写回来
+        const keep = recId ? (state.records || []).find((x) => Number(x.id) === recId) : null;
         closeModal();
-        openRecordForm(null);
+        openRecordForm(keep || null);
+        toast('草稿已丢弃', 'ok');
+        break;
+      }
+      /* v4.28.15 需求 3：丢弃待办草稿（新建 / 编辑同一套）——
+         清掉本地那份后原地重开表单：新建回空白，编辑回到库里那一版。 */
+      case 'todo-draft-drop': {
+        const key = todoDraftKey();
+        if (key) dropDraft(key);
+        clearDraftHint('todo');
+        const lay = $('#modal-layer');
+        if (lay) lay.dataset.todoCommitted = '1';   // 别再被 closeModal 写回来
+        const cur = id ? state.todos.find((x) => x.id === Number(id)) : null;
+        closeModal();
+        await openTodoForm(cur || null);
         toast('草稿已丢弃', 'ok');
         break;
       }
@@ -8817,6 +9029,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         if (!window.confirm('确定删除这条记录吗？删除后无法恢复。')) return;
         try {
           await api('/api/records/' + id, { method: 'DELETE' });
+          /* v4.28.15：记录没了，它的编辑草稿也作废（并挡住 closeModal 的补存） */
+          const lay = $('#modal-layer');
+          if (lay) lay.dataset.recCommitted = '1';
+          dropDraft(editDraftKey('record', id));
           closeModal();
           await refreshRecords();
           toast('已删除', 'ok');
@@ -9340,6 +9556,15 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       if (e.key === 'ArrowLeft') { e.preventDefault(); lbStep(-1); return; }
       if (e.key === 'ArrowRight') { e.preventDefault(); lbStep(1); return; }
     }
+    /* v4.28.15：Esc 关掉「右上角小图标说明」。
+       ★ 必须写在「Esc 关灯箱」之前 —— 那一句是 `if (Escape) { closeLightbox(); return; }`，
+         放后面永远轮不到这里（测试里就是这么红的）。
+       ★ 只关这一张：其它表单弹窗里 Esc 会丢掉正在填的内容，
+         而这张说明卡是无损的、来得最快的关闭方式。 */
+    if (e.key === 'Escape' && document.querySelector('#modal-layer .corner-legend')) {
+      closeModal();
+      return;
+    }
     // Esc 关闭图片灯箱
     if (e.key === 'Escape') { closeLightbox(); return; }
     // 记录本内容区：当前行带勾选框时，回车后下一行自动生成勾选框
@@ -9535,6 +9760,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       layer.dataset.videos = JSON.stringify(vids);
       layer.dataset.videoCovers = JSON.stringify(covers);
       renderPostVideos(vids, covers);
+      schedulePostEditDraft();   // v4.28.15：上传完也是一次内容变更（编辑动态的草稿）
       if (errors.length) p.fail(`${ok}/${total} 段成功`); else p.done('视频上传完成');
       report({ ok, errors }, '段视频');
     }
@@ -9603,6 +9829,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       const r = await uploadImages(files, (path) => imgs.push(path), (v) => p.set(v));
       layer.dataset.images = JSON.stringify(imgs);
       renderPostThumbs(imgs);
+      schedulePostEditDraft();   // v4.28.15：上传完也是一次内容变更（编辑动态的草稿）
       if (r.errors.length) p.fail(`${r.ok}/${files.length} 张成功`); else p.done('图片上传完成');
       report(r, '张图片');
     }
@@ -9887,64 +10114,147 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return true;
   }
 
-  /* ── 记录本草稿：只在「新建」时启用。
-     编辑已有记录不存草稿 —— 否则你打开一条旧记录随手改两个字又关掉，
-     下次新建会莫名其妙带出它的内容。 */
-  function recordDraftActive() {
+  /* ═══ v4.28.15 需求 3：待办 / 记录本 / 动态的自动草稿（新建 + 编辑）══════════
+     新建态的草稿 v4.3.3 起就有（记录本 / 动态），待办在 v4.28.10 补上。
+     这一版把**编辑已有内容**也接上：三处改完 0.8 秒落盘，关弹窗 / 刷新后
+     重新打开同一条内容自动恢复，保存或发布成功即清掉。
+
+     ★ 键的分工（编辑态必须按条目分键）：
+         新建：fh-todo-draft / fh-record-draft / fh-post-draft（动态走 state.compose）
+         编辑：fh-todo-draft-edit-<id> / fh-record-draft-edit-<id> / fh-post-draft-edit-<id>
+       共用一把键的话，打开 A 改一半再去编辑 B，两边的半成品会互相顶掉；
+       更糟的是「新建」会把别人的半成品当成「上次没写完的新建」带出来。
+     ★ 只认自己的草稿（uid）：这台设备是全家共用的浏览器，草稿不该被家人看到。
+     ★ 编辑草稿带 baseUpdatedAt：库里那条在草稿之后被别人改过，就不恢复
+       —— 宁可少恢复一次，也不要用一份旧副本盖掉家人刚改的内容。
+     ★ 编辑态「改回原样就清掉」：与打开表单时的快照一致时顺手删除，
+       否则点开再关掉会攒下一份看不出差别的草稿，下次恢复时用户以为界面在乱动。
+       （新建态不比对快照：空表单本来就该什么都存不下，非空就是用户在写。） */
+  const editDraftKey = (kind, id) => `fh-${kind}-draft-edit-${Number(id) || 0}`;
+
+  /** 弹窗当前处于哪种态（'' = 没有这张表单） */
+  function modalDraftMode(modeKey) {
     const layer = $('#modal-layer');
-    return !!layer && layer.dataset.recMode === 'new';
+    if (!layer) return '';
+    const m = layer.dataset[modeKey] || '';
+    return (m === 'new' || m === 'edit') ? m : '';
+  }
+  /** 内容快照（不含时间戳）：判断「改没改」用 */
+  function draftSigOf(payload) {
+    if (!payload) return '';
+    const copy = Object.assign({}, payload);
+    delete copy.at;
+    delete copy.baseUpdatedAt;
+    try { return JSON.stringify(copy); } catch { return ''; }
+  }
+  function draftDirty(payload) {
+    const layer = $('#modal-layer');
+    /* ★ 这张表单本来就是「带着草稿打开的」：用户什么都没改也要把草稿留着 ——
+       否则「打开看一眼、关掉」就把上次没保存的内容清掉了，而这正是他要恢复的东西。 */
+    if (layer && layer.dataset.draftRestored === '1') return true;
+    const base = layer ? String(layer.dataset.draftBase || '') : '';
+    return !base || base !== draftSigOf(payload);
+  }
+  /** 读某一条的编辑草稿（别人的 / 已被别人改过的直接丢掉） */
+  function readEditDraft(kind, item) {
+    const id = Number(item && item.id) || 0;
+    if (!id) return null;
+    const key = editDraftKey(kind, id);
+    const d = readDraft(key);
+    if (!d || typeof d !== 'object') return null;
+    const myUid = state.me ? Number(state.me.id) || 0 : 0;
+    if (d.uid && myUid && Number(d.uid) !== myUid) { dropDraft(key); return null; }
+    const base = String(d.baseUpdatedAt || '');
+    const now = String((item && item.updatedAt) || '');
+    if (base && now && base !== now) { dropDraft(key); return null; }
+    return d;
   }
 
-  function saveRecordDraftNow() {
-    if (!recordDraftActive()) return false;
+  /* ── 记录本草稿（新建 + 编辑）────────────────────────────── */
+  function recordDraftKey() {
     const layer = $('#modal-layer');
-    if (!layer) return false;
-    if (recDraftTimer) { clearTimeout(recDraftTimer); recDraftTimer = null; }
+    const mode = modalDraftMode('recMode');
+    if (mode === 'new') return REC_DRAFT_KEY;
+    if (mode === 'edit') return editDraftKey('record', layer.dataset.recId);
+    return '';
+  }
+  /** 记录本弹窗开着且能存草稿（新建 / 编辑都算）—— 输入事件里用来判断要不要排自动保存 */
+  function recordDraftActive() {
+    return !!recordDraftKey();
+  }
+
+  function recordDraftPayload() {
+    const layer = $('#modal-layer');
+    if (!layer) return null;
     let images = [];
     let attachments = [];
     try { images = JSON.parse(layer.dataset.images || '[]'); } catch { /* 忽略 */ }
     try { attachments = JSON.parse(layer.dataset.attachments || '[]'); } catch { /* 忽略 */ }
     recSyncContent();          // v4.16.0：先让编辑器内容落到 textarea 上，草稿才不丢最后一次输入
-    const d = {
+    const vis = visReading(layer);
+    const remCb = layer.querySelector('[data-mk="recRemind"]');
+    return {
       uid: state.me ? Number(state.me.id) || 0 : 0,
+      recId: Number(layer.dataset.recId) || 0,
+      /* 打开表单时库里的 updatedAt：恢复前先比对，别人改过就不覆盖（见 readEditDraft） */
+      baseUpdatedAt: String(layer.dataset.draftUpdatedAt || ''),
       title: modalValue('title').trim(),
       content: modalValue('content'),
       category: layer.dataset.category || '通用',
       images,
       attachments,
-      visibility: layer.dataset.visibility || 'family',
-      visibleTo: visReading(layer).visibleTo,
+      visibility: vis.visibility,
+      visibleTo: vis.visibleTo,
       pinned: layer.dataset.pinned === '1',
+      remind: !!(remCb && remCb.checked),
       at: new Date().toISOString(),
     };
-    if (!d.title && !String(d.content || '').trim() && !images.length && !attachments.length) {
-      dropDraft(REC_DRAFT_KEY);
+  }
+
+  function saveRecordDraftNow() {
+    const key = recordDraftKey();
+    if (!key) return false;
+    if (recDraftTimer) { clearTimeout(recDraftTimer); recDraftTimer = null; }
+    const d = recordDraftPayload();
+    if (!d) return false;
+    /* 什么都没有 = 用户清空了表单，顺手把旧草稿删掉 ——
+       否则下次打开会被一份空草稿「恢复」成有条目的样子。 */
+    if (!d.title && !String(d.content || '').trim() && !d.images.length && !d.attachments.length) {
+      dropDraft(key);
       clearDraftHint('rec');
       return false;
     }
-    writeDraft(REC_DRAFT_KEY, d);
+    /* 编辑态：改回原样就不留草稿（新建态不比对，见上面的注释） */
+    if (modalDraftMode('recMode') === 'edit' && !draftDirty(d)) {
+      dropDraft(key);
+      clearDraftHint('rec');
+      return false;
+    }
+    writeDraft(key, d);
     markDraftSaved('rec');
     return true;
   }
 
   function scheduleRecordDraft() {
+    if (!recordDraftKey()) return;
     if (recDraftTimer) clearTimeout(recDraftTimer);
     markDraftPending('rec');
     recDraftTimer = setTimeout(() => { recDraftTimer = null; saveRecordDraftNow(); }, 800);
   }
 
-  /* ── v4.28.10 需求 4：待办草稿（与记录本 / 动态同一套机制）。
-     只在「新建」时启用 —— 编辑已有待办不存草稿，否则你打开一条旧待办
-     随手改两个字又关掉，下次新建会莫名其妙带出它的内容。
+  /* ── v4.28.10 需求 4：待办草稿（与记录本 / 动态同一套机制；v4.28.15 起编辑态也存）。
      ★ 恢复方式刻意选「当成初值传进模板」而不是「打开后再回填 DOM」：
        后者要在 onMount 里重放 syncRemind / syncRepeatEnd / prior chips，
        任何一处漏了就会「看着是草稿、保存出来的却不是」。 */
   const TODO_DRAFT_KEY = 'fh-todo-draft';
   let todoDraftTimer = null;
 
-  function todoDraftActive() {
+  function todoDraftKey() {
     const layer = $('#modal-layer');
-    return !!layer && layer.dataset.todoMode === 'new';
+    const mode = modalDraftMode('todoMode');
+    if (mode === 'new') return TODO_DRAFT_KEY;
+    if (mode === 'edit') return editDraftKey('todo', layer.dataset.todoId);
+    return '';
   }
 
   function todoDraftPayload() {
@@ -9955,6 +10265,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const vis = visReading(layer);
     return {
       uid: state.me ? Number(state.me.id) || 0 : 0,
+      todoId: Number(layer.dataset.todoId) || 0,
+      baseUpdatedAt: String(layer.dataset.draftUpdatedAt || ''),
       title: modalValue('title').trim(),
       note: modalValue('note'),
       date: modalValue('date'),
@@ -9965,7 +10277,16 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       advanceValue: Number(modalValue('advanceValue')) || -1,
       advanceUnit: modalValue('advanceUnit') || 'minute',
       urgeMinutes: Number(modalValue('urgeMinutes')) || 0,
+      urgeMaxCount: Math.max(0, Math.round(Number(modalValue('urgeMaxCount')) || 0)),
       repeatEndMode: modalValue('repeatEndMode') || 'never',
+      repeatEndDate: modalValue('repeatEndDate'),
+      repeatEndCount: Math.round(Number(modalValue('repeatEndCount')) || 0),
+      /* v4.28.11 需求 3：从记录本带进来的来源也要跟着草稿走，
+         否则「恢复了一份带记录本标记的草稿，保存后角标却没了」 */
+      recordId: Number(layer.dataset.recordId) || 0,
+      /* 一句话 / 详细：新建时默认简洁，但用户可能切到详细填了日期重复。
+         不记下来的话，恢复后表单以简洁态打开，一保存这些设置就全丢了。 */
+      viewMode: layer.dataset.mode === 'detail' ? 'detail' : 'simple',
       participants,
       visibility: vis.visibility,
       visibleTo: vis.visibleTo,
@@ -9974,28 +10295,35 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
   }
 
   function saveTodoDraftNow() {
-    if (!todoDraftActive()) return false;
+    const key = todoDraftKey();
+    if (!key) return false;
     if (todoDraftTimer) { clearTimeout(todoDraftTimer); todoDraftTimer = null; }
     const d = todoDraftPayload();
     if (!d) return false;
     /* 只写了备注、标题还空着也算「正在写」—— 不然边想边写时草稿会时有时无 */
     if (!d.title && !String(d.note || '').trim()) {
-      dropDraft(TODO_DRAFT_KEY);
+      dropDraft(key);
       clearDraftHint('todo');
       return false;
     }
-    writeDraft(TODO_DRAFT_KEY, d);
+    if (modalDraftMode('todoMode') === 'edit' && !draftDirty(d)) {
+      dropDraft(key);
+      clearDraftHint('todo');
+      return false;
+    }
+    writeDraft(key, d);
     markDraftSaved('todo');
     return true;
   }
 
   function scheduleTodoDraft() {
+    if (!todoDraftKey()) return;
     if (todoDraftTimer) clearTimeout(todoDraftTimer);
     markDraftPending('todo');
     todoDraftTimer = setTimeout(() => { todoDraftTimer = null; saveTodoDraftNow(); }, 800);
   }
 
-  /** 读待办草稿：只认自己的（同一台设备换账号登录时，别人的草稿直接丢掉） */
+  /** 读「新建待办」草稿：只认自己的（同一台设备换账号登录时，别人的草稿直接丢掉） */
   function readTodoDraft() {
     const d = readDraft(TODO_DRAFT_KEY);
     if (!d || typeof d !== 'object') return null;
@@ -10005,13 +10333,76 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return d;
   }
 
+  /* ── v4.28.15 需求 3：编辑动态的草稿 ────────────────────────
+     动态的「新建」走 state.compose + fh-post-draft（v4.3.3 那套）；
+     这里只管**编辑已有动态**这一张表单（openPostForm），按 postId 分键。 */
+  let postEditDraftTimer = null;
+
+  function postEditKey() {
+    const layer = $('#modal-layer');
+    if (modalDraftMode('postMode') !== 'edit') return '';
+    return editDraftKey('post', layer.dataset.postId);
+  }
+
+  function postEditPayload() {
+    const layer = $('#modal-layer');
+    if (!layer) return null;
+    let images = [];
+    let videos = [];
+    let videoCovers = {};
+    try { images = JSON.parse(layer.dataset.images || '[]'); } catch { /* 忽略 */ }
+    try { videos = JSON.parse(layer.dataset.videos || '[]'); } catch { /* 忽略 */ }
+    try { videoCovers = JSON.parse(layer.dataset.videoCovers || '{}'); } catch { /* 忽略 */ }
+    const vis = visReading(layer);
+    return {
+      uid: state.me ? Number(state.me.id) || 0 : 0,
+      postId: Number(layer.dataset.postId) || 0,
+      baseUpdatedAt: String(layer.dataset.draftUpdatedAt || ''),
+      content: modalValue('content'),
+      tags: modalValue('tags'),
+      images,
+      videos,
+      videoCovers,
+      visibility: vis.visibility,
+      visibleTo: vis.visibleTo,
+      at: new Date().toISOString(),
+    };
+  }
+
+  function savePostEditDraftNow() {
+    const key = postEditKey();
+    if (!key) return false;
+    if (postEditDraftTimer) { clearTimeout(postEditDraftTimer); postEditDraftTimer = null; }
+    const d = postEditPayload();
+    if (!d) return false;
+    const empty = !String(d.content || '').trim() && !String(d.tags || '').trim()
+      && !d.images.length && !d.videos.length;
+    if (empty || !draftDirty(d)) {
+      dropDraft(key);
+      clearDraftHint('pe');
+      return false;
+    }
+    writeDraft(key, d);
+    markDraftSaved('pe');
+    return true;
+  }
+
+  function schedulePostEditDraft() {
+    if (!postEditKey()) return;
+    if (postEditDraftTimer) clearTimeout(postEditDraftTimer);
+    markDraftPending('pe');
+    postEditDraftTimer = setTimeout(() => { postEditDraftTimer = null; savePostEditDraftNow(); }, 800);
+  }
+
   /* 页面被关掉 / 刷新（含异常崩溃前的卸载）时再兜一次：
      正常情况下 0.8 秒的 debounce 已经写过了，但「敲完最后一个字立刻关页面」
-     是最常见的漏写场景。 */
+     是最常见的漏写场景。
+     v4.28.15：编辑态的三张表单也在这里补存（原来只有新建态）。 */
   window.addEventListener('beforeunload', () => {
     savePostDraftNow();
     saveRecordDraftNow();
     saveTodoDraftNow();
+    savePostEditDraftNow();
   });
 
   function resetCompose(visibility) {
@@ -10430,37 +10821,78 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   function openPostForm(post) {
     const p = post;
+    /* v4.28.15 需求 3：编辑动态也存草稿。按动态 id 分键，只认自己的、且库里那条
+       在这之后没被别人改过（readEditDraft 里比对 baseUpdatedAt）。 */
+    const d = readEditDraft('post', p);
+    const imgs0 = (d && Array.isArray(d.images)) ? d.images : (p.images || []);
+    const vids0 = (d && Array.isArray(d.videos)) ? d.videos : (p.videos || []);
+    const covers0 = (d && d.videoCovers && typeof d.videoCovers === 'object')
+      ? d.videoCovers : (p.videoCovers || {});
+    const content0 = d && d.content != null ? String(d.content) : String(p.content || '');
+    const tags0 = d && d.tags != null ? String(d.tags) : (p.tags || []).join(' ');
+    const vis0 = d ? (d.visibility === 'private' ? 'private' : 'family') : p.visibility;
+    const visTo0 = d && Array.isArray(d.visibleTo)
+      ? d.visibleTo.map(Number).filter(Boolean) : (p.visibleTo || []);
     openModal({
       title: '编辑动态',
       body: `
-        <label class="field fld"><textarea class="fld-inp" data-mk="content" maxlength="5000" placeholder="记录此刻的生活…">${esc(p.content)}</textarea><span class="flab">内容</span></label>
+        ${d ? `<div class="draft-bar">
+          <span class="grow">📝 已恢复上次未保存的内容</span>
+          <button type="button" class="drop" data-act="post-draft-drop-edit" data-id="${p.id}">丢弃草稿</button>
+        </div>` : ''}
+        <label class="field fld"><textarea class="fld-inp" data-mk="content" maxlength="5000" placeholder="记录此刻的生活…">${esc(content0)}</textarea><span class="flab">内容</span></label>
         <div class="field"><span>图片</span>
-          <div class="composer-imgs" id="post-imgs">${postThumbHtml(p.images)}</div>
+          <div class="composer-imgs" id="post-imgs">${postThumbHtml(imgs0)}</div>
           <button type="button" class="btn-ghost btn-sm" data-act="post-img-add">＋ 图片</button>
           <input type="file" accept="image/*" multiple class="hidden" id="post-file">
         </div>
         <div class="field"><span>视频<span class="field-hint">（浏览器能播放的 MP4 / MOV / WebM，单段上限 ${maxVideoMb()}MB）</span></span>
-          <div class="composer-videos" id="post-videos">${videoChipHtml(p.videos || [], 'post-video-del', '', p.videoCovers)}</div>
+          <div class="composer-videos" id="post-videos">${videoChipHtml(vids0, 'post-video-del', '', covers0)}</div>
           <button type="button" class="btn-ghost btn-sm" data-act="post-video-add">＋ 视频</button>
           <input type="file" accept="video/*" multiple class="hidden" id="post-video-file">
         </div>
-        <label class="field fld"><input class="fld-inp" type="text" data-mk="tags" maxlength="80" value="${esc(p.tags.join(' '))}" placeholder="例如：出游 美食"><span class="flab">标签</span></label>
+        <label class="field fld"><input class="fld-inp" type="text" data-mk="tags" maxlength="80" value="${esc(tags0)}" placeholder="例如：出游 美食"><span class="flab">标签</span></label>
         ${allPostTags().length ? `<div class="field"><span>点选已有标签</span>
           <div class="tag-pick">${allPostTags().slice(0, 12).map((t) =>
             `<button type="button" class="chip" data-act="form-tag-add" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}</div>
         </div>` : ''}
         <div class="field"><span>谁能看到</span>
-          ${visPickHtml(p.visibility, p.visibleTo)}
+          ${visPickHtml(vis0, visTo0)}
+        </div>
+        <div class="composer-bar"><div class="spacer"></div>
+          <span class="draft-hint hidden" id="post-edit-draft-hint"></span>
         </div>`,
       foot: `
         <div class="spacer"></div>
         <button type="button" class="btn-ghost" data-act="modal-close">取消</button>
         <button type="button" class="btn-primary" data-act="post-save" data-id="${p.id}">保存</button>`,
       onMount: (layer) => {
-        layer.dataset.images = JSON.stringify(p.images || []);
-        layer.dataset.videos = JSON.stringify(p.videos || []);
-        layer.dataset.videoCovers = JSON.stringify(p.videoCovers || {});
-        layer.dataset.visibility = p.visibility;
+        layer.dataset.postMode = 'edit';
+        layer.dataset.postId = String(p.id);
+        layer.dataset.draftUpdatedAt = String(p.updatedAt || '');
+        layer.dataset.images = JSON.stringify(imgs0);
+        layer.dataset.videos = JSON.stringify(vids0);
+        layer.dataset.videoCovers = JSON.stringify(covers0);
+        layer.dataset.visibility = vis0;
+        if (d) paintDraftHint('pe');
+        /* 打开时的样子：编辑态「改回原样」就不留草稿 */
+        layer.dataset.draftBase = draftSigOf(postEditPayload());
+        if (d) layer.dataset.draftRestored = '1';
+        /* 任何改动都排一次自动保存。
+           文本 / 标签走 input；可见范围、删图删视频、点选已有标签只改 class 与
+           dataset，不触发 input —— 它们在全局委托里执行，所以延后一拍再读，
+           否则读到的是「改之前」的 dataset。 */
+        layer.addEventListener('input', () => schedulePostEditDraft());
+        layer.addEventListener('change', () => schedulePostEditDraft());
+        layer.addEventListener('click', (ev) => {
+          const t = ev.target;
+          if (!t || !t.closest) return;
+          if (t.closest('[data-act="vis-pick"]') || t.closest('[data-act="vis-member"]')
+            || t.closest('[data-act="post-img-del"]') || t.closest('[data-act="post-video-del"]')
+            || t.closest('[data-act="form-tag-add"]')) {
+            setTimeout(() => schedulePostEditDraft(), 0);
+          }
+        });
       },
     });
   }
@@ -10485,6 +10917,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     if (!body.content && !images.length && !videos.length) { toast('写点什么，或选张图片 / 一段视频吧', 'err'); return; }
     try {
       await api('/api/posts/' + id, { method: 'PATCH', body });
+      /* v4.28.15 需求 3：保存成功 = 这份编辑草稿用完了，删掉；
+         postCommitted 让 closeModal 别再把它写回来。 */
+      if (layer) layer.dataset.postCommitted = '1';
+      dropDraft(editDraftKey('post', id));
+      clearDraftHint('pe');
       closeModal();
       await refreshPosts();
       toast('已保存', 'ok');
@@ -10611,9 +11048,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 
   function openRecordForm(rec) {
     const isEdit = !!rec;
-    /* v4.3.3 需求 6：**新建**时才认本地草稿。编辑已有记录不碰草稿 ——
-       否则你打开一条旧记录改两个字又关掉，下次新建会莫名带出它的内容。
-       页面异常刷新后重新点「新建」，未保存的内容会自动回来，不用用户做任何操作。 */
+    /* v4.3.3 需求 6：**新建**时认本地草稿（fh-record-draft）——
+       页面异常刷新后重新点「新建」，未保存的内容会自动回来，不用用户做任何操作。
+       v4.28.15 需求 3：**编辑**也认，但走另一把键（fh-record-draft-edit-<id>）——
+       两把键分开，编辑一条旧记录就不会把它写成「下次新建的草稿」，
+       也不会出现「打开 A 改一半、再去编辑 B，两边互相顶掉」。 */
     const draft = isEdit ? null : readDraft(REC_DRAFT_KEY);
     const draftUid = draft ? Number(draft.uid) || 0 : 0;
     const myUid = state.me ? Number(state.me.id) || 0 : 0;
@@ -10624,19 +11063,35 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       String(draft.title || '').trim() || String(draft.content || '').trim()
       || (Array.isArray(draft.images) && draft.images.length)
       || (Array.isArray(draft.attachments) && draft.attachments.length));
-    const r = rec || (draftOk ? {
-      title: String(draft.title || ''),
-      content: String(draft.content || ''),
-      category: String(draft.category || '通用'),
-      images: (Array.isArray(draft.images) ? draft.images : []).filter(Boolean),
-      attachments: (Array.isArray(draft.attachments) ? draft.attachments : []).filter(Boolean),
-      pinned: !!draft.pinned,
-      visibility: draft.visibility === 'private' ? 'private' : 'family',
-      visibleTo: (Array.isArray(draft.visibleTo) ? draft.visibleTo : []).map(Number).filter(Boolean),
-    } : {
-      title: '', content: '', category: '通用', images: [], attachments: [],
-      pinned: false, visibility: 'family', visibleTo: [],
-    });
+    /* 编辑草稿：只认这一条自己的，且库里那条在这之后没被别人改过 */
+    const editD = isEdit ? readEditDraft('record', rec) : null;
+    const r = isEdit
+      ? (editD ? Object.assign({}, rec, {
+        title: String(editD.title || ''),
+        content: String(editD.content || ''),
+        category: String(editD.category || rec.category || '通用'),
+        images: (Array.isArray(editD.images) ? editD.images : []).filter(Boolean),
+        attachments: (Array.isArray(editD.attachments) ? editD.attachments : []).filter(Boolean),
+        pinned: typeof editD.pinned === 'boolean' ? editD.pinned : !!rec.pinned,
+        visibility: editD.visibility === 'private' ? 'private' : 'family',
+        visibleTo: (Array.isArray(editD.visibleTo) ? editD.visibleTo : []).map(Number).filter(Boolean),
+        remind: typeof editD.remind === 'boolean' ? editD.remind : !!rec.remind,
+        _draftRestored: true,
+      }) : rec)
+      : (draftOk ? {
+        title: String(draft.title || ''),
+        content: String(draft.content || ''),
+        category: String(draft.category || '通用'),
+        images: (Array.isArray(draft.images) ? draft.images : []).filter(Boolean),
+        attachments: (Array.isArray(draft.attachments) ? draft.attachments : []).filter(Boolean),
+        pinned: !!draft.pinned,
+        visibility: draft.visibility === 'private' ? 'private' : 'family',
+        visibleTo: (Array.isArray(draft.visibleTo) ? draft.visibleTo : []).map(Number).filter(Boolean),
+        remind: !!draft.remind,
+      } : {
+        title: '', content: '', category: '通用', images: [], attachments: [],
+        pinned: false, visibility: 'family', visibleTo: [],
+      });
     const cats = recordCategories();
     const curCat = r.category || '通用';
     const preset = cats.includes(curCat) ? curCat : '__custom__';
@@ -10644,9 +11099,9 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       title: isEdit ? '编辑记录' : '添加记录',
       fullscreen: true,
       body: `
-        ${draftOk ? `<div class="draft-bar">
+        ${draftOk || editD ? `<div class="draft-bar">
           <span class="grow">📝 已恢复上次未保存的内容</span>
-          <button type="button" class="drop" data-act="rec-draft-drop">丢弃草稿</button>
+          <button type="button" class="drop" data-act="rec-draft-drop" data-id="${isEdit ? rec.id : ''}">丢弃草稿</button>
         </div>` : ''}
         <!-- v4.14.0 需求 1：「谁能看到」与「提醒」搬到标题上方。
              v4.28.9 需求 7：「谁能看到」这个标题删掉 —— 两个按钮自己说明了在问什么。 -->
@@ -10707,13 +11162,17 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       foot: `
         ${isEdit ? '<button type="button" class="btn-danger btn-sm" data-act="rec-delete" data-id="' + r.id + '">删除</button>' : ''}
         <div class="spacer"></div>
-        ${isEdit ? '' : '<span class="draft-hint hidden" id="rec-draft-hint"></span>'}
+        <span class="draft-hint hidden" id="rec-draft-hint"></span>
         <button type="button" class="btn-primary" data-act="rec-save" data-id="${isEdit ? r.id : ''}">保存</button>`,
       onMount: (layer) => {
-        /* v4.3.3 需求 6：标出这次弹窗是「新建」还是「编辑」—— 只有新建才自动存草稿 */
+        /* v4.3.3 需求 6：标出这次弹窗是「新建」还是「编辑」——
+           v4.28.15 起两种态都自动存草稿，只是键不同（见 recordDraftKey）。 */
         layer.dataset.recMode = isEdit ? 'edit' : 'new';
-        // v4.13.0：新建时把上次的草稿保存时间显示出来（编辑态没有草稿提示）
-        if (!isEdit) paintDraftHint('rec');
+        layer.dataset.recId = isEdit ? String(r.id) : '';
+        /* 打开时库里的版本号：恢复草稿前先比对，别人改过就不覆盖 */
+        layer.dataset.draftUpdatedAt = isEdit ? String(r.updatedAt || '') : '';
+        // v4.13.0：把上次的草稿保存时间显示出来（新建 / 编辑都一样）
+        if (draftOk || editD) paintDraftHint('rec');
         layer.dataset.category = curCat;
         layer.dataset.visibility = r.visibility;
         layer.dataset.pinned = r.pinned ? '1' : '0';
@@ -10725,6 +11184,8 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           remCb.addEventListener('change', () => {
             const wrap = layer.querySelector('#rec-remind-wrap');
             if (wrap) wrap.classList.toggle('hidden', !remCb.checked);
+            /* v4.28.15：这个开关也算内容变更（草稿要能恢复「要不要提醒」） */
+            scheduleRecordDraft();
           });
         }
         /* ★ v4.16.0 需求 5：富文本编辑区的初始化。
@@ -10772,6 +11233,12 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             ed.innerHTML = recMdToEditorHtml(ta.value);
           });
         }
+        /* v4.28.15 需求 3：记下「打开时是什么样」——
+           编辑态关闭时与它一致就说明用户没改，不必留一份看不出差别的草稿。
+           ★ 必须放在编辑区初始化之后：那一步会把 Markdown 规整成 HTML 再转回来，
+             早记一步会把「规整」当成用户改动。 */
+        layer.dataset.draftBase = draftSigOf(recordDraftPayload());
+        if (r._draftRestored) layer.dataset.draftRestored = '1';
       },
     });
   }
@@ -10839,9 +11306,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       else await api('/api/records', { method: 'POST', body });
       /* v4.3.3 需求 6：保存成功 = 草稿用完了，删掉本地的，
          否则下次新建会把刚存下的这条又「恢复」成草稿。
+         v4.28.15：编辑态清的是这一条自己的键（fh-record-draft-edit-<id>）。
          `recCommitted` 让 closeModal 不要再把它写回草稿。 */
       layer.dataset.recCommitted = '1';
-      dropDraft(REC_DRAFT_KEY);
+      dropDraft(id ? editDraftKey('record', id) : REC_DRAFT_KEY);
+      clearDraftHint('rec');
       closeModal();
       await refreshRecords();
       toast(id ? '已保存' : '已添加记录', 'ok');
