@@ -105,8 +105,11 @@ a:hover { color: var(--primary-dark); }
 }
 /* v4.28.12：启动屏 / 登录页的品牌图从 🏠 emoji 换成真正的图标文件（与 PWA 图标同源）。
    ★ 用 <img> 而不是背景图：带 alt 的空值 + 固定宽高，图片没加载完也不会撑动布局。 */
-.boot-logo { width: 52px; height: 52px; line-height: 0; animation: bootPulse 1.8s var(--ease) infinite; }
-.boot-logo img { display: block; width: 100%; height: 100%; border-radius: 14px; }
+/* v4.28.16 需求 5：启动屏 logo 与登录页统一为 64px；
+   圆角统一写成 22.5%（与图标源图自身的圆角比例一致），各处只随尺寸等比缩放，
+   不再出现 14/19/9/13px 四套半径看起来像四个图形。 */
+.boot-logo { width: 64px; height: 64px; line-height: 0; animation: bootPulse 1.8s var(--ease) infinite; }
+.boot-logo img { display: block; width: 100%; height: 100%; border-radius: 22.5%; }
 .boot-name { font-size: var(--fs-l); color: var(--text-2); letter-spacing: .06em; }
 .boot-bar { width: 116px; height: 3px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
 .boot-bar i {
@@ -160,7 +163,7 @@ a:hover { color: var(--primary-dark); }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
+  border-radius: 22.5%;
   overflow: hidden;
   flex: none;
 }
@@ -381,6 +384,19 @@ a:hover { color: var(--primary-dark); }
 .pi-ico .ico { width: 18px; height: 18px; }
 .lock-card .lock-icon .ico { width: 44px; height: 44px; vertical-align: 0; }
 .br-lock .ico { width: 12px; height: 12px; vertical-align: -2px; }
+/* v4.28.16 需求 2~4：动态菜单 / 记录本附件 / 自定义分类 / 记账快捷短语。
+   赞与取消赞是同一语义的两个状态，用 heart / heart-off 一对。 */
+.ico-heart       { -webkit-mask-image: url('icons/ui/heart.svg');       mask-image: url('icons/ui/heart.svg'); }
+.ico-heart-off   { -webkit-mask-image: url('icons/ui/heart-off.svg');   mask-image: url('icons/ui/heart-off.svg'); }
+.ico-comment     { -webkit-mask-image: url('icons/ui/comment.svg');     mask-image: url('icons/ui/comment.svg'); }
+.ico-write       { -webkit-mask-image: url('icons/ui/write.svg');       mask-image: url('icons/ui/write.svg'); }
+.ico-edit        { -webkit-mask-image: url('icons/ui/edit.svg');        mask-image: url('icons/ui/edit.svg'); }
+.ico-trash       { -webkit-mask-image: url('icons/ui/trash.svg');       mask-image: url('icons/ui/trash.svg'); }
+.ico-paperclip   { -webkit-mask-image: url('icons/ui/paperclip.svg');   mask-image: url('icons/ui/paperclip.svg'); }
+.ico-file-text   { -webkit-mask-image: url('icons/ui/file-text.svg');   mask-image: url('icons/ui/file-text.svg'); }
+.ico-file-video  { -webkit-mask-image: url('icons/ui/file-video.svg');  mask-image: url('icons/ui/file-video.svg'); }
+.ico-file-audio  { -webkit-mask-image: url('icons/ui/file-audio.svg');  mask-image: url('icons/ui/file-audio.svg'); }
+.ico-file-archive { -webkit-mask-image: url('icons/ui/file-archive.svg'); mask-image: url('icons/ui/file-archive.svg'); }
 .ico-scanning { animation: ico-scan 1.1s ease-in-out infinite; }
 @keyframes ico-scan { 0%, 100% { opacity: .42; } 50% { opacity: 1; } }
 
@@ -484,6 +500,7 @@ button:disabled:hover { background: var(--surface); }
 .chip.on { background: var(--primary); border-color: var(--primary); color: var(--ink-inverse); font-weight: 600; }
 .chip.on:hover { color: var(--ink-inverse); }
 .chip.chip-edit { color: var(--muted); border-style: dashed; }
+.chip .ico { width: 14px; height: 14px; vertical-align: -3px; }
 /* v4.28.2：参与人里「不在指定可见成员名单」的家人 —— 灰掉且不可点。
    用 off 类而不是 disabled 样式（div 上 disabled 无效，但按钮上默认样式太淡），
    保持一眼能看出「他在名单外，选不了」。 */
@@ -576,6 +593,7 @@ button:disabled:hover { background: var(--surface); }
    用中性底色：来源是"备注级"信息，不该比分类徽标更抢眼。 */
 .badge.src { background: var(--surface-3); color: var(--text-2); border: 1px solid var(--line-soft); }
 .badge.att-badge { background: var(--surface-3); color: var(--text-2); }
+.badge.att-badge .ico { width: 12px; height: 12px; vertical-align: -2px; }
 /* v4.12.0：记录本卡片上的提醒状态（待提醒 = 提醒色；已提醒 = 降为次要色） */
 .badge.rec-remind { background: var(--primary-soft); color: var(--primary-ink); }
 
@@ -1091,6 +1109,7 @@ select.inp-compact { padding-right: 26px; }
 }
 .attach:hover { border-color: var(--primary-line); background: var(--primary-soft); color: var(--primary-ink); }
 .att-ico { flex: none; font-size: var(--fs-l); line-height: 1; }
+.att-ico .ico { width: 18px; height: 18px; vertical-align: 0; }
 /* v4.13.0（问题 3）：视频附件有封面时用它替代图标 —— 一眼能看出是哪段视频。
    固定 4:3 小图，比图标占位略宽，但仍在 40px 以内，不影响文件名可用宽度。 */
 .att-thumb {
@@ -1488,16 +1507,17 @@ select.inp-compact { padding-right: 26px; }
   align-items: center;
   justify-content: center;
   line-height: 0;
-  border-radius: 19px;
+  border-radius: 22.5%;
   /* v4.28.12：换成图标文件后不再需要浅色底 —— 图本身就有奶油底色，
      inset 描边反而会在圆角外圈多一道线。改用外发光式的极淡轮廓，
      暗色主题下这块奶油色才不会「悬浮」在深色页面上。 */
   box-shadow: 0 0 0 1px var(--line-soft), var(--shadow-s);
 }
-.auth-logo img { display: block; width: 100%; height: 100%; border-radius: 19px; }
-/* v4.28.12：顶栏 / 侧栏的品牌图也是 <img>，撑满各自的方块即可 */
+.auth-logo img { display: block; width: 100%; height: 100%; border-radius: 22.5%; }
+/* v4.28.12：顶栏 / 侧栏的品牌图也是 <img>，撑满各自的方块即可。
+   v4.28.16：四处的圆角比例统一 22.5%（容器 + 图片都设，overflow:hidden 不再是唯一保障）。 */
 .topbar-logo img,
-.rail-brand .rb-logo img { display: block; width: 100%; height: 100%; }
+.rail-brand .rb-logo img { display: block; width: 100%; height: 100%; border-radius: 22.5%; }
 .auth-brand h1 { font-size: var(--fs-2xl); font-weight: 700; letter-spacing: .02em; }
 .auth-sub { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--muted); }
 .auth-form { margin-top: var(--sp-8); display: flex; flex-direction: column; gap: var(--sp-6); }
@@ -2771,6 +2791,7 @@ body.is-img-drag .thumb { touch-action: none; }
   font-size: var(--fs-xs); line-height: 1; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center; gap: 2px;
 }
+.rec-editor-bar .fmt-btn .ico { width: 15px; height: 15px; vertical-align: 0; }
 .rec-editor-bar .fmt-btn:hover { border-color: var(--line-strong); background: var(--surface-2); }
 .rec-editor-bar .fmt-btn:active { background: var(--primary-soft); }
 /* v4.28.9 需求 10：内容框样式参照标题框 —— 同一个边框色 / 圆角 / 底色 / 字号，
@@ -4044,7 +4065,7 @@ body.kb-active .main { padding-bottom: calc(var(--kb, 0px) + 40px); }
     align-items: center;
     justify-content: center;
     line-height: 0;
-    border-radius: 13px;
+    border-radius: 22.5%;
     overflow: hidden;
     color: var(--ink-inverse);
   }
@@ -4153,9 +4174,12 @@ body.kb-active .main { padding-bottom: calc(var(--kb, 0px) + 40px); }
   text-align: left; border: 0; background: transparent; cursor: pointer;
   padding: 9px 12px; border-radius: 8px;
   font-size: var(--fs-s); color: var(--text); white-space: nowrap;
+  display: flex; align-items: center; gap: 8px;
 }
 .post-menu-item:hover { background: var(--surface-3); }
 .post-menu-item.danger { color: var(--danger); }
+/* 图标颜色继承 currentColor（.ico 底座用 background-color），所以删除项自动变红，不用暗色特例 */
+.post-menu-item .ico { width: 16px; height: 16px; vertical-align: 0; }
 
 /* ── v4.23.0 需求 5：推送日志列表 ───────────────────────────────── */
 .push-logs { display: flex; flex-direction: column; gap: 8px; max-height: 54vh; overflow: auto; }

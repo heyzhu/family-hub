@@ -557,22 +557,25 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return `${(b / 1024 / 1024).toFixed(1)} MB`;
   }
 
-  /** 按扩展名给个图标，让附件列表一眼能扫出类型 */
+  /** 按扩展名给个图标，让附件列表一眼能扫出类型。
+      v4.28.16 需求 3：原来的 📕/📗/🎬 等 emoji 按系统字体渲染，
+      Windows / iOS / 安卓长得都不一样，换成 icons/ui 线描图标。
+      值直接是 `.ico-*` 类名后缀；图片复用已定的 ico-image（与个人资料同源）。 */
   const FILE_ICONS = {
-    pdf: '📕', doc: '📘', docx: '📘', rtf: '📘', odt: '📘',
-    xls: '📗', xlsx: '📗', csv: '📗', tsv: '📗', ods: '📗',
-    ppt: '📙', pptx: '📙', odp: '📙',
-    zip: '🗜️', rar: '🗜️', '7z': '🗜️', tar: '🗜️', gz: '🗜️', bz2: '🗜️', xz: '🗜️',
-    jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', webp: '🖼️', bmp: '🖼️', heic: '🖼️', tif: '🖼️',
-    mp3: '🎵', wav: '🎵', m4a: '🎵', amr: '🎵', aac: '🎵', ogg: '🎵', flac: '🎵',
-    mp4: '🎬', mov: '🎬', m4v: '🎬', webm: '🎬', avi: '🎬', mkv: '🎬', '3gp': '🎬',
-    txt: '📄', md: '📄', json: '📄', xml: '📄', log: '📄', yaml: '📄', yml: '📄',
-    ics: '📅', vcf: '👤', epub: '📖',
+    zip: 'file-archive', rar: 'file-archive', '7z': 'file-archive', tar: 'file-archive',
+    gz: 'file-archive', bz2: 'file-archive', xz: 'file-archive',
+    jpg: 'image', jpeg: 'image', png: 'image', gif: 'image', webp: 'image',
+    bmp: 'image', heic: 'image', tif: 'image',
+    mp3: 'file-audio', wav: 'file-audio', m4a: 'file-audio', amr: 'file-audio',
+    aac: 'file-audio', ogg: 'file-audio', flac: 'file-audio',
+    mp4: 'file-video', mov: 'file-video', m4v: 'file-video', webm: 'file-video',
+    avi: 'file-video', mkv: 'file-video', '3gp': 'file-video',
   };
   const fileIcon = (name) => {
     const ext = String(name || '').split('.').pop().toLowerCase();
-    return FILE_ICONS[ext] || '📎';
+    return FILE_ICONS[ext] || 'file-text';
   };
+  const fileIcoHtml = (name) => '<span class="ico ico-' + fileIcon(name) + '" aria-hidden="true"></span>';
   const attachUrl = (a) => `${a.path}?name=${encodeURIComponent(a.name || '附件')}`;
 
   /** 附件列表（只读展示 / 可点下载） */
@@ -584,7 +587,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
           title="下载 ${esc(a.name)}">${
         a.cover
           ? `<img class="att-thumb" src="${esc(a.cover)}" alt="" loading="lazy">`
-          : `<span class="att-ico">${fileIcon(a.name)}</span>`}` +
+          : `<span class="att-ico">${fileIcoHtml(a.name)}</span>`}` +
       `<span class="att-name">${esc(a.name)}</span><span class="att-size">${esc(fmtBytes(a.size))}</span></a>`).join('') +
       '</div>';
   }
@@ -1106,6 +1109,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     };
     for (const t of state.todos) {
       if (!t.date) continue;
+      /* v4.28.16 需求 1：按结束条件收口的重复事项不再出现在日历上。
+         主列表 / 周期卡上一版已处理，但日历走的是这条独立的数据源 ——
+         漏掉它就会出现「列表里已经完成、月历圆点和当日面板还挂着」的鬼影。 */
+      if (t.repeatClosed) continue;
       put(t.date, t);                           // 重复事项的基准日同样出现在日历上
       if (t.repeat || t.repeatRule) {
         for (const y of years) for (const key of repeatOccurrencesInYear(t, y)) put(key, t);
@@ -1781,12 +1788,16 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
        否则权限、确认弹窗、成功提示都要复制一份，迟早两份逻辑走偏。 */
   function postMenuHtml(p, canContrib) {
     const id = p.id;
+    /* v4.28.16 需求 2：五项图标统一成 icons/ui 线描 SVG（与全站图标同一套）。
+       ★ 文字标签保留 —— 它是 e2e 的锚点，也是图标看不清时的兜底说明。
+       赞 / 取消赞是同一个 heart 语义的两个状态，用 heart / heart-off 一对。 */
+    const pmIco = (n) => '<span class="ico ico-' + n + '" aria-hidden="true"></span>';
     const items = [
-      `<button type="button" class="post-menu-item" data-act="like-toggle" data-id="${id}" data-target="post">${p.liked ? '💔 取消赞' : '❤️ 赞'}</button>`,
-      `<button type="button" class="post-menu-item" data-act="post-comment-open" data-id="${id}">💬 评论</button>`,
-      canContrib ? `<button type="button" class="post-menu-item" data-act="contrib-add" data-id="${id}">✍️ 一起写</button>` : '',
-      p.mine ? `<button type="button" class="post-menu-item" data-act="post-edit" data-id="${id}">✏️ 编辑</button>` : '',
-      p.mine ? `<button type="button" class="post-menu-item danger" data-act="post-del" data-id="${id}">🗑️ 删除</button>` : '',
+      `<button type="button" class="post-menu-item" data-act="like-toggle" data-id="${id}" data-target="post">${pmIco(p.liked ? 'heart-off' : 'heart')}${p.liked ? '取消赞' : '赞'}</button>`,
+      `<button type="button" class="post-menu-item" data-act="post-comment-open" data-id="${id}">${pmIco('comment')}评论</button>`,
+      canContrib ? `<button type="button" class="post-menu-item" data-act="contrib-add" data-id="${id}">${pmIco('write')}一起写</button>` : '',
+      p.mine ? `<button type="button" class="post-menu-item" data-act="post-edit" data-id="${id}">${pmIco('edit')}编辑</button>` : '',
+      p.mine ? `<button type="button" class="post-menu-item danger" data-act="post-del" data-id="${id}">${pmIco('trash')}删除</button>` : '',
     ].filter(Boolean).join('');
     return `<div class="post-menu" role="menu">${items}</div>`;
   }
@@ -2410,7 +2421,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         </div>
         <div class="rec-foot">
           <span class="badge cat">${esc(r.category)}</span>
-          ${atts.length ? `<span class="badge att-badge" title="${esc(atts.map((a) => a.name).join('、'))}">📎 ${atts.length} 个附件</span>` : ''}
+          ${atts.length ? `<span class="badge att-badge" title="${esc(atts.map((a) => a.name).join('、'))}"><span class="ico ico-paperclip" aria-hidden="true"></span>${atts.length} 个附件</span>` : ''}
           ${visBadgeHtml(r)}
           ${r.remind ? `<span class="badge rec-remind" title="到 ${esc(r.remindTime || '跟随系统')} 提醒我${r.remindedAt ? '（已提醒过）' : ''}">🔔 ${r.remindedAt ? '已提醒' : '待提醒'}</span>` : ''}
           <span>${esc(r.ownerName)} · ${esc(fmtTime(r.updatedAt))}</span>
@@ -2744,7 +2755,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
         <div class="bill-chat" id="bill-chat">${bubbles}</div>
         <div class="bill-quick">
           ${quick.map((t) => `<button type="button" class="chip" data-act="bill-quick" data-text="${esc(t)}">${esc(t)}</button>`).join('')}
-          <button type="button" class="chip chip-edit" data-act="bill-quick-edit" title="自定义快捷短语">✏️</button>
+          <button type="button" class="chip chip-edit" data-act="bill-quick-edit" title="自定义快捷短语" aria-label="自定义快捷短语"><span class="ico ico-edit" aria-hidden="true"></span></button>
         </div>
         <div class="bill-input-row">
           <button type="button" class="bill-ocr-btn${ocrOn ? '' : ' off'}" data-act="bill-ocr"
@@ -11034,7 +11045,7 @@ return `
     if (!atts.length) return '';
     return atts.map((a, i) =>
       `<span class="attach-chip" title="${esc(a.name)}">` +
-      `${a.cover ? `<img class="att-thumb" src="${esc(a.cover)}" alt="" loading="lazy">` : `<span class="att-ico">${fileIcon(a.name)}</span>`}` +
+      `${a.cover ? `<img class="att-thumb" src="${esc(a.cover)}" alt="" loading="lazy">` : `<span class="att-ico">${fileIcoHtml(a.name)}</span>`}` +
       `<span class="att-name">${esc(a.name)}</span>` +
       `<span class="att-size">${esc(fmtBytes(a.size))}</span>` +
       `<button type="button" class="att-del" data-act="rec-att-del" data-i="${i}" title="移除">×</button>` +
@@ -11118,7 +11129,7 @@ return `
           <div class="chips" id="rec-cats">
             ${cats.map((c) =>
               `<button type="button" class="chip${c === curCat ? ' on' : ''}" data-act="rec-cat-pick" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}
-            <button type="button" class="chip${preset === '__custom__' ? ' on' : ''}" data-act="rec-cat-pick" data-cat="__custom__">✏️ 自定义</button>
+            <button type="button" class="chip${preset === '__custom__' ? ' on' : ''}" data-act="rec-cat-pick" data-cat="__custom__"><span class="ico ico-edit" aria-hidden="true"></span>自定义</button>
           </div>
           <input type="text" id="rec-cat-input" maxlength="20" placeholder="输入新分类，如「家电」「保险」"
                  value="${preset === '__custom__' && curCat !== '通用' ? esc(curCat) : ''}"
@@ -11132,7 +11143,7 @@ return `
                图片不进数据库：文件上传到服务器磁盘（与动态图片同一套存储），
                正文里只写「感叹号 + 方括号 + 圆括号路径」这一个图片引用。 -->
           <div class="rec-editor-bar">
-            <button type="button" class="fmt-btn" data-act="rec-img-insert" title="插入一张图片（文件存服务器，正文里只记路径）">🖼 图片</button>
+            <button type="button" class="fmt-btn" data-act="rec-img-insert" title="插入一张图片（文件存服务器，正文里只记路径）"><span class="ico ico-image" aria-hidden="true"></span>图片</button>
             <button type="button" class="fmt-btn" data-act="rec-fmt" data-fmt="insertOrderedList" title="序号列表">1. 序号</button>
             <button type="button" class="fmt-btn" data-act="rec-check-insert" title="插入一条勾选项">☐ 勾选框</button>
             <input type="file" accept="image/*" class="hidden" id="rec-inline-file">
@@ -11151,7 +11162,7 @@ return `
              大小规则直接标在按钮上 —— 规则要在「要按的地方」被读到。 -->
         <div class="field field-bare">
           <div class="composer-imgs" id="rec-imgs" data-gal="${esc(JSON.stringify((r.images || []).map(recImgSrc)))}">${recThumbHtml(r.images || [])}</div>
-          <button type="button" class="btn-ghost btn-sm" data-act="rec-img-add">＋ 图片（单个不超过 ${maxImgMb()}MB，自动压缩）</button>
+          <button type="button" class="btn-ghost btn-sm" data-act="rec-img-add"><span class="ico ico-image" aria-hidden="true"></span>图片（单个不超过 ${maxImgMb()}MB，自动压缩）</button>
           <input type="file" accept="image/*" multiple class="hidden" id="rec-file">
         </div>
         <div class="field field-bare">

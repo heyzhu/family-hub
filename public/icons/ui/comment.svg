@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <!-- 评论：对话气泡；stroke 纯黑仅供 CSS mask 取 alpha，实际颜色由 currentColor 注入 -->
+<path d="M19.5 11.7a7.2 7.2 0 0 1-7.2 7.2H9.4l-4.1 2.7v-3.9a7.2 7.2 0 0 1 4.3-13h2.7a7.2 7.2 0 0 1 7.2 7.2z"/>
+</svg>
