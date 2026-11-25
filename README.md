@@ -39,9 +39,11 @@ docker compose up -d
 node server.js          # 默认 3455 端口，数据落在 ./data
 ```
 
-**飞牛 NAS**：应用中心 → 手动安装 → 选 `familyhub-<版本>-fnos-<架构>.fpk`（x86 选 amd64，ARM 选 arm64）。
+**飞牛 NAS**：应用中心 → 手动安装 → 选 `familyhub-<版本>-fnos-<架构>.fpk`（x86 选 amd64，ARM 选 arm64）。装完从飞牛桌面的「我们一家」图标进入。
 
 打开 `http://机器IP:3455`，注册第一个账号（自动成为管理员）就能用了。
+
+> **想在外网用？** 用 frp / 内网穿透只映射飞牛 Web 的 443 就够，不需要再给 3455 单独开端口 —— fpk 的桌面图标走飞牛统一网关（`/app/familyhub/`），和桌面同源同端口。用 Docker / Node 部署的，见 [完全配置 · 反向代理与 HTTPS](docs/guides/02-完全配置.md#挂在反向代理的子路径下)。
 
 ---
 
@@ -164,4 +166,4 @@ node server.js          # 默认 3455 端口，数据落在 ./data
 
 ## 版本与许可
 
-当前版本 **5.0.1**。更新记录见 [CHANGELOG.md](CHANGELOG.md)，许可见 [LICENSE](LICENSE)（AGPL-3.0）。
+当前版本 **5.0.2**。更新记录见 [CHANGELOG.md](CHANGELOG.md)，许可见 [LICENSE](LICENSE)（AGPL-3.0）。
