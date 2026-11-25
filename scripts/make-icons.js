@@ -207,20 +207,20 @@ function render(size, { scale = 1, round = true, transparent = true } = {}) {
 }
 
 /* ── 3. 输出 ─────────────────────────────────────────────────────────
-   四份尺寸/参数都不一样，是有意为之：
-     · any 版自己带圆角 → 桌面 Chrome / 部分启动器直接显示好看
-     · maskable 版满幅 + scale 0.72 → 落在 Android 安全区（直径 80%）内
-     · apple-touch 满幅直角 + alpha=255 → iOS 不会把边角填黑 */
+   v5.0.0：四份**全部自己画圆角 + 四角透明**。
+   原实现里 apple-touch / maskable 走 round:false + transparent:false（满幅直角 Alpha=255），
+   指望 iOS / Android 自己加圆角；但 Android 原生 PWA splash 拿 apple-touch 当启动图
+   直接铺满，出来就是直角方形米色块（用户截图实测）。改成统一圆角后 splash 立刻是圆的。
+   ★ 代价：iOS 主屏若系统不补圆角，四角可能显黑 —— 用户明确选的取舍。 */
 const TARGETS = [
   /* scale 0.88：图形四周留 6% 呼吸，避免屋顶尖/门槛顶到边线 */
   { file: 'icon-192.png', size: 192, opt: { round: true, transparent: true, scale: 0.88 } },
   { file: 'icon-512.png', size: 512, opt: { round: true, transparent: true, scale: 0.88 } },
-  /* maskable：安全区是「直径 80% 的圆」（半径 0.4）。房子的最低两角是
-     离圆心最远的点，scale=0.74 时距离 ≈ 0.375 < 0.4，留出遮罩余量；
-     再大就会在圆形遮罩下被切掉门槛两角。 */
-  { file: 'icon-maskable-512.png', size: 512, opt: { round: false, transparent: false, scale: 0.74 } },
-  /* iOS 自己加圆角，这里必须满幅直角 + 不透明 */
-  { file: 'apple-touch-icon-180.png', size: 180, opt: { round: false, transparent: false, scale: 0.86 } },
+  /* maskable：安全区是「直径 80% 的圆」（半径 0.4），scale=0.74 留出遮罩余量。
+     v5.0.0 起也自己画圆角（round:true），四角透明，与其它三张观感一致。 */
+  { file: 'icon-maskable-512.png', size: 512, opt: { round: true, transparent: true, scale: 0.74 } },
+  /* v5.0.0：apple-touch 不再满幅直角，改为圆角透明（见上） */
+  { file: 'apple-touch-icon-180.png', size: 180, opt: { round: true, transparent: true, scale: 0.86 } },
 ];
 
 fs.mkdirSync(OUT_DIR, { recursive: true });

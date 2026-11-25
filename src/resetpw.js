@@ -143,7 +143,7 @@ async function request({ username, ip, sendMail } = {}) {
   const key = checkThrottle(name, ip);
 
   /* ② 查人：查不到 / 没绑邮箱都走「静默成功」，响应与真实发送完全一致 */
-  const row = db.get('SELECT id, username, display_name, notify_email FROM users WHERE username = ?', [name]);
+  const row = db.get('SELECT id, username, display_name, notify_email FROM users WHERE username = ? AND deleted = 0', [name]);
   const email = row ? String(row.notify_email || '').trim() : '';
   if (!row || !reminders.EMAIL_RE.test(email)) {
     markSent(key);           // 也占一次配额：否则可以用 429 的时机反推账号是否存在
@@ -200,7 +200,7 @@ async function confirm({ username, code, password } = {}) {
   if (!/^\d{6}$/.test(pin)) throw fail('请输入 6 位数字验证码', 400, 'BAD_CODE');
   if (pw.length < 6) throw fail('新密码至少 6 位', 400, 'BAD_PASSWORD');
 
-  const row = db.get('SELECT id, username FROM users WHERE username = ?', [name]);
+  const row = db.get('SELECT id, username FROM users WHERE username = ? AND deleted = 0', [name]);
   if (!row) throw fail('验证码不正确或已过期', 400, 'BAD_CODE');
 
   const rec = db.get(

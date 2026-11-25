@@ -17,10 +17,15 @@ make-icons-from-source.py · 由设计稿源图生成 PWA 图标（v4.28.12）
 四种用途（不能合并）：
   icon-192.png            any，浏览器标签 / 桌面 Chrome 安装
   icon-512.png            any，高清 / 分享卡片
-  apple-touch-icon-180    iOS 主屏：**满幅不透明**，iOS 自己加圆角，
-                          预圆角会在四角留出白边，所以这一张四角填底色
-  icon-maskable-512       Android 自适应：满幅不透明 + 内容缩进安全区
-                          （系统会按 80% 安全圆裁剪，超出部分可能被切掉）
+  apple-touch-icon-180    iOS 主屏。★ v5.0.0 起改为**透明圆角**：
+                          原实现是满幅不透明（等 iOS 自己加圆角），但 Android 的
+                          原生 PWA splash 会拿它当启动图直接铺满，结果就是一枚
+                          「直角方形米色块」（用户截图实测四角 alpha=255、每一
+                          扫描行宽度全等）。改成透明圆角后系统 splash 立刻是圆角。
+                          ★ 代价：iOS 主屏若系统不再补圆角，四角可能显黑 ——
+                          这是用户明确选的取舍（见 CHANGELOG v5.0.0）。
+  icon-maskable-512       Android 自适应：v5.0.0 也改成透明圆角 + 内容缩进安全区，
+                          与另外三张观感一致；系统按 80% 安全圆再裁一次，不会出直角。
 
 用法：
   python scripts/make-icons-from-source.py [源图路径]
@@ -112,26 +117,27 @@ def main():
         im.putalpha(rounded_mask((size, size)))
         return im
 
-    # ② 不透明图标：底色铺满 + 方块铺满（给 iOS / maskable 用）
-    def opaque_icon(size, inner_ratio=1.0):
-        im = Image.new('RGBA', (size, size), base + (255,))
-        if inner_ratio == 1.0:
-            art = square.resize((size, size), Image.LANCZOS)
-            im.paste(art, (0, 0))
-        else:
-            inner = int(round(size * inner_ratio))
-            art = square.resize((inner, inner), Image.LANCZOS).convert('RGBA')
-            art.putalpha(rounded_mask((inner, inner)))
-            off = (size - inner) // 2
-            im.paste(art, (off, off), art)
+    # ② v5.0.0：原来「底色铺满 + 方块铺满」的不透明图标改成透明圆角。
+    #    ★ inner_ratio < 1 时（maskable）把圆角方块缩到安全区居中，
+    #      四角保持全透明 —— 系统 splash 直接铺这张图时四角就是圆的。
+    def rounded_icon(size, inner_ratio=1.0):
+        if inner_ratio >= 1:
+            return any_icon(size)
+        inner = int(round(size * inner_ratio))
+        im = Image.new('RGBA', (size, size), base + (0,))
+        art = square.resize((inner, inner), Image.LANCZOS).convert('RGBA')
+        art.putalpha(rounded_mask((inner, inner)))
+        off = (size - inner) // 2
+        im.alpha_composite(art, (off, off))
         return im
 
     jobs = [
         ('icon-192.png', any_icon(192)),
         ('icon-512.png', any_icon(512)),
-        ('apple-touch-icon-180.png', opaque_icon(180)),
+        # v5.0.0：两张都改成透明圆角（原来四角 alpha=255，Android splash 显示成直角方块）
+        ('apple-touch-icon-180.png', rounded_icon(180)),
         # 安全区：Android 按 80% 直径的圆裁剪，内容缩到 78% 最稳
-        ('icon-maskable-512.png', opaque_icon(512, 0.78)),
+        ('icon-maskable-512.png', rounded_icon(512, 0.78)),
     ]
 
     os.makedirs(OUT, exist_ok=True)

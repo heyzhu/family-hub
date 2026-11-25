@@ -170,6 +170,14 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     return `hsl(${h}, 46%, 52%)`;
   }
 
+  /* v5.0.0：**所有选人场景的唯一入口** —— 已停用成员不可见不可选。
+     ★ /api/members 对管理员会返回停用的人（家庭成员页要能显示并启用），
+       所以参与人 / 指定可见 / 企微映射 / 草稿候选等一律走这里过滤。
+       历史内容里已存在的昵称不受影响（那是从 t.participants 读的，不是从 members）。 */
+  function activeMembers() {
+    return (state.members || []).filter((m) => m && !m.deleted);
+  }
+
   /* 昵称 → 自定义头像路径。动态 / 评论里只带作者昵称，所以要靠这张表把头像找回来。
      每次成员或本人数据更新后由 refreshAvatarMap() 重建。 */
   let avatarMap = new Map();
@@ -1375,6 +1383,11 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     });
   }
 
+  /* v5.0.0：待办 meta 行的线描图标（14px，随文字色）。
+     ★ 全部走 icons/ui 同一套，原 emoji 全部撤掉 —— 不同平台 emoji 字形不一、
+       缩放后糊成一团，和右上角已是线描的角标放一起尤其违和。 */
+  const mi = (n) => `<span class="ico ico-${n} mi" aria-hidden="true"></span>`;
+
   function todoHtml(t, opts) {
     const o = opts || {};
     // v4.10.0：周期判定走 repeat.js 统一读取（repeat_rule 优先、repeat 回落）
@@ -1412,7 +1425,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       } else {
         meta.push(`<span class="next-remind" title="${esc(advance > 0
           ? `提前 ${advance} 天提醒（事项本身在 ${t.nextOccurrence || key}）`
-          : '到点当天提醒')}">⏰ 下次提醒 ${esc(text || '—')}` +
+          : '到点当天提醒')}">${mi('alarm')} 下次提醒 ${esc(text || '—')}` +
           `${advance > 0 ? `<i class="adv-tag">提前${advance}天</i>` : ''}</span>`);
       }
       /* v4.19.0 需求 2-1：重复事项的关键信息补全 —— 旧版只有一个短徽标（「每天」）
@@ -1424,43 +1437,43 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     /* v4.28.7：结束重复只在重复事项上有意义 */
       const ruleName = t.repeatRule || Repeat.rule(t);
       const ruleText = repeatRuleLabel(t) || Repeat.RULE_LABEL[ruleName] || '重复';
-      meta.push(`<span class="badge repeat" title="重复规则：${esc(ruleText)}，到点自动提醒">🔁 ${esc(ruleText)}</span>`);
+      meta.push(`<span class="badge repeat" title="重复规则：${esc(ruleText)}，到点自动提醒">${mi('repeat')} ${esc(ruleText)}</span>`);
       /* v4.28.15：系列已经收口（不再有下一次）时，别再写「提醒时间 08:00」——
          那条信息在一条永远不会再响的事项上只会误导人。角标 ✅ 已给出结论，
          这里补一句「已结束」，让它在「已完成」列表里读起来是一条完成的记录。 */
       if (t.repeatEnded) {
-        meta.push('<span class="rep-time off">🔕 已结束，不会再提醒</span>');
+        meta.push('<span class="rep-time off">' + mi('bell-off') + ' 已结束，不会再提醒</span>');
       } else if (t.remind) {
         const rt = t.remindTime || t.nextRemindTime || '';
         if (rt) {
           meta.push(`<span class="rep-time" title="${esc(t.remindTimeIsDefault
             ? '跟随消息推送设置里的「待办提醒」默认时间'
-            : '这条待办单独设置的时间')}">🕐 提醒时间 ${esc(rt)}${t.remindTimeIsDefault ? '<i class="def-tag">默认</i>' : ''}</span>`);
+            : '这条待办单独设置的时间')}">${mi('clock')} 提醒时间 ${esc(rt)}${t.remindTimeIsDefault ? '<i class="def-tag">默认</i>' : ''}</span>`);
         }
       } else {
-        meta.push('<span class="rep-time off">🔕 未开启提醒</span>');
+        meta.push('<span class="rep-time off">' + mi('bell-off') + ' 未开启提醒</span>');
       }
     } else if (o.showDate !== false) {
       if (t.endDate && t.endDate > t.date) {
         // v4.10.0：跨天待办显示「10-21 ~ 10-23 · 共 3 天」（文档 5.2-3）
         const days = Math.round((Date.parse(t.endDate + 'T00:00:00Z')
           - Date.parse(t.date + 'T00:00:00Z')) / 86400000) + 1;
-        meta.push(`<span>📅 ${esc(t.date)} ~ ${esc(t.endDate)} · 共 ${days} 天</span>`);
+        meta.push(`<span>${mi('calendar')} ${esc(t.date)} ~ ${esc(t.endDate)} · 共 ${days} 天</span>`);
       } else {
-        meta.push(`<span>📅 ${t.date ? esc(t.date) : '待安排'}</span>`);
+        meta.push(`<span>${mi('calendar')} ${t.date ? esc(t.date) : '待安排'}</span>`);
       }
     }
-    if (t.startTime && !t.repeat && !t.repeatRule) meta.push(`<span>🕐 ${esc(t.startTime)}${t.endTime ? '–' + esc(t.endTime) : ''}</span>`);
-    if (t.participants.length) meta.push(`<span>👥 ${esc(t.participants.join('、'))}</span>`);
-    if (!o.hideOwner && t.ownerName) meta.push(`<span>✍️ ${esc(t.ownerName)}</span>`);
+    if (t.startTime && !t.repeat && !t.repeatRule) meta.push(`<span>${mi('clock')} ${esc(t.startTime)}${t.endTime ? '–' + esc(t.endTime) : ''}</span>`);
+    if (t.participants.length) meta.push(`<span>${mi('users')} ${esc(t.participants.join('、'))}</span>`);
+    if (!o.hideOwner && t.ownerName) meta.push(`<span>${mi('user')} ${esc(t.ownerName)}</span>`);
 
     // ★ v1.6.0：徽标不再单独占一行（那样每条待办的高度会随徽标数量变化），
     //   统一并进 meta 行 —— 既保证「所有信息都留了位置」，也让每条高度一致。
     // v4.19.0：重复规则已在上面的 🔁 徽标里讲清楚，这里不再重复；🔔 只留给一次性待办。
-    if (t.remind && t.date && !t.repeat && !t.repeatRule) meta.push('<span class="badge repeat">🔔 提醒</span>');
+    if (t.remind && t.date && !t.repeat && !t.repeatRule) meta.push('<span class="badge repeat">' + mi('bell') + ' 提醒</span>');
     // v4.6.0 需求 3：开了「催促完成」的待办要一眼看得出来（催多少次都可能，用户得知道它在响）
     if (t.urgeMinutes > 0) {
-      meta.push(`<span class="badge urge" title="到点后每 ${t.urgeMinutes} 分钟催一次，按你选的推送渠道发：企业微信里回「已完成」就停；邮件 / 群机器人请到待办里勾一下这条">⏰ 每 ${t.urgeMinutes} 分钟催</span>`);
+      meta.push(`<span class="badge urge" title="到点后每 ${t.urgeMinutes} 分钟催一次，按你选的推送渠道发：企业微信里回「已完成」就停；邮件 / 群机器人请到待办里勾一下这条">${mi('alarm')} 每 ${t.urgeMinutes} 分钟催</span>`);
     }
     /* v4.28.11 需求 4：「重要 / 稍后 / 仅自己」这三个纯标签搬到右上角角标了 ——
        它们和日期、参与人挤在同一行时，一屏五条待办全是小色块，反而看不出重点。
@@ -1492,7 +1505,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const tick = t.repeatClosed
       ? '<span class="tick tick-static tick-closed" title="这串重复已按结束条件完成，不会再提醒">✓</span>'
       : noTick
-        ? '<span class="tick tick-static" title="重复事项：只有它到点的那一天才能勾选完成">🔁</span>'
+        ? '<span class="tick tick-static" title="重复事项：只有它到点的那一天才能勾选完成">' + mi('repeat') + '</span>'
         : (isRepeat
           ? `<button type="button" class="tick" data-act="todo-day-toggle" data-id="${t.id}" data-date="${esc(tickDay)}"
                      title="${doneNow ? '取消今天的完成' : '标记今天完成：今天不再提醒（明天/下个周期照常）'}">✓</button>`
@@ -4408,7 +4421,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
       const fam = line.slice(i + 1).trim().replace(/^@/, '');
       if (wx && fam) bound.set(fam.toLowerCase(), wx);
     }
-    return (state.members || [])
+    return (activeMembers())
       .filter((m) => m && m.username)
       .map((m) => `${m.username}=${bound.get(String(m.username).toLowerCase()) || ''}`)
       .join('\n');
@@ -4448,10 +4461,10 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
             <!-- ★ v4.28.1：映射框里只有登录账号（英文），管理员未必记得谁是谁 ——
                  框上面补一行「账号 = 昵称」的对照，看一眼就知道该给哪一行填。
                  位置特意在输入框**之前**：绑定状态那句仍紧贴输入框下方，不挤走它。 -->
-            <div class="wecom-map-legend">${(state.members || [])
+            <div class="wecom-map-legend">${activeMembers()
               .map((m) => `${esc(m.username)} = ${esc(m.display_name)}`).join(' · ')}</div>
             <textarea class="wecom-map" data-mk="wc-map-inline" spellcheck="false"
-                      rows="${Math.min(12, Math.max(3, (state.members || []).length + 1))}"
+                      rows="${Math.min(12, Math.max(3, activeMembers().length + 1))}"
                       placeholder="alice=zhangsan&#10;bob=lisi">${esc(wecomMapText(w))}</textarea>
             <div class="wecom-map-state">
               <span class="${statusCls}">${bondN ? `已绑定 ${bondN} 个账号` : '还没绑定任何账号'}</span>
@@ -4565,7 +4578,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
     const el = document.querySelector('#main [data-mk="wc-map-inline"]');
     if (!el) return null;
     const byName = new Map();
-    for (const m of (state.members || [])) {
+    for (const m of activeMembers()) {
       if (m && m.username) byName.set(String(m.username).toLowerCase(), m.username);
     }
     const out = [];
@@ -4679,23 +4692,28 @@ return `
 
   function meHtml() {
     const me = state.me;
+    /* v5.0.0：家庭成员列表是**唯一**能看到已停用账号的地方，且只有管理员看得到。
+       停用的行只给「重新启用」一个操作；数据仍原样保留（待办 / 动态 / 记录 / 账单）。 */
     const members = state.members.map((m) => `
-      <div class="row member-row">
-        ${me.is_admin
+      <div class="row member-row${m.deleted ? ' member-off' : ''}">
+        ${me.is_admin && !m.deleted
           ? `<button type="button" class="avatar-link" data-act="member-info" data-id="${m.id}"
                      title="查看 ${esc(m.display_name)} 的全部参数">${avatarHtml(m.display_name)}</button>`
           : avatarHtml(m.display_name)}
         <div class="r-label">
-          <b>${esc(m.display_name)}${m.id === me.id ? ' <span class="badge">我</span>' : ''}${m.is_admin ? ' <span class="badge cat">管理员</span>' : ''}${m.record_lock_enabled ? ' <span class="badge priv"><span class="ico ico-vis-private" aria-hidden="true"></span>记录本已上锁</span>' : ''}</b>
-          <small>@${esc(m.username)}</small>
+          <b class="${m.deleted ? 'off-name' : ''}">${esc(m.display_name)}${m.id === me.id ? ' <span class="badge">我</span>' : ''}${m.is_admin ? ' <span class="badge cat">管理员</span>' : ''}${m.deleted ? ' <span class="badge off">已停用</span>' : ''}${m.record_lock_enabled && !m.deleted ? ' <span class="badge priv"><span class="ico ico-vis-private" aria-hidden="true"></span>记录本已上锁</span>' : ''}</b>
+          <small>@${esc(m.username)}${m.deleted ? ' · 数据已保留' : ''}</small>
         </div>
-        ${me.is_admin && m.id !== me.id ? `
+        ${me.is_admin && m.id !== me.id ? (m.deleted
+          ? `<button type="button" class="btn-soft btn-sm" data-act="member-enable" data-id="${m.id}" data-name="${esc(m.display_name)}"
+                   title="恢复该账号，所有数据原样保留">启用</button>`
+          : `
           <button type="button" class="btn-ghost btn-sm" data-act="member-lock" data-id="${m.id}"
                   data-name="${esc(m.display_name)}" data-lock="${m.record_lock_enabled ? '1' : '0'}"
                   title="重置或清空该成员的记录本访问密码">访问密码</button>
           <button type="button" class="btn-ghost btn-sm" data-act="member-reset" data-id="${m.id}" data-name="${esc(m.display_name)}">重置密码</button>
           <button type="button" class="btn-danger btn-sm" data-act="member-del" data-id="${m.id}" data-name="${esc(m.display_name)}"
-                  title="删除该成员及其全部数据">删除</button>` : ''}
+                  title="停用该成员（数据全部保留，可随时启用）">停用</button>`) : ''}
       </div>`).join('');
 
     const lockOn = me.record_lock_enabled;
@@ -4985,7 +5003,7 @@ return `
       ${meFold('profile', '<span class="ico ico-user" aria-hidden="true"></span>', '个人资料',
         `${esc(me.display_name)} · @${esc(me.username)}`, profileBody)}
 
-      ${meFold('members', '<span class="ico ico-vis-family" aria-hidden="true"></span>', '家庭设置和成员', `${state.members.length} 人`, `
+      ${meFold('members', '<span class="ico ico-vis-family" aria-hidden="true"></span>', '家庭设置和成员', `${activeMembers().length} 人`, `
         ${me.is_admin && s ? `
         <div class="sub-head">家庭设置</div>
         <div class="row-list">
@@ -4996,9 +5014,11 @@ return `
             <button type="button" class="btn-soft btn-sm" data-act="admin-settings">设置</button>
           </div>
         </div>` : ''}
-        <div class="sub-head sub-head-row">成员（${state.members.length} 人）${
+        <div class="sub-head sub-head-row">成员（${activeMembers().length} 人）${
           me.is_admin ? '<span class="sub-head-hint">点击成员头像查看参数</span>' : ''}</div>
-        <div class="row-list">${members}</div>`)}
+        <div class="row-list">${members}</div>${
+          me.is_admin && state.members.some((m) => m.deleted)
+            ? '<div class="off-hint">已停用账号仅在此处可见，数据全部保留，可随时启用。</div>' : ''}`)}
 
       ${meFold('notify', '<span class="ico ico-bell" aria-hidden="true"></span>', '消息推送设置',
         `${pushChannelSummary(me)} · 待办提醒${sysRemindOn ? '开' : '关'} · 内容通知${sysNotifyOn ? '开' : '关'}`,
@@ -6368,7 +6388,7 @@ return `
    * 现在把本人作为一个恒亮的、点不掉的成员摆出来，看得见的东西才不用解释。
    */
   function visOthers() {
-    return (state.members || []);
+    return activeMembers();
   }
 
   /** 可见范围选择器 + 成员勾选面板。visibleTo 是 id 数组（新数据）或逗号串（兜底） */
@@ -6432,7 +6452,7 @@ return `
       .map((b) => Number(b.dataset.visId)));
     const meId = Number((state.me && state.me.id) || 0);
     const idOf = new Map();
-    for (const m of state.members || []) idOf.set(String(m.display_name), Number(m.id));
+    for (const m of activeMembers()) idOf.set(String(m.display_name), Number(m.id));
     const blocked = [];
     for (const chip of layer.querySelectorAll('#part-chips [data-act="part-toggle"]')) {
       const uid = idOf.get(String(chip.dataset.name || ''));
@@ -6560,7 +6580,7 @@ return `
     // 候选 = 本家庭全部成员 +（编辑时）该事项历史里出现过的名字。
     // 后者是旧版本手输参与人留下的，保留出来才能被取消掉，不至于变成改不掉的脏数据。
     const names = Array.from(new Set([
-      ...state.members.map((m) => m.display_name),
+      ...activeMembers().map((m) => m.display_name),
       ...(myName ? [myName] : []),
       ...(t.participants || []),
     ]));
@@ -9292,21 +9312,34 @@ return `
       case 'member-reset': openResetForm(id, el.dataset.name); break;
       /* v4.28.0：点成员头像 → 查看他的全部可配置参数（仅管理员可见的入口） */
       case 'member-info': await openMemberInfo(id); break;
-      /* v4.10.0：删除成员（管理员）。★ 二次确认是需求原文：
-         弹确认框写清「删的是谁、数据会一并删除、不可恢复」，确认后才发请求。 */
+      /* v5.0.0：停用成员（软删除）。★ 二次确认写清「数据保留、可启用、立即不能登录」，
+         不再说「一并删除、不可恢复」——那是旧版硬删除的文案。 */
       case 'member-del': {
         const name = el.dataset.name || '该成员';
         if (!window.confirm(
-          `确定删除成员「${name}」吗？\n\n`
-          + '该成员发布的待办、动态、评论、记录与账单等全部数据会一并删除，\n'
-          + '删除后无法恢复。请确认这是你想要做的操作。',
+          `确定停用成员「${name}」吗？\n\n`
+          + '该成员会立即退出登录、不能再用原账号登录；\n'
+          + '他发布的待办、动态、记录与账单等全部数据都会保留，\n'
+          + '你随时可以在这里重新启用他。',
         )) break;
         try {
           await api('/api/members/' + Number(el.dataset.id), { method: 'DELETE' });
           await refreshMembers();
           render();
-          toast(`已删除成员「${name}」`, 'ok');
-        } catch (err) { toast(err.message || '删除失败', 'err'); }
+          toast(`已停用成员「${name}」，数据已保留`, 'ok');
+        } catch (err) { toast(err.message || '停用失败', 'err'); }
+        break;
+      }
+      /* v5.0.0：管理员在家庭成员页启用已停用账号。 */
+      case 'member-enable': {
+        const name = el.dataset.name || '该成员';
+        if (!window.confirm(`确定重新启用「${name}」吗？\n\n他将能用原账号密码登录，之前的所有数据原样恢复可见。`)) break;
+        try {
+          await api(`/api/members/${Number(el.dataset.id)}/enable`, { method: 'POST', body: {} });
+          await refreshMembers();
+          render();
+          toast(`已启用成员「${name}」`, 'ok');
+        } catch (err) { toast(err.message || '启用失败', 'err'); }
         break;
       }
       case 'member-lock': openMemberLockForm(id, el.dataset.name, el.dataset.lock === '1'); break;

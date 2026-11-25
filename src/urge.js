@@ -382,7 +382,7 @@ async function tickUrge(opts) {
             t.urge_max_count, t.urge_window_start, t.urge_window_end, t.urge_start_at,
             u.username, u.push_channel, u.push_fallback, u.notify_email
        FROM todos t JOIN users u ON u.id = t.user_id
-      WHERE t.done = 0 AND t.urge_minutes > 0
+      WHERE u.deleted = 0 AND t.done = 0 AND t.urge_minutes > 0
         AND t.urge_status IN ('pending','active','paused')
         AND t.todo_date IS NOT NULL AND t.todo_date <> ''
       ORDER BY t.todo_date ASC, t.start_time ASC LIMIT 500`,
@@ -589,7 +589,7 @@ function failUrge(claimed, channel, err, now, out) {
 }
 
 function userIdOf(username) {
-  const row = db.get('SELECT id FROM users WHERE username = ?', [String(username || '')]);
+  const row = db.get('SELECT id FROM users WHERE username = ? AND deleted = 0', [String(username || '')]);
   return row ? row.id : 0;
 }
 
@@ -622,7 +622,7 @@ function pickToComplete(username, opts) {
     `SELECT t.id, t.title, t.todo_date, t.end_date, t.end_time, t.start_time,
             t.repeat, t.repeat_rule, t.urge_minutes, t.urge_last_at, t.urge_status
        FROM todos t JOIN users u ON u.id = t.user_id
-      WHERE u.username = ? AND (t.done = 0 OR t.repeat != '' OR t.repeat_rule != '')
+      WHERE u.username = ? AND u.deleted = 0 AND (t.done = 0 OR t.repeat != '' OR t.repeat_rule != '')
         AND t.todo_date IS NOT NULL AND t.todo_date <> ''
       ORDER BY (t.urge_status = 'active') DESC, (t.urge_last_at <> '') DESC,
                t.todo_date ASC, t.start_time ASC, t.id ASC
@@ -702,7 +702,7 @@ function stopUrgeManual(id) {
 function activeUrgeOf(username) {
   return db.get(
     `SELECT t.* FROM todos t JOIN users u ON u.id = t.user_id
-      WHERE u.username = ? AND t.done = 0 AND t.urge_minutes > 0
+      WHERE u.username = ? AND u.deleted = 0 AND t.done = 0 AND t.urge_minutes > 0
         AND t.urge_status IN ('active','paused')
       ORDER BY t.urge_last_at DESC, t.id ASC LIMIT 1`,
     [String(username || '')],

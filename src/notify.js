@@ -230,7 +230,7 @@ function recipientsExcept(actorIds) {
   if (!ids.length) return [];
   const marks = ids.map(() => '?').join(',');
   const rows = db.all(
-    `SELECT id, display_name, username, notify_email, push_channel, push_fallback FROM users WHERE id NOT IN (${marks})`,
+    `SELECT id, display_name, username, notify_email, push_channel, push_fallback FROM users WHERE deleted = 0 AND id NOT IN (${marks})`,
     ids,
   );
   return rows.filter((u) => {

@@ -100,9 +100,11 @@ function resolveSession(token) {
     `SELECT s.expires_at, s.last_seen_at, s.records_unlocked_key,
             u.id, u.username, u.display_name, u.is_admin, u.record_lock_enabled,
             u.record_lock_hash, u.notify_email, u.push_channel, u.push_fallback,
-            u.avatar, u.theme, u.created_at
+            u.avatar, u.theme, u.created_at, u.deleted
        FROM sessions s JOIN users u ON u.id = s.user_id
-      WHERE s.token = ?`,
+      /* v5.0.0：停用用户的会话当场失效 —— 这是「删了就不能再用」的唯一硬闸门。
+         不删 sessions 行（启用后可重新登录拿新会话），但这里一律返回 null。 */
+      WHERE s.token = ? AND u.deleted = 0`,
     [token],
   );
   if (!row) return null;
@@ -136,6 +138,7 @@ function resolveSession(token) {
        和 push_channel 当年漏加是同一类 bug。 */
     theme: THEMES.includes(String(row.theme || '')) ? String(row.theme) : '',
     created_at: row.created_at,
+    deleted: !!row.deleted,
     record_lock_enabled: !!row.record_lock_enabled,
     // 只回布尔：是「自定义访问密码」还是「复用登录密码」。哈希绝不下发。
     record_lock_custom: !!(row.record_lock_enabled && row.record_lock_hash),
@@ -195,6 +198,7 @@ function publicUser(row) {
     /* 空串 = 还没选过。前端见到空串就用默认主题，
        这样「老用户第一次登录」和「用户主动选了默认主题」在前端表现一致。 */
     theme: THEMES.includes(String(row.theme || '')) ? String(row.theme) : '',
+    deleted: !!row.deleted,
     created_at: row.created_at,
   };
 }
@@ -278,8 +282,9 @@ async function login({ username, password }, ip) {
     );
   }
   const row = db.get('SELECT * FROM users WHERE username = ?', [String(username || '').trim()]);
-  // 不区分「用户不存在」与「密码错误」，避免账号枚举
-  const ok = !!row && await verifyPassword(password, row.password_hash);
+  // ★ v5.0.0：停用账号视同不存在。仍走同一条 401「用户名或密码不正确」，
+  //   不单独提示「账号已停用」，避免泄露「这个用户名确实存在」（防枚举）。
+  const ok = !!row && !row.deleted && await verifyPassword(password, row.password_hash);
   if (!ok) {
     const n = (rec && !rec.until ? rec.n : 0) + 1;
     if (n >= LOGIN_FAIL_MAX) {
@@ -329,23 +334,53 @@ async function adminResetPassword(actor, targetUserId, newPassword) {
  * · 该成员的数据随外键 ON DELETE CASCADE 一并清除（待办/动态/记录/账单/会话/偏好…），
  *   ai_logs.user_id 无外键，行保留但不再指向任何人 —— 审计日志不随人消失是有意的。
  */
+/**
+ * v5.0.0：管理员「停用」成员（软删除）。
+ * ★ 不删 users 行、不删任何关联数据 —— 待办 / 动态 / 记录本 / 账单 / 点赞全部保留，
+ *   管理员之后可以原样启用回来，历史内容里的昵称也照常显示。
+ * ★ 只做三件事：打 deleted=1、清掉该人所有会话（当前登录态当场失效）、
+ *   在推送/选人/可见性等「活人」查询里排除他（见 api.js 与各 src 模块）。
+ */
 function deleteMember(actor, targetUserId) {
   if (!actor.is_admin) {
-    throw Object.assign(new Error('只有管理员可以删除成员'), { status: 403 });
+    throw Object.assign(new Error('只有管理员可以停用成员'), { status: 403 });
   }
   const target = db.get('SELECT * FROM users WHERE id = ?', [targetUserId]);
   if (!target) throw Object.assign(new Error('成员不存在'), { status: 404 });
   if (target.id === actor.id) {
-    throw Object.assign(new Error('不能删除自己的账号'), { status: 400 });
+    throw Object.assign(new Error('不能停用自己的账号'), { status: 400 });
+  }
+  if (target.deleted) {
+    throw Object.assign(new Error('该成员已停用'), { status: 400 });
   }
   if (target.is_admin) {
-    const admins = db.get('SELECT COUNT(*) AS n FROM users WHERE is_admin = 1').n;
+    /* ★ 只数还在用的管理员 —— 否则最后一个在用管理员无法停用已被停用的管理员。 */
+    const admins = db.get('SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND deleted = 0').n;
     if (Number(admins) <= 1) {
-      throw Object.assign(new Error('这是最后一个管理员，不能删除'), { status: 400 });
+      throw Object.assign(new Error('这是最后一个管理员，不能停用'), { status: 400 });
     }
   }
-  db.run('DELETE FROM users WHERE id = ?', [targetUserId]);
-  return { id: target.id, username: target.username, displayName: target.display_name };
+  db.run('UPDATE users SET deleted = 1 WHERE id = ?', [targetUserId]);
+  db.run('DELETE FROM sessions WHERE user_id = ?', [targetUserId]);
+  return { id: target.id, username: target.username, displayName: target.display_name, deleted: true };
+}
+
+/** v5.0.0：管理员「重新启用」已停用的成员。数据与用户名原封不动回来。 */
+function enableMember(actor, targetUserId) {
+  if (!actor.is_admin) {
+    throw Object.assign(new Error('只有管理员可以启用成员'), { status: 403 });
+  }
+  const target = db.get('SELECT * FROM users WHERE id = ?', [targetUserId]);
+  if (!target) throw Object.assign(new Error('成员不存在'), { status: 404 });
+  if (target.id === actor.id) {
+    throw Object.assign(new Error('不能对自己的账号操作'), { status: 400 });
+  }
+  if (!target.deleted) {
+    throw Object.assign(new Error('该成员已经是启用状态'), { status: 400 });
+  }
+  db.run('UPDATE users SET deleted = 0 WHERE id = ?', [targetUserId]);
+  /* 不恢复旧会话（删除时已清），本人用原账号密码重新登录即可。 */
+  return publicUser(db.get('SELECT * FROM users WHERE id = ?', [targetUserId]));
 }
 
 function updateProfile(userId, { display_name }) {
@@ -540,9 +575,19 @@ async function unlockRecords(token, userId, password) {
   return key;
 }
 
-function listMembers() {
-  return db.all('SELECT * FROM users ORDER BY id')
-    .map((row) => ({ ...publicUser(row), record_lock_enabled: !!row.record_lock_enabled }));
+/**
+ * v5.0.0：成员列表。
+ * ★ 两个口径必须分开：
+ *   - 选人场景（参与人 / 指定可见 / 企微映射 / 报表收件人）永远是**启用的人**，
+ *     由前端 activeMembers() 过滤，后端这里的 includeDeleted 只给管理员设置页用；
+ *   - 管理员在「家庭成员」里要能看到已停用的人（带标记、可启用），
+ *     非管理员则完全看不到 —— 所以是否包含停用人由服务端按身份决定，不能只靠前端藏。
+ */
+function listMembers(includeDeleted) {
+  const rows = includeDeleted
+    ? db.all('SELECT * FROM users ORDER BY id')
+    : db.all('SELECT * FROM users WHERE deleted = 0 ORDER BY id');
+  return rows.map((row) => ({ ...publicUser(row), record_lock_enabled: !!row.record_lock_enabled }));
 }
 
 /**
@@ -632,6 +677,7 @@ module.exports = {
   adminResetPassword,
   adminSetRecordLock,
   deleteMember,
+  enableMember,
   updateProfile,
   changeUsername,
   setPushChannel,

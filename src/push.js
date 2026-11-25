@@ -679,7 +679,7 @@ function hasWecomRecipients() {
   const fsOk = feishu.isReady() && config.pushFeishuEnabled !== false;
   const dtOk = dingtalk.isReady() && config.pushDingtalkEnabled !== false;
   if (!wxOk && !fsOk && !dtOk) return false;
-  const rows = db.all("SELECT id, username, notify_email FROM users");
+  const rows = db.all("SELECT id, username, notify_email FROM users WHERE deleted = 0");
   for (const u of rows) {
     /* v4.28.3：首选与兜底都算「会走这条通道」——
        只看首选会漏掉「首选邮件、兜底企微」的人，发件箱就永远不冲刷了。 */

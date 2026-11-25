@@ -85,7 +85,8 @@ function normVisibleTo(v, ownerId) {
   for (const x of raw) {
     const id = Number(String(x).trim()) || 0;
     if (!id || id === owner || ids.includes(id)) continue;
-    if (!db.get('SELECT id FROM users WHERE id = ?', [id])) continue;
+    /* v5.0.0：已停用成员不可写进「指定可见」名单。 */
+    if (!db.get('SELECT id FROM users WHERE id = ? AND deleted = 0', [id])) continue;
     ids.push(id);
   }
   ids.sort((a, b) => a - b);
@@ -2665,7 +2666,7 @@ function wecomUserOf(fromUser, cfg) {
   const mapped = wecom.userMapOf(cfg).get(String(fromUser || ''));
   if (!mapped) return null;
   const row = db.get(
-    'SELECT id, username, display_name, is_admin FROM users WHERE username = ?',
+    'SELECT id, username, display_name, is_admin FROM users WHERE username = ? AND deleted = 0',
     [String(mapped).replace(/^@/, '')],
   );
   if (!row) return null;
@@ -3817,7 +3818,11 @@ async function handle({ method, pathname, query, body, me, token, recordsKey, ip
   }
 
   if (head === 'members') {
-    if (is('GET') && !second) return { status: 200, json: { members: auth.listMembers() } };
+    /* v5.0.0：只有管理员能拿到已停用的成员（用于「家庭成员」页显示 + 重新启用）。
+       普通成员的接口里根本不出现这些人，前端再怎么翻也看不到。 */
+    if (is('GET') && !second) {
+      return { status: 200, json: { members: auth.listMembers(!!me.is_admin) } };
+    }
     /* v4.28.0 需求：管理员点成员头像 → 看这个人的**全部可配置参数**。
        排查「为什么他收不到提醒」时，过去只能一项一项问、或直接翻数据库；
        这里把账号资料、三种推送通道、个人偏好、企微绑定与全局默认值一次给全。
@@ -3869,10 +3874,14 @@ async function handle({ method, pathname, query, body, me, token, recordsKey, ip
         },
       };
     }
-    /* v4.10.0：管理员删除成员。前端弹二次确认（window.confirm），这里做服务端兜底：
-       不能删自己 / 不能删最后一个管理员。数据随外键级联清除。 */
+    /* v5.0.0：管理员停用成员（软删除，数据全保留）。前端弹二次确认，这里做服务端兜底：
+       不能停自己 / 不能停最后一个在用管理员。 */
     if (is('DELETE') && second) {
       return { status: 200, json: auth.deleteMember(me, idOf(second)) };
+    }
+    /* v5.0.0：管理员重新启用已停用的成员。走 POST（与 reset-password / record-lock 同一风格）。 */
+    if (is('POST') && third === 'enable') {
+      return { status: 200, json: { member: auth.enableMember(me, idOf(second)) } };
     }
     if (is('POST') && third === 'reset-password') {
       const target = await auth.adminResetPassword(me, idOf(second), (body || {}).new_password);

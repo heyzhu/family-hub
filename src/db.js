@@ -310,6 +310,12 @@ function migrate() {
     engine.exec("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT ''");
     done.push('users.theme');
   }
+  /* v5.0.0：软删除标记。老库补列默认 0（全是启用状态），一行数据都不动。
+     ★ users 表不参与 todos 那种重建，这条 ALTER 和上面几条排在一起即可。 */
+  if (!columnExists('users', 'deleted')) {
+    engine.exec('ALTER TABLE users ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+    done.push('users.deleted');
+  }
   /* v4.8.0：把 v4.7.0 留下的「只用邮件」一次性挪到「智能优先企业微信」。
      ★ 必须用 settings 里的一次性标记，否则用户自己改回「只用邮件」后，
        下次重启又会被悄悄改回来 —— 那是最难查的一类问题。 */
@@ -738,6 +744,8 @@ const COLUMN_DEFAULTS = {
   push_fallback: '',
   // v4.11.0：主题同样可能是旧备份里没有的字段
   theme: '',
+  // v5.0.0：软删除标记，旧备份里没有
+  deleted: 0,
   // v1.9.0
   videos: '[]', archived: 0,
   // v4.0.0
@@ -978,7 +986,7 @@ function importAll(payload) {
 
       insertRows('users', ['id', 'username', 'display_name', 'password_hash', 'is_admin',
         'record_lock_enabled', 'record_lock_hash', 'notify_email', 'avatar', 'created_at',
-        'push_channel', 'push_fallback', 'theme'], t.users);
+        'deleted', 'push_channel', 'push_fallback', 'theme'], t.users);
       /* v4.28.3：老备份里的 push_channel 可能还是 'auto' / 'both'，
          恢复后当场落成「首选 wecom + 兜底 mail」——否则界面会显示一个不存在的模式名。 */
       engine.run("UPDATE users SET push_fallback = 'mail' WHERE push_channel IN ('auto','both') AND push_fallback = ''", []);

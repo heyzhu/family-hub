@@ -1157,7 +1157,7 @@ function monthTitle(month) {
  * @param {string} dateKey 报表归属日（「昨天」）
  */
 function buildDailyReport(dateKey) {
-  const users = db.all("SELECT id, display_name, username, notify_email FROM users WHERE notify_email != '' ORDER BY id");
+  const users = db.all("SELECT id, display_name, username, notify_email FROM users WHERE deleted = 0 AND notify_email != '' ORDER BY id");
   const family = rangeStats(dateKey, dateKey, null);
   const title = dayTitle(dateKey);
   const personal = [];
@@ -1173,7 +1173,7 @@ function buildMonthlyReport(month) {
   const from = `${month}-01`;
   const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
   const to = `${month}-${String(lastDay).padStart(2, '0')}`;
-  const users = db.all("SELECT id, display_name, username, notify_email FROM users WHERE notify_email != '' ORDER BY id");
+  const users = db.all("SELECT id, display_name, username, notify_email FROM users WHERE deleted = 0 AND notify_email != '' ORDER BY id");
   const family = rangeStats(from, to, null);
   const personal = users.map((u) => ({ user: u, stats: rangeStats(from, to, u.id) }));
   return { month, from, to, title: monthTitle(month), family, personal };
@@ -1442,7 +1442,7 @@ function wecomReportRecipients(cfg) {
     if (key && !byUser.has(key)) byUser.set(key, wx);
   }
   const out = [];
-  for (const u of db.all('SELECT id, username, push_channel FROM users ORDER BY id')) {
+  for (const u of db.all('SELECT id, username, push_channel FROM users WHERE deleted = 0 ORDER BY id')) {
     /* v4.25.0 需求 4：报表走「记账」这一类的渠道（没单独配就是他的推送方式） */
     if (push.channelFor(u.id, 'bill') === 'mail') continue;   // 明确只要邮件
     const wx = byUser.get(String(u.username || '').trim());
@@ -1527,7 +1527,7 @@ async function sendReports(opts) {
      三类内容里「记账」可以单独指定首选（channel_bill），兜底永远取全局那一个。 */
   const people = [];
   const prefsMap = userprefs.loadAll();
-  for (const u of db.all('SELECT id, username, display_name, notify_email, push_channel, push_fallback FROM users ORDER BY id')) {
+  for (const u of db.all('SELECT id, username, display_name, notify_email, push_channel, push_fallback FROM users WHERE deleted = 0 ORDER BY id')) {
     people.push({
       u,
       name: u.display_name || u.username || `用户${u.id}`,

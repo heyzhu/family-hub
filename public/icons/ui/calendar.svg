@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <!-- 日历：待办日期（单日 / 跨天范围）；stroke 纯黑仅供 CSS mask 取 alpha，颜色由 currentColor 注入 -->
+<rect x="3.6" y="5.2" width="16.8" height="15" rx="2"/><path d="M3.6 9.6h16.8M8 3.4v3.4M16 3.4v3.4"/>
+</svg>

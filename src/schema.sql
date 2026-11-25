@@ -8,6 +8,9 @@
 -- record_lock_*：记录本访问密码。enabled=1 时打开记录本需先解锁；
 --                hash 为空表示复用登录密码，否则为自定义访问密码（scrypt 哈希）。
 -- avatar：自定义头像图片路径（v1.6.0 新增），空串表示用「昵称首字色块」兜底。
+-- deleted：v5.0.0 软删除标记。1 = 已停用（数据全部保留，管理员可在家庭成员页重新启用）。
+--          停用的账号不能登录、会话立即失效、所有选人场景不可见不可选，
+--          但历史内容里的昵称照常显示（JOIN users 取 display_name 的地方不过滤）。
 CREATE TABLE IF NOT EXISTS users (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   username            TEXT    NOT NULL UNIQUE,                 -- 登录名
@@ -21,6 +24,7 @@ CREATE TABLE IF NOT EXISTS users (
   push_fallback       TEXT    NOT NULL DEFAULT '',             -- v4.28.3：**兜底**推送方式；首选发不出去才走它，空 = 不设兜底
   avatar              TEXT    NOT NULL DEFAULT '',             -- 自定义头像路径，空表示用首字色块
   theme               TEXT    NOT NULL DEFAULT '',             -- v4.11.0 界面主题：'forest' / 'paper' / 'ocean'，空表示用默认主题
+  deleted             INTEGER NOT NULL DEFAULT 0,              -- v5.0.0：1 = 已停用（软删除，数据保留）
   created_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 

@@ -397,6 +397,14 @@ a:hover { color: var(--primary-dark); }
 .ico-file-video  { -webkit-mask-image: url('icons/ui/file-video.svg');  mask-image: url('icons/ui/file-video.svg'); }
 .ico-file-audio  { -webkit-mask-image: url('icons/ui/file-audio.svg');  mask-image: url('icons/ui/file-audio.svg'); }
 .ico-file-archive { -webkit-mask-image: url('icons/ui/file-archive.svg'); mask-image: url('icons/ui/file-archive.svg'); }
+/* v5.0.0：待办 meta 行图标（与右上角角标同一套线描规格，替换原来的 emoji） */
+.ico-clock   { -webkit-mask-image: url('icons/ui/clock.svg');   mask-image: url('icons/ui/clock.svg'); }
+.ico-calendar{ -webkit-mask-image: url('icons/ui/calendar.svg');mask-image: url('icons/ui/calendar.svg'); }
+.ico-users   { -webkit-mask-image: url('icons/ui/users.svg');   mask-image: url('icons/ui/users.svg'); }
+.ico-bell-off{ -webkit-mask-image: url('icons/ui/bell-off.svg');mask-image: url('icons/ui/bell-off.svg'); }
+.ico-repeat  { -webkit-mask-image: url('icons/ui/repeat.svg');  mask-image: url('icons/ui/repeat.svg'); }
+.ico-alarm   { -webkit-mask-image: url('icons/ui/alarm.svg');   mask-image: url('icons/ui/alarm.svg'); }
+.ico-note    { -webkit-mask-image: url('icons/ui/note.svg');    mask-image: url('icons/ui/note.svg'); }
 .ico-scanning { animation: ico-scan 1.1s ease-in-out infinite; }
 @keyframes ico-scan { 0%, 100% { opacity: .42; } 50% { opacity: 1; } }
 
@@ -958,6 +966,13 @@ select.inp-compact { padding-right: 26px; }
 .member-row .avatar { flex: none; }
 .member-row .r-label { flex: 1 1 120px; }
 .member-row .btn-sm { flex: 0 0 auto; }
+/* v5.0.0：已停用成员行（仅管理员的家庭成员页可见）。降饱和但不隐藏，
+   数据保留这件事要在视觉上说清楚：名字划一道、头像去色，「启用」按钮保持醒目。 */
+.member-row.member-off { opacity: .72; }
+.member-row.member-off .avatar { filter: grayscale(1); }
+.member-row .off-name { text-decoration: line-through; text-decoration-color: var(--muted); }
+.badge.off { background: var(--surface-3); color: var(--muted); }
+.off-hint { margin: var(--sp-2) 2px 0; font-size: var(--fs-xs); color: var(--muted); line-height: 1.5; }
 /* v4.28.0：成员头像可点（管理员查看该成员的全部参数）。
    用 button 包住 .avatar 时要去掉按钮默认的外观，只留下圆形头像本体。 */
 .avatar-link {
@@ -1858,6 +1873,11 @@ select.inp-compact { padding-right: 26px; }
      现在高度自适应，渐隐只会让最后一个徽标永远看着像被切掉了。 */
 }
 .t-meta span { flex: 0 1 auto; line-height: 16px; }
+/* v5.0.0：meta 行线描图标。13px 正好贴着 16px 行高，与文字基线对齐；
+   currentColor 跟随 .t-meta / .badge 的文字色，暗色主题零特例。
+   ★ 勾选位里的 .mi 不用 vertical-align（-3px 会让它跳出 20px 的方框）。 */
+.t-meta .mi { width: 13px; height: 13px; vertical-align: -2px; margin-right: 1px; }
+.tick-static .mi { width: 13px; height: 13px; vertical-align: 0; }
 .t-note {
   font-size: var(--fs-xs);
   line-height: 16px;
@@ -1884,6 +1904,9 @@ select.inp-compact { padding-right: 26px; }
 /* 「下次提醒」与提前量徽标 */
 .next-remind { color: var(--primary); font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
 .adv-tag {
+  /* v5.0.0：meta 行图标换成线描后多了 13px，窄屏上「提前2天」会被拆成两行。
+     钉住不换行，整枚小标要么完整显示要么整体折到下一行。 */
+  white-space: nowrap;
   font-style: normal;
   font-size: var(--fs-2xs);
   font-weight: 600;

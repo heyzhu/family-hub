@@ -567,7 +567,7 @@ async function runScan(now = new Date()) {
 
   // 成员查询不再过滤「有没有邮箱」：只填了企业微信、没留邮箱的人同样要收得到提醒
   const byName = new Map();
-  for (const u of db.all('SELECT id, display_name, username, notify_email, push_channel FROM users')) {
+  for (const u of db.all('SELECT id, display_name, username, notify_email, push_channel FROM users WHERE deleted = 0')) {
     if (!byName.has(u.display_name)) byName.set(u.display_name, u);
     if (!byName.has(u.username)) byName.set(u.username, u);
   }
@@ -696,7 +696,7 @@ async function runRecordScan(now = new Date()) {
   const rows = db.all(
     'SELECT r.id, r.user_id, r.title, r.content, u.display_name, u.notify_email, u.username'
     + ' FROM records r JOIN users u ON u.id = r.user_id'
-    + " WHERE r.remind = 1 AND r.reminded_at = '' AND r.remind_at != '' AND r.remind_at <= ?"
+    + " WHERE u.deleted = 0 AND r.remind = 1 AND r.reminded_at = '' AND r.remind_at != '' AND r.remind_at <= ?"
     + ' ORDER BY r.remind_at LIMIT 50',
     [nowIso],
   );
