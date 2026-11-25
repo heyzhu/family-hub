@@ -147,6 +147,22 @@ const SECURITY_HEADERS = {
  */
 let indexCache = { key: '', html: '' };
 
+/* 飞牛统一网关前缀的「兜底识别」（v5.0.3）。
+   ★ 背景：正常路径是启动脚本注入 BASE_PATH=/app/familyhub。但 fpk **升级**时
+     如果只替换了 app/、保留了旧的 cmd/main，这个环境变量就根本没传进来；
+     而网关仍然按新入口 /app/familyhub/ 保留前缀转发 —— 请求落到静态路由里
+     找不到 /app/familyhub/index.html，页面就只剩一行 "404 Not Found"。
+     所以这里不把前缀当成「必须由外部配好」的东西：请求路径以 /app/<应用名>
+     开头就按前缀处理。配上 BASE_PATH 时行为一字不变。
+   ★ 只匹配本应用自己的前缀，不做 /app/* 通配 —— 免得把别人家的路径也剥了。
+     部署在别处可用 FH_AUTO_BASE 覆盖，设空串则彻底关闭。 */
+const AUTO_BASE = config.normalizeBasePath(process.env.FH_AUTO_BASE || '/app/familyhub');
+function autoBaseOf(pathname) {
+  if (!AUTO_BASE) return '';
+  if (pathname === AUTO_BASE || pathname.startsWith(AUTO_BASE + '/')) return AUTO_BASE;
+  return '';
+}
+
 /** HTML 属性值转义（前缀是部署者填的，仍按不可信处理，避免引号拼出属性截断） */
 function escAttr(v) {
   return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -171,8 +187,7 @@ function escAttr(v) {
  *   （index.html 的注释里自己就写着这条规则）。于是 `window.__FH_BASE__` 永远是
  *   undefined，改写成 meta 标签后不触发任何脚本执行策略，也不需要 nonce/hash。
  */
-function renderIndexHtml(filePath) {
-  const base = config.basePath;
+function renderIndexHtml(filePath, base) {
   if (!base) return fs.readFileSync(filePath, 'utf8');
 
   /* v4.3.2 需求 3：改写结果按「文件 mtime + 前缀」缓存。
@@ -273,7 +288,7 @@ function sendFileRange(req, res, filePath, headers) {
   fs.createReadStream(filePath).pipe(res);
 }
 
-function sendFile(req, res, filePath, { download } = {}) {
+function sendFile(req, res, filePath, { download, base } = {}) {
   const ext = path.extname(filePath).toLowerCase();
   /* v4.27.0：.webmanifest 也要 no-cache。它是「安装清单」——浏览器在**安装那一刻**
      才去读它，缓存 600s 会让「刚改的图标 / 刚换的名字」装到主屏还是旧的样子；
@@ -288,8 +303,8 @@ function sendFile(req, res, filePath, { download } = {}) {
   if (download) headers['Content-Disposition'] = `attachment; filename="${download}"`;
 
   // HTML 且配了前缀 → 走内存改写（改动后长度会变，Content-Length 必须按实际算）
-  if (ext === '.html' && config.basePath) {
-    const body = Buffer.from(renderIndexHtml(filePath), 'utf8');
+  if (ext === '.html' && base) {
+    const body = Buffer.from(renderIndexHtml(filePath, base), 'utf8');
     res.writeHead(200, { ...headers, 'Content-Length': body.length });
     res.end(body);
     return;
@@ -298,7 +313,7 @@ function sendFile(req, res, filePath, { download } = {}) {
   sendFileRange(req, res, filePath, headers);
 }
 
-function serveStatic(req, res, pathname) {
+function serveStatic(req, res, pathname, base) {
   /* v4.20.0（审查 W-4）：`GET /%E0%A4%A` 这类非法百分号编码会让 decodeURIComponent
      抛 URIError，原来被 wrapHandler 兜成 500 并在日志里打一整段栈 —— 任何扫描器
      扫一遍就能刷满日志。畸形 URL 是**客户端错误**，回 400 才是对的语义。 */
@@ -320,7 +335,7 @@ function serveStatic(req, res, pathname) {
     res.writeHead(404, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' }).end('404 Not Found');
     return;
   }
-  sendFile(req, res, full);
+  sendFile(req, res, full, { base });
 }
 
 /* ── 请求体 ─────────────────────────────────────────────── */
@@ -527,15 +542,18 @@ async function handleRequest(req, res) {
   //   社区实现都如此），所以必须在这里剥掉再路由，否则全部 404。
   //   没配 BASE_PATH 时这一段是彻底的空操作，旧部署行为一字不变。
   let pathname = url.pathname;
-  if (config.basePath) {
-    if (pathname === config.basePath) {
+  /* v5.0.3：base 优先取启动时注入的 BASE_PATH；没注入时按 /app/<应用名>
+     兜底识别（见 autoBaseOf 的注释）。两种来源后续行为完全一致。 */
+  const base = config.basePath || autoBaseOf(pathname);
+  if (base) {
+    if (pathname === base) {
       // 入口地址没带尾斜杠时补一个跳转，让浏览器以「目录」为基址解析相对资源
-      res.writeHead(302, { ...SECURITY_HEADERS, Location: config.basePath + '/' + url.search });
+      res.writeHead(302, { ...SECURITY_HEADERS, Location: base + '/' + url.search });
       res.end();
       return;
     }
-    if (pathname.startsWith(config.basePath + '/')) {
-      pathname = pathname.slice(config.basePath.length);
+    if (pathname.startsWith(base + '/')) {
+      pathname = pathname.slice(base.length);
     }
     // 前缀之外的请求**故意照常处理**（不返回 404）：
     // 飞牛系统可能用不带前缀的地址做探测，把它打成 404 会有「应用明明是好的、
@@ -543,7 +561,7 @@ async function handleRequest(req, res) {
     // 下面这行日志就是为了补上这一点可观测性。
     else if (!prefixWarned) {
       prefixWarned = true;
-      console.warn(`[gateway] 收到不带前缀的请求 ${pathname}（已配置 BASE_PATH=${config.basePath}），按原路径处理`);
+      console.warn(`[gateway] 收到不带前缀的请求 ${pathname}（前缀=${base}），按原路径处理`);
     }
   }
   const searchParams = url.searchParams;
@@ -553,7 +571,7 @@ async function handleRequest(req, res) {
       res.writeHead(405, SECURITY_HEADERS).end('Method Not Allowed');
       return;
     }
-    serveStatic(req, res, pathname);
+    serveStatic(req, res, pathname, base);
     return;
   }
 
