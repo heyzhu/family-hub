@@ -6,6 +6,22 @@
 
 ---
 
+## v5.0.5 — 2026-11-25
+
+> 修 v5.0.4 之后飞牛桌面 / FN Connect 打开仍是 `404 Not Found`。无数据库改动。
+
+### 修复
+
+- **补上飞牛「统一网关」真正需要的两个字段**：`app/ui/config` 的入口原来只有 `url: /app/familyhub/` —— 这只是桌面的跳转地址，**不代表网关注册了上游**。统一网关认的是 `gatewaySocket`（Socket 文件名）与 `gatewayPrefix`（访问前缀），系统安装时把这两个值写进 `app_service` 表，网关才知道把请求往哪儿转；缺了就只剩一行 `404 Not Found`。现在补为 `gatewaySocket: familyhub.sock` + `gatewayPrefix: /app/familyhub`，`protocol` 留空（跟随桌面协议）。
+- **应用改为同时监听 Unix Socket**：启动脚本读取系统下发的 `FNNAS_GATEWAY_SOCKET`（socket 绝对路径）并传给服务端，服务端在原来的 TCP 端口之外**再开一个 Socket 入口**；前缀优先取 `FNNAS_GATEWAY_PREFIX`，取不到才用内置默认值。TCP 端口照常监听，`http://内网IP:3455` 与老书签不受影响。
+- 打包校验器新增 5 条断言（`gatewaySocket` / `gatewayPrefix` 存在且与 appname 一致、`url` 落在 `gatewayPrefix` 之下、启动脚本读取两个 `FNNAS_GATEWAY_*` 变量并注入 `SOCKET_PATH`），防止以后又只写 `url` 就以为接上网关了。
+
+### 升级说明
+
+- 无数据库迁移。改的是 `ui/config`（在 `app/` 里）与 `cmd/main`，**重新安装 fpk 生效**；Docker / Node 部署方式完全不受影响（不设 `SOCKET_PATH` 就只监听 TCP）。
+
+---
+
 ## v5.0.4 — 2026-11-25
 
 > 修 v5.0.2 / v5.0.3 之后飞牛桌面打开仍只显示 `404 Not Found`。无代码改动，只改安装包元信息。
