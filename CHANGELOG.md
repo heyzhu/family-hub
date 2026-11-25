@@ -6,6 +6,22 @@
 
 ---
 
+## v5.0.7 — 2026-11-25
+
+> 修 v5.0.6 之后飞牛桌面 / FN Connect 由 `404 Not Found` 变成 `502 Bad Gateway`。无业务代码改动，只改 fpk 启动脚本。
+
+### 修复
+
+- **网关 socket 路径改由 `ui/config` 推导**：飞牛约定 `gatewaySocket` 是**相对 `${TRIM_APPDEST}`** 的文件名，系统并不会通过环境变量下发 socket 绝对路径。v5.0.5/5.0.6 读的 `FNNAS_GATEWAY_SOCKET` 实际为空，服务只监听了 TCP 端口，网关连不上上游 → 502。
+- 现在按「`ui/config` 的 `gatewaySocket` + `${TRIM_APPDEST}`」拼绝对路径，并保留环境变量优先（兼容将来真下发的情况），最终落到 `${TRIM_APPDEST}/familyhub.sock`。
+- 启动日志新增一行 socket 就绪状态与权限（`srw-rw-rw-`），下次排查可直接看是「没建」还是「权限不对」。
+
+### 升级说明
+
+只改 `cmd/main`，需重装 fpk；TCP 直连端口 3455 与局域网访问行为不变。
+
+---
+
 ## v5.0.6 — 2026-11-25
 
 > 修 v5.0.5 之后飞牛桌面 / FN Connect 仍是 `404 Not Found`。无代码改动，只改 `manifest` 一行。
