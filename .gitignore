@@ -22,3 +22,6 @@ fnpack.exe
 # 备份与临时文件
 *.bak
 *.tmp
+
+# 更新记录只留本地自用，不同步到 GitHub（Release 说明另行撰写）
+CHANGELOG.md
