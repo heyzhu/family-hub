@@ -166,4 +166,4 @@ node server.js          # 默认 3455 端口，数据落在 ./data
 
 ## 版本与许可
 
-当前版本 **5.0.3**。更新记录见 [CHANGELOG.md](CHANGELOG.md)，许可见 [LICENSE](LICENSE)（AGPL-3.0）。
+当前版本 **5.0.4**。更新记录见 [CHANGELOG.md](CHANGELOG.md)，许可见 [LICENSE](LICENSE)（AGPL-3.0）。
