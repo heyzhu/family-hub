@@ -9403,7 +9403,12 @@ return `
       const newPw = layer.querySelector('#lock-new-pw');
       if (newPw) newPw.classList.toggle('hidden', !(changing && isCustom));
     }
-    if (act === 'set-register-pick' && layer) layer.dataset.allowRegister = btn.dataset.reg;
+    if (act === 'set-register-pick' && layer) {
+      layer.dataset.allowRegister = btn.dataset.reg === '1' ? '1' : '0';
+      // 分段控件的选中态要就地跟着走（只改 dataset 的话按钮看起来没反应）
+      const box = btn.parentElement;
+      if (box) box.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === btn));
+    }
     /* v4.12.0：家庭设置弹窗只剩「基础配置」，set-remind-pick / set-notify-pick 两种分段控件
        随「待办提醒 / 内容通知」一起搬去了「我的 → 消息提醒」，那里用的是 <select>，不需要这里处理。 */
     if (act === 'todo-filter') { state.todoFilter = btn.dataset.filter; state.todoShown = state.todoPageSize; render(); }
@@ -12522,6 +12527,15 @@ return `
                      placeholder="${esc(s.defaultSiteName || DEFAULT_APP_NAME)}">
               <button type="button" class="btn-ghost btn-sm" data-act="settings-site-reset">恢复默认</button>
             </div>
+          </div>
+          <!-- v5.0.1：首个人建成管理员后注册会自动关闭（安全默认），但界面必须留一个能重新打开的地方，
+               否则家人没法自己加入。这里只放开关，不再放「新成员自助注册」那一整块。 -->
+          <div class="field"><span>新成员自助注册</span>
+            <div class="segmented" data-act="set-register-pick">
+              <button type="button" data-reg="1" class="${s.allowRegister ? 'on' : ''}">开放</button>
+              <button type="button" data-reg="0" class="${s.allowRegister ? '' : 'on'}">关闭</button>
+            </div>
+            <div class="field-hint">关闭时登录页不显示「注册新账号」。要让家人加入：先开放 → 家人注册 → 再关回去。</div>
           </div>
           <label class="field"><span>免登录有效期</span>
             <select data-mk="ttl">
