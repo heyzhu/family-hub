@@ -6,6 +6,21 @@
 
 ---
 
+## v5.0.6 — 2026-11-25
+
+> 修 v5.0.5 之后飞牛桌面 / FN Connect 仍是 `404 Not Found`。无代码改动，只改 `manifest` 一行。
+
+### 修复
+
+- **`manifest` 补 `micro_app=true`**。飞牛只在应用被标记为「微应用」时，才把 `ui/config` 里的 `gatewaySocket` / `gatewayPrefix` 写进 `app_service` 表并交给统一网关；没有这一行，入口会被当作普通应用处理，网关没有上游可用，`/app/familyhub/` 一律 404。官方 Motrix 参考包（同为「自带运行时」的 native 形态）就带这一行，我们此前漏掉了。
+- 打包校验器新增 `micro_app=true` 断言（共 113 项），避免以后又漏。
+
+### 升级说明
+
+- 无数据库迁移，`server.js` 未改。`manifest` 在安装包外层，**必须重新安装 fpk 才生效**。
+
+---
+
 ## v5.0.5 — 2026-11-25
 
 > 修 v5.0.4 之后飞牛桌面 / FN Connect 打开仍是 `404 Not Found`。无数据库改动。
